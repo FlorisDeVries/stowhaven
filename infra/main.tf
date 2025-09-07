@@ -10,6 +10,13 @@ terraform {
       version = "~> 1.0"
     }
   }
+  
+  backend "azurerm" {
+    resource_group_name  = "rg-fdev-weu-backup-prd"
+    storage_account_name = "staterraformfdevweuprd"
+    container_name       = "tfstate"
+    key                  = "backup-api.tfstate"
+  }
 }
 
 provider "azurerm" {

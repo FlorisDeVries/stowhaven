@@ -5,6 +5,7 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+
 env:
   AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
   AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
@@ -29,78 +30,74 @@ jobs:
       storage-name: ${{ steps.terraform-output.outputs.storage-name }}
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+    - name: Checkout
+      uses: actions/checkout@v4
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: "1.5.0"
-          terraform_wrapper: false
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: "1.5.0"
+        terraform_wrapper: false
 
-      - name: Azure Login
-        uses: azure/login@v1
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+    - name: Azure Login
+      uses: azure/login@v1
+      with:
+        client-id: ${{ secrets.AZURE_CLIENT_ID }}
+        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Create Resource Group
-        run: |
-          az group create --name $RG_NAME --location $LOCATION || echo "Resource group may already exist"
+    - name: Create Resource Group
+      run: |
+        az group create --name $RG_NAME --location $LOCATION
 
-      - name: Terraform Init
-        working-directory: infra
-        run: terraform init
+    - name: Setup Terraform State Storage
+      run: |
+        # Create storage account for Terraform state
+        az storage account create \
+          --name "staterraform$NAME_SUFFIX_STR" \
+          --resource-group $RG_NAME \
+          --location $LOCATION \
+          --sku Standard_LRS \
+          --kind StorageV2 \
+          --allow-blob-public-access false \
+          --min-tls-version TLS1_2 || echo "State storage account may already exist"
 
-      - name: Import Existing Resources
-        working-directory: infra
-        continue-on-error: true
-        run: |
-          # Import existing resources if they exist
-          echo "Importing existing resources..."
-          
-          # Import storage accounts
-          terraform import 'azurerm_storage_account.data' "/subscriptions/$AZURE_SUBSCRIPTION_ID/resourceGroups/$RG_NAME/providers/Microsoft.Storage/storageAccounts/stabackup$NAME_SUFFIX_STR" || echo "Data storage account not found or already imported"
-          terraform import 'azurerm_storage_account.function' "/subscriptions/$AZURE_SUBSCRIPTION_ID/resourceGroups/$RG_NAME/providers/Microsoft.Storage/storageAccounts/stafunc$NAME_SUFFIX_STR" || echo "Function storage account not found or already imported"
-          
-          # Import other resources
-          terraform import 'azurerm_application_insights.main' "/subscriptions/$AZURE_SUBSCRIPTION_ID/resourceGroups/$RG_NAME/providers/Microsoft.Insights/components/appi-$NAME_SUFFIX" || echo "Application Insights not found or already imported"
-          terraform import 'azurerm_service_plan.main' "/subscriptions/$AZURE_SUBSCRIPTION_ID/resourceGroups/$RG_NAME/providers/Microsoft.Web/serverFarms/plan-$NAME_SUFFIX" || echo "Service plan not found or already imported"
-          terraform import 'azurerm_linux_function_app.main' "/subscriptions/$AZURE_SUBSCRIPTION_ID/resourceGroups/$RG_NAME/providers/Microsoft.Web/sites/func-$NAME_SUFFIX" || echo "Function app not found or already imported"
-          
-          # Import storage container
-          terraform import 'azurerm_storage_container.backups' "https://stabackup$NAME_SUFFIX_STR.blob.core.windows.net/backups" || echo "Storage container not found or already imported"
-          
-          # Import management policy
-          terraform import 'azurerm_storage_management_policy.lifecycle' "/subscriptions/$AZURE_SUBSCRIPTION_ID/resourceGroups/$RG_NAME/providers/Microsoft.Storage/storageAccounts/stabackup$NAME_SUFFIX_STR/managementPolicies/default" || echo "Management policy not found or already imported"
+        # Create container for state files
+        az storage container create \
+          --name tfstate \
+          --account-name "staterraform$NAME_SUFFIX_STR" \
+          --auth-mode login || echo "State container may already exist"
 
-      - name: Terraform Plan
-        working-directory: infra
-        run: |
-          terraform plan \
-            -var="location=$TF_VAR_location" \
-            -var="name_suffix=$TF_VAR_name_suffix" \
-            -var="name_suffix_str=$TF_VAR_name_suffix_str" \
-            -var="lifecycle_archive_after_days=$TF_VAR_lifecycle_archive_after_days" \
-            -out=tfplan
+    - name: Terraform Init
+      working-directory: infra
+      run: terraform init
 
-      - name: Terraform Apply
-        working-directory: infra
-        run: terraform apply -auto-approve tfplan
+    - name: Terraform Plan
+      working-directory: infra
+      run: |
+        terraform plan \
+          -var="location=$TF_VAR_location" \
+          -var="name_suffix=$TF_VAR_name_suffix" \
+          -var="name_suffix_str=$TF_VAR_name_suffix_str" \
+          -var="lifecycle_archive_after_days=$TF_VAR_lifecycle_archive_after_days" \
+          -out=tfplan
 
-      - name: Get Terraform Outputs
-        id: terraform-output
-        working-directory: infra
-        run: |
-          FUNC_NAME=$(terraform output -raw function_app_name)
-          STORAGE_NAME=$(terraform output -raw data_storage_account_name)
-          
-          echo "Function App: $FUNC_NAME"
-          echo "Storage Account: $STORAGE_NAME"
-          
-          echo "function-name=$FUNC_NAME" >> $GITHUB_OUTPUT
-          echo "storage-name=$STORAGE_NAME" >> $GITHUB_OUTPUT
+    - name: Terraform Apply
+      working-directory: infra
+      run: terraform apply -auto-approve tfplan
+
+    - name: Get Terraform Outputs
+      id: terraform-output
+      working-directory: infra
+      run: |
+        FUNC_NAME=$(terraform output -raw function_app_name)
+        STORAGE_NAME=$(terraform output -raw data_storage_account_name)
+
+        echo "Function App: $FUNC_NAME"
+        echo "Storage Account: $STORAGE_NAME"
+
+        echo "function-name=$FUNC_NAME" >> $GITHUB_OUTPUT
+        echo "storage-name=$STORAGE_NAME" >> $GITHUB_OUTPUT
 
   function:
     runs-on: ubuntu-latest
@@ -110,41 +107,41 @@ jobs:
       contents: read
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+    - name: Checkout
+      uses: actions/checkout@v4
 
-      - name: Azure Login
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+    - name: Azure Login
+      uses: azure/login@v2
+      with:
+        client-id: ${{ secrets.AZURE_CLIENT_ID }}
+        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
 
-      - name: Install dependencies
-        working-directory: api
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt -t .python_packages/lib/site-packages
+    - name: Install dependencies
+      working-directory: api
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt -t .python_packages/lib/site-packages
 
-      - name: Build package
-        working-directory: api
-        run: |
-          zip -r ../function-package.zip . -x "__pycache__/*" "*.pyc" "tests/*"
+    - name: Build package
+      working-directory: api
+      run: |
+        zip -r ../function-package.zip . -x "__pycache__/*" "*.pyc" "tests/*"
 
-      - name: Deploy Function App
-        uses: Azure/functions-action@v1
-        with:
-          app-name: ${{ needs.infrastructure.outputs.function-name }}
-          package: function-package.zip
+    - name: Deploy Function App
+      uses: Azure/functions-action@v1
+      with:
+        app-name: ${{ needs.infrastructure.outputs.function-name }}
+        package: function-package.zip
 
-      - name: Verify deployment
-        run: |
-          FUNC_NAME="${{ needs.infrastructure.outputs.function-name }}"
-          echo "Function App: $FUNC_NAME"
-          echo "Storage Account: ${{ needs.infrastructure.outputs.storage-name }}"
-          echo "Function App URL: https://$FUNC_NAME.azurewebsites.net"
+    - name: Verify deployment
+      run: |
+        FUNC_NAME="${{ needs.infrastructure.outputs.function-name }}"
+        echo "Function App: $FUNC_NAME"
+        echo "Storage Account: ${{ needs.infrastructure.outputs.storage-name }}"
+        echo "Function App URL: https://$FUNC_NAME.azurewebsites.net"
