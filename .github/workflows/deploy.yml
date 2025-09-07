@@ -70,7 +70,12 @@ jobs:
 
     - name: Terraform Init
       working-directory: infra
-      run: terraform init
+      run: |
+        terraform init \
+          -backend-config="subscription_id=$AZURE_SUBSCRIPTION_ID" \
+          -backend-config="tenant_id=$AZURE_TENANT_ID" \
+          -backend-config="client_id=$AZURE_CLIENT_ID" \
+          -backend-config="use_oidc=true"
 
     - name: Terraform Plan
       working-directory: infra
