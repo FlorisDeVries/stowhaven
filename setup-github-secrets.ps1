@@ -13,40 +13,80 @@ param(
     [string]$AppName = "GitHubActions-BackupAPI"
 )
 
-# Colors for output
-$Red = "`e[31m"
-$Green = "`e[32m"
-$Yellow = "`e[33m"
-$Blue = "`e[34m"
-$Reset = "`e[0m"
+# Check if terminal supports ANSI colors
+$SupportsAnsi = $false
+try {
+    if ($PSVersionTable.PSVersion.Major -ge 6) {
+        $SupportsAnsi = $true
+    } elseif ($env:WT_SESSION) {
+        # Windows Terminal
+        $SupportsAnsi = $true
+    }
+} catch {
+    $SupportsAnsi = $false
+}
 
 function Write-Step {
     param([string]$Message)
-    Write-Host "${Blue}🔧 $Message${Reset}"
+    if ($SupportsAnsi) {
+        Write-Host "`e[34m[STEP] $Message`e[0m"
+    } else {
+        Write-Host "[STEP] $Message" -ForegroundColor Blue
+    }
 }
 
 function Write-Success {
     param([string]$Message)
-    Write-Host "${Green}✅ $Message${Reset}"
+    if ($SupportsAnsi) {
+        Write-Host "`e[32m[SUCCESS] $Message`e[0m"
+    } else {
+        Write-Host "[SUCCESS] $Message" -ForegroundColor Green
+    }
 }
 
 function Write-Warning {
     param([string]$Message)
-    Write-Host "${Yellow}⚠️  $Message${Reset}"
+    if ($SupportsAnsi) {
+        Write-Host "`e[33m[WARNING] $Message`e[0m"
+    } else {
+        Write-Host "[WARNING] $Message" -ForegroundColor Yellow
+    }
 }
 
 function Write-Error {
     param([string]$Message)
-    Write-Host "${Red}❌ $Message${Reset}"
+    if ($SupportsAnsi) {
+        Write-Host "`e[31m[ERROR] $Message`e[0m"
+    } else {
+        Write-Host "[ERROR] $Message" -ForegroundColor Red
+    }
+}
+
+function Write-Info {
+    param([string]$Message)
+    if ($SupportsAnsi) {
+        Write-Host "`e[36m$Message`e[0m"
+    } else {
+        Write-Host "$Message" -ForegroundColor Cyan
+    }
+}
+
+function Write-Highlight {
+    param([string]$Message)
+    if ($SupportsAnsi) {
+        Write-Host "`e[33m$Message`e[0m"
+    } else {
+        Write-Host "$Message" -ForegroundColor Yellow
+    }
 }
 
 # Validate GitHub repo format
 if ($GitHubRepo -notmatch "^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$") {
-    Write-Error "GitHub repository must be in format 'owner/repo' (e.g., 'FlorisDeVries/backup-api')"
+    Write-Error "GitHub repository must be in format 'owner/repo' (e.g. 'FlorisDeVries/backup-api')"
     exit 1
 }
 
-Write-Host "${Blue}🚀 Setting up GitHub OIDC Authentication for Azure${Reset}"
+Write-Info "Setting up GitHub OIDC Authentication for Azure"
 Write-Host "Repository: $GitHubRepo"
 Write-Host "App Name: $AppName"
 Write-Host ""
@@ -67,9 +107,10 @@ try {
 
 # Get subscription info
 if ([string]::IsNullOrEmpty($SubscriptionId)) {
-    $currentSub = az account show --query "{id:id, name:name}" -o json | ConvertFrom-Json
-    $SubscriptionId = $currentSub.id
-    Write-Host "Using current subscription: $($currentSub.name) ($SubscriptionId)"
+    $accountInfo = az account show -o json | ConvertFrom-Json
+    $SubscriptionId = $accountInfo.id
+    $subscriptionName = $accountInfo.name
+    Write-Host "Using current subscription: $subscriptionName ($SubscriptionId)"
 } else {
     az account set --subscription $SubscriptionId
     if ($LASTEXITCODE -ne 0) {
@@ -128,14 +169,6 @@ if ($LASTEXITCODE -ne 0) {
 Write-Success "Created federated credential for main branch"
 
 Write-Step "Creating federated credential for workflow_dispatch..."
-$federatedCredentialDispatch = @{
-    name = "workflow-dispatch"
-    issuer = "https://token.actions.githubusercontent.com"
-    subject = "repo:$GitHubRepo`:ref:refs/heads/main"
-    audiences = @("api://AzureADTokenExchange")
-} | ConvertTo-Json -Depth 3
-
-# Also add support for manual workflow runs
 $federatedCredentialManual = @{
     name = "manual-workflow"
     issuer = "https://token.actions.githubusercontent.com"
@@ -149,14 +182,14 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host ""
-Write-Host "${Green}🎉 Setup Complete!${Reset}"
+Write-Success "Setup Complete!"
 Write-Host ""
-Write-Host "${Blue}📋 GitHub Secrets to Add:${Reset}"
+Write-Info "GitHub Secrets to Add:"
 Write-Host "Go to: https://github.com/$GitHubRepo/settings/secrets/actions"
 Write-Host ""
-Write-Host "${Yellow}AZURE_CLIENT_ID${Reset}     = $appId"
-Write-Host "${Yellow}AZURE_TENANT_ID${Reset}     = $tenantId"
-Write-Host "${Yellow}AZURE_SUBSCRIPTION_ID${Reset} = $SubscriptionId"
+Write-Highlight "AZURE_CLIENT_ID       = $appId"
+Write-Highlight "AZURE_TENANT_ID       = $tenantId"
+Write-Highlight "AZURE_SUBSCRIPTION_ID = $SubscriptionId"
 Write-Host ""
 
 # Check if GitHub CLI is available to automate secret creation
@@ -169,7 +202,7 @@ try {
 } catch {}
 
 if ($ghInstalled) {
-    Write-Host "${Blue}🤖 Detected GitHub CLI! Would you like to automatically add these secrets?${Reset}"
+    Write-Info "Detected GitHub CLI! Would you like to automatically add these secrets?"
     $response = Read-Host "Enter 'y' to proceed, or any other key to skip"
     
     if ($response -eq 'y' -or $response -eq 'Y') {
@@ -186,14 +219,14 @@ if ($ghInstalled) {
         }
     }
 } else {
-    Write-Host "${Blue}💡 Tip: Install GitHub CLI (gh) to automatically add secrets next time!${Reset}"
+    Write-Info "Tip: Install GitHub CLI (gh) to automatically add secrets next time!"
     Write-Host "Install from: https://cli.github.com/"
 }
 
 Write-Host ""
-Write-Host "${Blue}🔍 Next Steps:${Reset}"
+Write-Info "Next Steps:"
 Write-Host "1. Verify the secrets are added to your GitHub repository"
 Write-Host "2. Push to main branch to trigger the deployment workflow"
 Write-Host "3. Monitor the GitHub Actions run for any issues"
 Write-Host ""
-Write-Host "${Green}Happy deploying! 🚀${Reset}"
+Write-Success "Happy deploying!"
