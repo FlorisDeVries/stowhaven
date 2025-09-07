@@ -60,6 +60,42 @@ This script will:
 - `AZURE_TENANT_ID` 
 - `AZURE_CLIENT_ID`
 
+### 1.2. Grant User Access Administrator Role
+
+⚠️ **IMPORTANT**: Your Service Principal needs additional permissions to create role assignments for managed identities.
+
+After running the setup script, grant the **User Access Administrator** role:
+
+```bash
+# Replace with your actual values from the setup script output
+AZURE_CLIENT_ID="your-service-principal-client-id"
+AZURE_SUBSCRIPTION_ID="your-subscription-id"
+RESOURCE_GROUP="rg-fdev-weu-backup-prd"
+
+# Grant User Access Administrator role (resource group scope)
+az role assignment create \
+  --assignee $AZURE_CLIENT_ID \
+  --role "User Access Administrator" \
+  --scope "/subscriptions/$AZURE_SUBSCRIPTION_ID/resourceGroups/$RESOURCE_GROUP"
+```
+
+**Alternative: Subscription-level access** (if you plan to deploy to multiple resource groups):
+```bash
+az role assignment create \
+  --assignee $AZURE_CLIENT_ID \
+  --role "User Access Administrator" \
+  --scope "/subscriptions/$AZURE_SUBSCRIPTION_ID"
+```
+
+**Verify the assignment**:
+```bash
+az role assignment list \
+  --assignee $AZURE_CLIENT_ID \
+  --output table
+```
+
+**Why this is needed**: The Service Principal needs to assign the "Storage Blob Data Contributor" role to the Function App's managed identity during deployment. Without this permission, the deployment will fail with an authorization error.
+
 ### 2. Create a Resource Group
 ```bash
 az group create -n rg-backup-archive -l westeurope
