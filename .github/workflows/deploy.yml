@@ -10,8 +10,9 @@ env:
   AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
   AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
   LOCATION: westeurope
-  RG_NAME: rg-backup-archive
-  PROJECT_NAME: backupapi
+  RG_NAME: rg-fdev-weu-backup-prd
+  NAME_SUFFIX: fdev-weu-prd
+  NAME_SUFFIX_STR: fdevweuprd
 
 jobs:
   deploy:
@@ -41,7 +42,10 @@ jobs:
           az deployment group create \
             -g $RG_NAME \
             -f infra/main.bicep \
-            -p location=$LOCATION projectName=$PROJECT_NAME
+            -p location=$LOCATION \
+            -p nameSuffix=$NAME_SUFFIX \
+            -p nameSuffixStr=$NAME_SUFFIX_STR \
+            -p lifecycleArchiveAfterDays=30
 
       - name: Resolve outputs
         id: outputs
