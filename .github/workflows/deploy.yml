@@ -33,58 +33,86 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Clear Azure CLI cache
-        run: az account clear
-
-      - name: Re-authenticate and verify
+      - name: Verify Azure context
         run: |
-          az login --service-principal \
-            --username ${{ secrets.AZURE_CLIENT_ID }} \
-            --tenant ${{ secrets.AZURE_TENANT_ID }} \
-            --federated-token $AZURE_OIDC_TOKEN
           az account show
+          az account set --subscription $AZURE_SUBSCRIPTION_ID
 
       - name: Create Resource Group
         run: |
           az group create -n $RG_NAME -l $LOCATION
 
-      - name: Deploy Bicep
+      - name: Deploy Bicep with retry
         run: |
-          az deployment group create \
-            -g $RG_NAME \
-            -f infra/main.bicep \
-            -p location=$LOCATION \
-            -p nameSuffix=$NAME_SUFFIX \
-            -p nameSuffixStr=$NAME_SUFFIX_STR \
-            -p lifecycleArchiveAfterDays=30
+          for i in {1..3}; do
+            echo "Deployment attempt $i of 3"
+            if az deployment group create \
+              -g $RG_NAME \
+              -f infra/main.bicep \
+              -p location=$LOCATION \
+              -p nameSuffix=$NAME_SUFFIX \
+              -p nameSuffixStr=$NAME_SUFFIX_STR \
+              -p lifecycleArchiveAfterDays=30 \
+              --verbose; then
+              echo "Deployment successful"
+              break
+            else
+              echo "Deployment failed, waiting 30 seconds before retry..."
+              if [ $i -lt 3 ]; then
+                sleep 30
+              fi
+            fi
+          done
 
       - name: Resolve outputs
         id: outputs
         run: |
-          OUT=$(az deployment group show -g $RG_NAME -n $(az deployment group list -g $RG_NAME --query "[].name" -o tsv | tail -n1) -o json)
-          echo "FUNC_NAME=$(echo $OUT | jq -r '.properties.outputs.functionAppName.value')" >> $GITHUB_ENV
-          echo "DATA_SA=$(echo $OUT | jq -r '.properties.outputs.dataStorageAccountName.value')" >> $GITHUB_ENV
+          LATEST_DEPLOYMENT=$(az deployment group list -g $RG_NAME --query "max_by([], &properties.timestamp).name" -o tsv)
+          OUT=$(az deployment group show -g $RG_NAME -n $LATEST_DEPLOYMENT -o json)
+          FUNC_NAME=$(echo $OUT | jq -r '.properties.outputs.functionAppName.value')
+          DATA_SA=$(echo $OUT | jq -r '.properties.outputs.dataStorageAccountName.value')
+          echo "FUNC_NAME=$FUNC_NAME" >> $GITHUB_ENV
+          echo "DATA_SA=$DATA_SA" >> $GITHUB_ENV
+          echo "Function App: $FUNC_NAME"
+          echo "Storage Account: $DATA_SA"
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install deps
+      - name: Install dependencies
         working-directory: api
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt -t .python_packages/lib/site-packages
 
-      - name: Build package (zip)
+      - name: Build package
         working-directory: api
         run: |
-          zip -r ../package.zip . -x "__pycache__/*"
+          zip -r ../package.zip . -x "__pycache__/*" "*.pyc" "tests/*"
 
-      - name: Deploy Function
+      - name: Deploy Function with retry
         run: |
-          az functionapp deploy \
-            --resource-group $RG_NAME \
-            --name $FUNC_NAME \
-            --src-path package.zip \
-            --type zip
+          for i in {1..3}; do
+            echo "Function deployment attempt $i of 3"
+            if az functionapp deploy \
+              --resource-group $RG_NAME \
+              --name $FUNC_NAME \
+              --src-path package.zip \
+              --type zip; then
+              echo "Function deployment successful"
+              break
+            else
+              echo "Function deployment failed, waiting 30 seconds before retry..."
+              if [ $i -lt 3 ]; then
+                sleep 30
+              fi
+            fi
+          done
+
+      - name: Verify deployment
+        run: |
+          echo "Verifying Function App is running..."
+          az functionapp show -g $RG_NAME -n $FUNC_NAME --query "state" -o tsv
+          echo "Function App URL: https://$FUNC_NAME.azurewebsites.net"
