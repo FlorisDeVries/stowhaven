@@ -21,15 +21,15 @@ jobs:
       id-token: write
       contents: read
     outputs:
-      function-name: ${{ steps.deploy-arm.outputs.functionAppName }}
-      storage-name: ${{ steps.deploy-arm.outputs.dataStorageAccountName }}
+      function-name: ${{ steps.get-outputs.outputs.function-name }}
+      storage-name: ${{ steps.get-outputs.outputs.storage-name }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Azure Login
-        uses: azure/login@v2
+        uses: azure/login@v1
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -37,20 +37,55 @@ jobs:
 
       - name: Create Resource Group
         run: |
-          az group create --name $RG_NAME --location $LOCATION
+          az group create --name $RG_NAME --location $LOCATION || echo "Resource group may already exist"
 
-      - name: Deploy ARM Template
-        id: deploy-arm
-        uses: azure/arm-deploy@v2
-        with:
-          subscriptionId: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-          resourceGroupName: ${{ env.RG_NAME }}
-          template: ./infra/main.bicep
-          parameters: >
-            location=${{ env.LOCATION }}
-            nameSuffix=${{ env.NAME_SUFFIX }}
-            nameSuffixStr=${{ env.NAME_SUFFIX_STR }}
-            lifecycleArchiveAfterDays=30
+      - name: Compile Bicep to ARM
+        run: |
+          az bicep build --file infra/main.bicep --outfile infra/main.json
+
+      - name: Deploy Infrastructure
+        run: |
+          DEPLOYMENT_NAME="infra-$(date +%Y%m%d-%H%M%S)"
+          echo "Deploying infrastructure with name: $DEPLOYMENT_NAME"
+          
+          # Deploy using compiled ARM template to avoid Bicep CLI issues
+          az deployment group create \
+            --resource-group $RG_NAME \
+            --template-file infra/main.json \
+            --parameters location="$LOCATION" \
+            --parameters nameSuffix="$NAME_SUFFIX" \
+            --parameters nameSuffixStr="$NAME_SUFFIX_STR" \
+            --parameters lifecycleArchiveAfterDays=30 \
+            --name "$DEPLOYMENT_NAME" \
+            --only-show-errors
+
+      - name: Get deployment outputs
+        id: get-outputs
+        run: |
+          # Get the latest deployment
+          DEPLOYMENT_NAME=$(az deployment group list --resource-group $RG_NAME --query "max_by([], &properties.timestamp).name" --output tsv)
+          echo "Latest deployment: $DEPLOYMENT_NAME"
+          
+          # Get outputs with explicit queries
+          FUNC_NAME=$(az deployment group show --resource-group $RG_NAME --name "$DEPLOYMENT_NAME" --query "properties.outputs.functionAppName.value" --output tsv)
+          STORAGE_NAME=$(az deployment group show --resource-group $RG_NAME --name "$DEPLOYMENT_NAME" --query "properties.outputs.dataStorageAccountName.value" --output tsv)
+          
+          echo "Function App: $FUNC_NAME"
+          echo "Storage Account: $STORAGE_NAME"
+          
+          # Validate outputs
+          if [ -z "$FUNC_NAME" ] || [ "$FUNC_NAME" = "null" ]; then
+            echo "ERROR: Function App name not found"
+            exit 1
+          fi
+          
+          if [ -z "$STORAGE_NAME" ] || [ "$STORAGE_NAME" = "null" ]; then
+            echo "ERROR: Storage Account name not found" 
+            exit 1
+          fi
+          
+          echo "function-name=$FUNC_NAME" >> $GITHUB_OUTPUT
+          echo "storage-name=$STORAGE_NAME" >> $GITHUB_OUTPUT
 
   function:
     runs-on: ubuntu-latest
