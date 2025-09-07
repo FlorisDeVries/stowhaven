@@ -129,6 +129,5 @@ resource roleAssign 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   }
 }
 
-output dataStorageAccountName string = dataSa.name
-output containerName string = dataContainer.name
 output functionAppName string = funcApp.name
+output dataStorageAccountName string = dataSa.name

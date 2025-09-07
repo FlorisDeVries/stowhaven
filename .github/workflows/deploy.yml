@@ -53,13 +53,17 @@ jobs:
               -p nameSuffix=$NAME_SUFFIX \
               -p nameSuffixStr=$NAME_SUFFIX_STR \
               -p lifecycleArchiveAfterDays=30 \
-              --verbose; then
+              --verbose \
+              --name "deploy-$(date +%Y%m%d-%H%M%S)"; then
               echo "Deployment successful"
               break
             else
               echo "Deployment failed, waiting 30 seconds before retry..."
               if [ $i -lt 3 ]; then
                 sleep 30
+              else
+                echo "All deployment attempts failed"
+                exit 1
               fi
             fi
           done
@@ -67,14 +71,36 @@ jobs:
       - name: Resolve outputs
         id: outputs
         run: |
+          echo "Getting latest deployment..."
           LATEST_DEPLOYMENT=$(az deployment group list -g $RG_NAME --query "max_by([], &properties.timestamp).name" -o tsv)
-          OUT=$(az deployment group show -g $RG_NAME -n $LATEST_DEPLOYMENT -o json)
-          FUNC_NAME=$(echo $OUT | jq -r '.properties.outputs.functionAppName.value')
-          DATA_SA=$(echo $OUT | jq -r '.properties.outputs.dataStorageAccountName.value')
+          echo "Latest deployment: $LATEST_DEPLOYMENT"
+          
+          if [ -z "$LATEST_DEPLOYMENT" ] || [ "$LATEST_DEPLOYMENT" = "null" ]; then
+            echo "No deployment found, trying alternative approach..."
+            LATEST_DEPLOYMENT=$(az deployment group list -g $RG_NAME --query "[0].name" -o tsv)
+          fi
+          
+          echo "Getting deployment outputs..."
+          az deployment group show -g $RG_NAME -n $LATEST_DEPLOYMENT --query "properties.outputs" -o json
+          
+          FUNC_NAME=$(az deployment group show -g $RG_NAME -n $LATEST_DEPLOYMENT --query "properties.outputs.functionAppName.value" -o tsv)
+          DATA_SA=$(az deployment group show -g $RG_NAME -n $LATEST_DEPLOYMENT --query "properties.outputs.dataStorageAccountName.value" -o tsv)
+          
+          echo "Function App Name: $FUNC_NAME"
+          echo "Storage Account: $DATA_SA"
+          
+          if [ -z "$FUNC_NAME" ] || [ "$FUNC_NAME" = "null" ]; then
+            echo "ERROR: Function App name not found in deployment outputs"
+            exit 1
+          fi
+          
+          if [ -z "$DATA_SA" ] || [ "$DATA_SA" = "null" ]; then
+            echo "ERROR: Storage Account name not found in deployment outputs"
+            exit 1
+          fi
+          
           echo "FUNC_NAME=$FUNC_NAME" >> $GITHUB_ENV
           echo "DATA_SA=$DATA_SA" >> $GITHUB_ENV
-          echo "Function App: $FUNC_NAME"
-          echo "Storage Account: $DATA_SA"
 
       - name: Setup Python
         uses: actions/setup-python@v5
