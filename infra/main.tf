@@ -5,11 +5,18 @@ terraform {
       source  = "hashicorp/azurerm"
       version = "~> 3.0"
     }
+    azapi = {
+      source  = "Azure/azapi"
+      version = "~> 1.0"
+    }
   }
 }
 
 provider "azurerm" {
   features {}
+}
+
+provider "azapi" {
 }
 
 variable "location" {
@@ -58,7 +65,7 @@ resource "azurerm_storage_account" "data" {
 # Container for backups
 resource "azurerm_storage_container" "backups" {
   name                  = "backups"
-  storage_account_name  = azurerm_storage_account.data.name
+  storage_account_id    = azurerm_storage_account.data.id
   container_access_type = "private"
 }
 
@@ -168,16 +175,29 @@ resource "azurerm_linux_function_app" "main" {
 }
 
 # Role assignment for Function App to access data storage
-resource "azurerm_role_assignment" "function_storage_contributor" {
-  scope                = azurerm_storage_account.data.id
-  role_definition_name = "Storage Blob Data Contributor"
-  principal_id         = azurerm_linux_function_app.main.identity[0].principal_id
+resource "azapi_resource" "function_storage_contributor" {
+  type      = "Microsoft.Authorization/roleAssignments@2022-04-01"
+  name      = uuidv5("dns", "${azurerm_linux_function_app.main.identity[0].principal_id}-${azurerm_storage_account.data.id}")
+  parent_id = azurerm_storage_account.data.id
+
+  body = jsonencode({
+    properties = {
+      roleDefinitionId = "/subscriptions/${data.azurerm_client_config.current.subscription_id}/providers/Microsoft.Authorization/roleDefinitions/ba92f5b4-2d11-453d-a403-e96b0029c9fe"
+      principalId      = azurerm_linux_function_app.main.identity[0].principal_id
+      principalType    = "ServicePrincipal"
+    }
+  })
+
+  depends_on = [azurerm_linux_function_app.main]
 }
 
 # Data source for existing resource group
 data "azurerm_resource_group" "main" {
   name = "rg-fdev-weu-backup-prd"
 }
+
+# Data source for current Azure client config
+data "azurerm_client_config" "current" {}
 
 # Outputs
 output "function_app_name" {
