@@ -1,4 +1,4 @@
-name: Deploy Azure Function & Infra
+name: Deploy Azure Function & Infra with Terraform
 
 on:
   push:
@@ -13,6 +13,10 @@ env:
   RG_NAME: rg-fdev-weu-backup-prd
   NAME_SUFFIX: fdev-weu-prd
   NAME_SUFFIX_STR: fdevweuprd
+  TF_VAR_location: westeurope
+  TF_VAR_name_suffix: fdev-weu-prd
+  TF_VAR_name_suffix_str: fdevweuprd
+  TF_VAR_lifecycle_archive_after_days: 30
 
 jobs:
   infrastructure:
@@ -21,12 +25,18 @@ jobs:
       id-token: write
       contents: read
     outputs:
-      function-name: ${{ steps.get-outputs.outputs.function-name }}
-      storage-name: ${{ steps.get-outputs.outputs.storage-name }}
+      function-name: ${{ steps.terraform-output.outputs.function-name }}
+      storage-name: ${{ steps.terraform-output.outputs.storage-name }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.5.0"
+          terraform_wrapper: false
 
       - name: Azure Login
         uses: azure/login@v1
@@ -39,50 +49,33 @@ jobs:
         run: |
           az group create --name $RG_NAME --location $LOCATION || echo "Resource group may already exist"
 
-      - name: Compile Bicep to ARM
-        run: |
-          az bicep build --file infra/main.bicep --outfile infra/main.json
+      - name: Terraform Init
+        working-directory: infra
+        run: terraform init
 
-      - name: Deploy Infrastructure
+      - name: Terraform Plan
+        working-directory: infra
         run: |
-          DEPLOYMENT_NAME="infra-$(date +%Y%m%d-%H%M%S)"
-          echo "Deploying infrastructure with name: $DEPLOYMENT_NAME"
-          
-          # Deploy using compiled ARM template to avoid Bicep CLI issues
-          az deployment group create \
-            --resource-group $RG_NAME \
-            --template-file infra/main.json \
-            --parameters location="$LOCATION" \
-            --parameters nameSuffix="$NAME_SUFFIX" \
-            --parameters nameSuffixStr="$NAME_SUFFIX_STR" \
-            --parameters lifecycleArchiveAfterDays=30 \
-            --name "$DEPLOYMENT_NAME" \
-            --only-show-errors
+          terraform plan \
+            -var="location=$TF_VAR_location" \
+            -var="name_suffix=$TF_VAR_name_suffix" \
+            -var="name_suffix_str=$TF_VAR_name_suffix_str" \
+            -var="lifecycle_archive_after_days=$TF_VAR_lifecycle_archive_after_days" \
+            -out=tfplan
 
-      - name: Get deployment outputs
-        id: get-outputs
+      - name: Terraform Apply
+        working-directory: infra
+        run: terraform apply -auto-approve tfplan
+
+      - name: Get Terraform Outputs
+        id: terraform-output
+        working-directory: infra
         run: |
-          # Get the latest deployment
-          DEPLOYMENT_NAME=$(az deployment group list --resource-group $RG_NAME --query "max_by([], &properties.timestamp).name" --output tsv)
-          echo "Latest deployment: $DEPLOYMENT_NAME"
-          
-          # Get outputs with explicit queries
-          FUNC_NAME=$(az deployment group show --resource-group $RG_NAME --name "$DEPLOYMENT_NAME" --query "properties.outputs.functionAppName.value" --output tsv)
-          STORAGE_NAME=$(az deployment group show --resource-group $RG_NAME --name "$DEPLOYMENT_NAME" --query "properties.outputs.dataStorageAccountName.value" --output tsv)
+          FUNC_NAME=$(terraform output -raw function_app_name)
+          STORAGE_NAME=$(terraform output -raw data_storage_account_name)
           
           echo "Function App: $FUNC_NAME"
           echo "Storage Account: $STORAGE_NAME"
-          
-          # Validate outputs
-          if [ -z "$FUNC_NAME" ] || [ "$FUNC_NAME" = "null" ]; then
-            echo "ERROR: Function App name not found"
-            exit 1
-          fi
-          
-          if [ -z "$STORAGE_NAME" ] || [ "$STORAGE_NAME" = "null" ]; then
-            echo "ERROR: Storage Account name not found" 
-            exit 1
-          fi
           
           echo "function-name=$FUNC_NAME" >> $GITHUB_OUTPUT
           echo "storage-name=$STORAGE_NAME" >> $GITHUB_OUTPUT

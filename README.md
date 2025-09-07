@@ -28,7 +28,7 @@ A lightweight **Python Azure Function API** that issues **temporary SAS URLs** t
 
 ### 1. Prerequisites
 - **Azure CLI** (min. 2.57)
-- **Bicep CLI** (min. 0.24)
+- **Terraform** (min. 1.5.0)
 - **Python 3.11**
 - **Azure Functions Core Tools v4**
 - **GitHub CLI** (optional, for automated secret setup)
