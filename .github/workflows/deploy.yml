@@ -53,6 +53,28 @@ jobs:
         working-directory: infra
         run: terraform init
 
+      - name: Import Existing Resources
+        working-directory: infra
+        continue-on-error: true
+        run: |
+          # Import existing resources if they exist
+          echo "Importing existing resources..."
+          
+          # Import storage accounts
+          terraform import 'azurerm_storage_account.data' "/subscriptions/$AZURE_SUBSCRIPTION_ID/resourceGroups/$RG_NAME/providers/Microsoft.Storage/storageAccounts/stabackup$NAME_SUFFIX_STR" || echo "Data storage account not found or already imported"
+          terraform import 'azurerm_storage_account.function' "/subscriptions/$AZURE_SUBSCRIPTION_ID/resourceGroups/$RG_NAME/providers/Microsoft.Storage/storageAccounts/stafunc$NAME_SUFFIX_STR" || echo "Function storage account not found or already imported"
+          
+          # Import other resources
+          terraform import 'azurerm_application_insights.main' "/subscriptions/$AZURE_SUBSCRIPTION_ID/resourceGroups/$RG_NAME/providers/Microsoft.Insights/components/appi-$NAME_SUFFIX" || echo "Application Insights not found or already imported"
+          terraform import 'azurerm_service_plan.main' "/subscriptions/$AZURE_SUBSCRIPTION_ID/resourceGroups/$RG_NAME/providers/Microsoft.Web/serverFarms/plan-$NAME_SUFFIX" || echo "Service plan not found or already imported"
+          terraform import 'azurerm_linux_function_app.main' "/subscriptions/$AZURE_SUBSCRIPTION_ID/resourceGroups/$RG_NAME/providers/Microsoft.Web/sites/func-$NAME_SUFFIX" || echo "Function app not found or already imported"
+          
+          # Import storage container
+          terraform import 'azurerm_storage_container.backups' "https://stabackup$NAME_SUFFIX_STR.blob.core.windows.net/backups" || echo "Storage container not found or already imported"
+          
+          # Import management policy
+          terraform import 'azurerm_storage_management_policy.lifecycle' "/subscriptions/$AZURE_SUBSCRIPTION_ID/resourceGroups/$RG_NAME/providers/Microsoft.Storage/storageAccounts/stabackup$NAME_SUFFIX_STR/managementPolicies/default" || echo "Management policy not found or already imported"
+
       - name: Terraform Plan
         working-directory: infra
         run: |
