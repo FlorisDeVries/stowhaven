@@ -21,8 +21,8 @@ jobs:
       id-token: write
       contents: read
     outputs:
-      function-name: ${{ steps.deploy-infra.outputs.function-name }}
-      storage-name: ${{ steps.deploy-infra.outputs.storage-name }}
+      function-name: ${{ steps.deploy-arm.outputs.functionAppName }}
+      storage-name: ${{ steps.deploy-arm.outputs.dataStorageAccountName }}
 
     steps:
       - name: Checkout
@@ -39,31 +39,18 @@ jobs:
         run: |
           az group create --name $RG_NAME --location $LOCATION
 
-      - name: Deploy Infrastructure
-        id: deploy-infra
-        run: |
-          DEPLOYMENT_NAME="infra-$(date +%Y%m%d-%H%M%S)"
-          echo "Deploying with name: $DEPLOYMENT_NAME"
-          
-          az deployment group create \
-            --resource-group $RG_NAME \
-            --template-file infra/main.bicep \
-            --parameters location=$LOCATION \
-            --parameters nameSuffix=$NAME_SUFFIX \
-            --parameters nameSuffixStr=$NAME_SUFFIX_STR \
-            --parameters lifecycleArchiveAfterDays=30 \
-            --name $DEPLOYMENT_NAME \
-            --output json > deployment-output.json
-          
-          # Extract outputs
-          FUNC_NAME=$(jq -r '.properties.outputs.functionAppName.value' deployment-output.json)
-          STORAGE_NAME=$(jq -r '.properties.outputs.dataStorageAccountName.value' deployment-output.json)
-          
-          echo "Function App: $FUNC_NAME"
-          echo "Storage Account: $STORAGE_NAME"
-          
-          echo "function-name=$FUNC_NAME" >> $GITHUB_OUTPUT
-          echo "storage-name=$STORAGE_NAME" >> $GITHUB_OUTPUT
+      - name: Deploy ARM Template
+        id: deploy-arm
+        uses: azure/arm-deploy@v2
+        with:
+          subscriptionId: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          resourceGroupName: ${{ env.RG_NAME }}
+          template: ./infra/main.bicep
+          parameters: >
+            location=${{ env.LOCATION }}
+            nameSuffix=${{ env.NAME_SUFFIX }}
+            nameSuffixStr=${{ env.NAME_SUFFIX_STR }}
+            lifecycleArchiveAfterDays=30
 
   function:
     runs-on: ubuntu-latest
@@ -100,29 +87,14 @@ jobs:
           zip -r ../function-package.zip . -x "__pycache__/*" "*.pyc" "tests/*"
 
       - name: Deploy Function App
-        run: |
-          az functionapp deploy \
-            --resource-group $RG_NAME \
-            --name ${{ needs.infrastructure.outputs.function-name }} \
-            --src-path function-package.zip \
-            --type zip
+        uses: Azure/functions-action@v1
+        with:
+          app-name: ${{ needs.infrastructure.outputs.function-name }}
+          package: function-package.zip
 
       - name: Verify deployment
         run: |
           FUNC_NAME="${{ needs.infrastructure.outputs.function-name }}"
           echo "Function App: $FUNC_NAME"
           echo "Storage Account: ${{ needs.infrastructure.outputs.storage-name }}"
-          
-          # Wait for function to be ready
-          for i in {1..10}; do
-            STATE=$(az functionapp show -g $RG_NAME -n $FUNC_NAME --query "state" -o tsv)
-            echo "Function App state: $STATE"
-            if [ "$STATE" = "Running" ]; then
-              echo "Function App is running successfully"
-              break
-            fi
-            echo "Waiting for Function App to start... ($i/10)"
-            sleep 30
-          done
-          
           echo "Function App URL: https://$FUNC_NAME.azurewebsites.net"
