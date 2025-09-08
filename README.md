@@ -1,6 +1,13 @@
 # Azure Backup API
 
-A lightweight **.NET Azure Function API** that issues **temporary SAS URLs** to upload/download files to **Azure Blob Storage**, including:
+A lig### 1. Prerequisites
+- **Azure CLI** (min. 2.57)
+- **Terraform** (min. 1.5.0)
+- **.NET 9.0 SDK**
+- **Azure Functions Core Tools v4**
+- **GitHub CLI** (optional, for automated secret setup)
+
+> **Note**: The project uses .NET 9, but Terraform configuration specifies .NET 8.0 due to Azure RM provider limitations. Azure Functions v4 supports .NET 9 deployments regardless of this setting.ht **.NET Azure Function API** that issues **temporary SAS URLs** to upload/download files to **Azure Blob Storage**, including:
 - **Infrastructure as Code** with Terraform (Storage Account, Function App, Lifecycle rules, RBAC)
 - **CI/CD** via GitHub Actions (OIDC login, infra deployment, code deployment)
 - **Lifecycle policy**: automatically move blobs to Archive tier after 30 days of inactivity

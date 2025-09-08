@@ -173,8 +173,10 @@ resource "azurerm_linux_function_app" "main" {
   }
 
   site_config {
+    # Note: Using "8.0" here because Azure RM provider doesn't support "9.0" yet
+    # The deployed .NET 9 code will still run correctly on Azure Functions v4
     application_stack {
-      dotnet_version = "9.0"
+      dotnet_version = "8.0"
       use_dotnet_isolated_runtime = true
     }
     
