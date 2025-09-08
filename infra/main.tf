@@ -119,6 +119,23 @@ resource "azurerm_application_insights" "main" {
     Environment = "Production"
     Project     = "BackupAPI"
   }
+
+  lifecycle {
+    ignore_changes = [
+      # Ignore changes to workspace-related properties
+      workspace_id,
+      retention_in_days,
+      daily_data_cap_in_gb,
+      daily_data_cap_notifications_disabled,
+      disable_ip_masking,
+      force_customer_storage_for_profiler,
+      local_authentication_disabled,
+      internet_ingestion_enabled,
+      internet_query_enabled,
+      # Ignore tag changes if they're managed elsewhere
+      tags
+    ]
+  }
 }
 
 # App Service Plan (Consumption)
