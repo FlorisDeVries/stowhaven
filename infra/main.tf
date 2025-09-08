@@ -43,6 +43,12 @@ variable "lifecycle_archive_after_days" {
   default     = 30
 }
 
+variable "api_key" {
+  description = "API key for authenticating requests to the backup API"
+  type        = string
+  sensitive   = true
+}
+
 # Data storage account
 resource "azurerm_storage_account" "data" {
   name                     = "stabackup${var.name_suffix_str}"
@@ -168,7 +174,8 @@ resource "azurerm_linux_function_app" "main" {
 
   site_config {
     application_stack {
-      python_version = "3.11"
+      dotnet_version = "9.0"
+      use_dotnet_isolated_runtime = true
     }
     
     application_insights_connection_string = azurerm_application_insights.main.connection_string
@@ -177,10 +184,11 @@ resource "azurerm_linux_function_app" "main" {
 
   app_settings = {
     "FUNCTIONS_EXTENSION_VERSION"     = "~4"
-    "FUNCTIONS_WORKER_RUNTIME"        = "python"
+    "FUNCTIONS_WORKER_RUNTIME"        = "dotnet-isolated"
     "WEBSITE_RUN_FROM_PACKAGE"        = "1"
     "DATA_STORAGE_ACCOUNT"            = azurerm_storage_account.data.name
     "DATA_CONTAINER"                  = azurerm_storage_container.backups.name
+    "API_KEY"                         = var.api_key
   }
 
   https_only = true

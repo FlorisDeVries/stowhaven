@@ -1,35 +1,34 @@
 # Azure Backup API
 
-A lightweight **Python Azure Function API** that issues **temporary SAS URLs** to upload/download files to **Azure Blob Storage**, including:
-- **Infrastructure as Code** with Bicep (Storage Account, Function App, Lifecycle rules, RBAC)
+A lightweight **.NET Azure Function API** that issues **temporary SAS URLs** to upload/download files to **Azure Blob Storage**, including:
+- **Infrastructure as Code** with Terraform (Storage Account, Function App, Lifecycle rules, RBAC)
 - **CI/CD** via GitHub Actions (OIDC login, infra deployment, code deployment)
 - **Lifecycle policy**: automatically move blobs to Archive tier after 30 days of inactivity
 
 ## 📂 Project Structure
 
 ```
-
 .
-├── api/                    # Python Azure Function code
-│   ├── get\_sas/            # Function: generate SAS URLs
-│   │   └── **init**.py
+├── api/                    # .NET Azure Function code
+│   ├── SasUrlFunctions.cs  # Function: generate SAS URLs
+│   ├── Program.cs          # Function App entry point
+│   ├── BackupApi.csproj    # .NET project file
 │   ├── host.json
-│   └── requirements.txt
-├── infra/                  # Bicep templates for Azure resources
-│   └── main.bicep
+│   └── local.settings.json
+├── infra/                  # Terraform templates for Azure resources
+│   └── main.tf
 ├── .github/workflows/      # GitHub Actions pipelines
 │   └── deploy.yml
 ├── .gitignore
 ├── README.md
-
-````
+```
 
 ## 🚀 Deployment
 
 ### 1. Prerequisites
 - **Azure CLI** (min. 2.57)
 - **Terraform** (min. 1.5.0)
-- **Python 3.11**
+- **.NET 9.0 SDK**
 - **Azure Functions Core Tools v4**
 - **GitHub CLI** (optional, for automated secret setup)
 
@@ -109,8 +108,7 @@ az group create -n rg-backup-archive -l westeurope
 
 ```bash
 cd api
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+dotnet restore
 func start
 ```
 

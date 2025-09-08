@@ -18,6 +18,7 @@ env:
   TF_VAR_name_suffix: fdev-weu-prd
   TF_VAR_name_suffix_str: fdevweuprd
   TF_VAR_lifecycle_archive_after_days: 30
+  TF_VAR_api_key: ${{ secrets.API_KEY }}
 
 jobs:
   infrastructure:
@@ -85,6 +86,7 @@ jobs:
           -var="name_suffix=$TF_VAR_name_suffix" \
           -var="name_suffix_str=$TF_VAR_name_suffix_str" \
           -var="lifecycle_archive_after_days=$TF_VAR_lifecycle_archive_after_days" \
+          -var="api_key=$TF_VAR_api_key" \
           -out=tfplan
 
     - name: Terraform Apply
@@ -122,27 +124,28 @@ jobs:
         tenant-id: ${{ secrets.AZURE_TENANT_ID }}
         subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-    - name: Setup Python
-      uses: actions/setup-python@v5
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
       with:
-        python-version: '3.11'
+        dotnet-version: '9.0.x'
 
-    - name: Install dependencies
+    - name: Restore dependencies
       working-directory: api
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt -t .python_packages/lib/site-packages
+      run: dotnet restore
 
-    - name: Build package
+    - name: Build project
       working-directory: api
-      run: |
-        zip -r ../function-package.zip . -x "__pycache__/*" "*.pyc" "tests/*"
+      run: dotnet build --no-restore --configuration Release
+
+    - name: Publish project
+      working-directory: api
+      run: dotnet publish --no-build --configuration Release --output ./publish
 
     - name: Deploy Function App
       uses: Azure/functions-action@v1
       with:
         app-name: ${{ needs.infrastructure.outputs.function-name }}
-        package: function-package.zip
+        package: api/publish
 
     - name: Verify deployment
       run: |

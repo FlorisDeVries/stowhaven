@@ -1,23 +1,35 @@
-# Python
-__pycache__/
-*.py[cod]
-*.pyo
-*.pyd
-.Python
-.env
-.venv
-venv/
-ENV/
-env/
-pip-wheel-metadata/
-*.egg-info/
+# .NET / C#
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+[Rr]eleases/
+x64/
+x86/
+[Ww][Ii][Nn]32/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+
+# User-specific files
+*.rsuser
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Visual Studio
+.vs/
 
 # VS Code
 .vscode/
 .history/
 
 # Azure Functions
-.local.settings.json
+local.settings.json
 .python_packages/
 
 # OS-specific
@@ -28,12 +40,12 @@ Thumbs.db
 *.zip
 *.log
 
-# Pytest / coverage
-.coverage
-htmlcov/
-.pytest_cache/
-
 # GitHub Actions
 *.secrets
-local.settings.json
 .env.local
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl

@@ -1,13 +1,13 @@
 # GitHub Copilot Instructions
 
-This project is an **Azure Backup API** in Python with IaC (Terraform) and CI/CD via GitHub Actions.
+This project is an **Azure Backup API** in .NET with IaC (Terraform) and CI/CD via GitHub Actions.
 
 ## Purpose of the codebase
-- **Python Azure Function** that issues SAS URLs (upload/download) for Blob Storage.
+- **.NET Azure Function** that issues SAS URLs (upload/download) for Blob Storage.
 - **Terraform configuration** for:
   - Storage Account (LRS, Cool tier, lifecycle → Archive)
   - Container `backups`
-  - Function App (Linux, Python 3.11, Consumption)
+  - Function App (Linux, .NET 8.0, Consumption)
   - Managed Identity + RBAC
   - Remote state backend in Azure Storage
 - **GitHub Actions** pipeline:
@@ -16,10 +16,12 @@ This project is an **Azure Backup API** in Python with IaC (Terraform) and CI/CD
   - Deploy Function code
 
 ## Style & guidelines
-- Python code:
-  - Use type hints
-  - Follow Flake8 / PEP8 style
-  - Use logging instead of print statements
+- .NET code:
+  - Use C# 12 features and nullable reference types
+  - Follow Microsoft coding conventions
+  - Use structured logging with ILogger
+  - Prefer async/await patterns
+  - Use dependency injection where appropriate
 - Terraform code:
   - Use variables for location, name suffixes, lifecycle days
   - Resource names in lower-case with consistent naming convention
@@ -31,7 +33,7 @@ This project is an **Azure Backup API** in Python with IaC (Terraform) and CI/CD
 - Always use `--recursive` for AzCopy directory uploads
 
 ## Copilot tips
-- For Python Functions: provide examples of request payloads & responses.
+- For .NET Functions: provide examples of request payloads & responses.
 - For Terraform: suggest using `depends_on` for explicit resource dependencies.
 - For GitHub Actions: keep jobs small and reuse secrets through `env`.
 - For authentication: prefer managed identity over connection strings when possible.
