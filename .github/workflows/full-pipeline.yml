@@ -94,8 +94,7 @@ jobs:
       pull-requests: write
 
   deploy:
-    needs: [infrastructure, build]
-    if: always() && needs.build.result == 'success'
+    needs: [build]
     uses: ./.github/workflows/deploy.yml
     permissions:
       id-token: write
