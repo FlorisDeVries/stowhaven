@@ -35,6 +35,9 @@ jobs:
   infrastructure:
     if: github.event.inputs.skip_infrastructure != 'true'
     uses: ./.github/workflows/infrastructure.yml
+    permissions:
+      id-token: write
+      contents: read
     secrets: inherit
 
   build:
@@ -45,6 +48,10 @@ jobs:
     needs: [infrastructure, build]
     if: always() && (needs.build.result == 'success' || github.event.inputs.skip_build == 'true')
     uses: ./.github/workflows/deploy.yml
+    permissions:
+      id-token: write
+      contents: read
+      actions: read
     with:
       build_number: ${{ github.event.inputs.build_number || github.run_number }}
     secrets: inherit
