@@ -52,16 +52,26 @@ jobs:
           echo "api=${{ github.event.inputs.skip_build != 'true' }}" >> $GITHUB_OUTPUT
         else
           # For push events, check which files changed
-          if git diff --name-only HEAD~1 HEAD | grep -E '^infra/|^\.github/workflows/infrastructure\.yml' > /dev/null; then
-            echo "infra=true" >> $GITHUB_OUTPUT
-          else
-            echo "infra=false" >> $GITHUB_OUTPUT
-          fi
+          changed_files=$(git diff --name-only HEAD~1 HEAD)
           
-          if git diff --name-only HEAD~1 HEAD | grep -E '^api/|^\.github/workflows/build\.yml' > /dev/null; then
+          # Check if any workflow files changed - if so, run everything
+          if echo "$changed_files" | grep -E '^\.github/workflows/.*\.yml$' > /dev/null; then
+            echo "Workflow files changed - running all steps"
+            echo "infra=true" >> $GITHUB_OUTPUT
             echo "api=true" >> $GITHUB_OUTPUT
           else
-            echo "api=false" >> $GITHUB_OUTPUT
+            # Check specific component changes
+            if echo "$changed_files" | grep -E '^infra/' > /dev/null; then
+              echo "infra=true" >> $GITHUB_OUTPUT
+            else
+              echo "infra=false" >> $GITHUB_OUTPUT
+            fi
+            
+            if echo "$changed_files" | grep -E '^api/' > /dev/null; then
+              echo "api=true" >> $GITHUB_OUTPUT
+            else
+              echo "api=false" >> $GITHUB_OUTPUT
+            fi
           fi
         fi
 
