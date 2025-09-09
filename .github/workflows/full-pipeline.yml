@@ -32,8 +32,42 @@ env:
   AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
 
 jobs:
+  check-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      infra: ${{ steps.changes.outputs.infra }}
+      api: ${{ steps.changes.outputs.api }}
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Check for changes
+      id: changes
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          # For manual triggers, check inputs
+          echo "infra=${{ github.event.inputs.skip_infrastructure != 'true' }}" >> $GITHUB_OUTPUT
+          echo "api=${{ github.event.inputs.skip_build != 'true' }}" >> $GITHUB_OUTPUT
+        else
+          # For push events, check which files changed
+          if git diff --name-only HEAD~1 HEAD | grep -E '^infra/|^\.github/workflows/infrastructure\.yml' > /dev/null; then
+            echo "infra=true" >> $GITHUB_OUTPUT
+          else
+            echo "infra=false" >> $GITHUB_OUTPUT
+          fi
+          
+          if git diff --name-only HEAD~1 HEAD | grep -E '^api/|^\.github/workflows/build\.yml' > /dev/null; then
+            echo "api=true" >> $GITHUB_OUTPUT
+          else
+            echo "api=false" >> $GITHUB_OUTPUT
+          fi
+        fi
+
   infrastructure:
-    if: github.event.inputs.skip_infrastructure != 'true'
+    needs: check-changes
+    if: needs.check-changes.outputs.infra == 'true'
     uses: ./.github/workflows/infrastructure.yml
     permissions:
       id-token: write
@@ -41,7 +75,8 @@ jobs:
     secrets: inherit
 
   build:
-    if: github.event.inputs.skip_build != 'true'
+    needs: check-changes
+    if: needs.check-changes.outputs.api == 'true'
     uses: ./.github/workflows/build.yml
     permissions:
       contents: read
@@ -49,8 +84,8 @@ jobs:
       pull-requests: write
 
   deploy:
-    needs: [infrastructure, build]
-    if: always() && (needs.build.result == 'success' || github.event.inputs.skip_build == 'true')
+    needs: [check-changes, infrastructure, build]
+    if: always() && (needs.build.result == 'success' || (needs.check-changes.outputs.api == 'false' && github.event.inputs.build_number != ''))
     uses: ./.github/workflows/deploy.yml
     permissions:
       id-token: write

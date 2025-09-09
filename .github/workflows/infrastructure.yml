@@ -1,11 +1,6 @@
 name: Infrastructure
 
 on:
-  push:
-    branches: [ main ]
-    paths:
-      - 'infra/**'
-      - '.github/workflows/infrastructure.yml'
   workflow_dispatch:
     inputs:
       destroy:
