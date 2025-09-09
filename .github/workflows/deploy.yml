@@ -43,7 +43,6 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
-    environment: ${{ github.event.inputs.environment || 'production' }}
     permissions:
       id-token: write
       contents: read
@@ -135,7 +134,7 @@ jobs:
     - name: Create deployment summary
       run: |
         echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
-        echo "- **Environment**: ${{ github.event.inputs.environment || 'production' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Environment**: production" >> $GITHUB_STEP_SUMMARY
         echo "- **Build Number**: ${{ steps.build-info.outputs.build-number }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Function App**: $FUNCTION_APP_NAME" >> $GITHUB_STEP_SUMMARY
         echo "- **Resource Group**: $RG_NAME" >> $GITHUB_STEP_SUMMARY
