@@ -95,7 +95,7 @@ jobs:
 
   deploy:
     needs: [check-changes, infrastructure, build]
-    if: always() && (needs.build.result == 'success' || (needs.check-changes.outputs.api == 'false' && github.event.inputs.build_number != ''))
+    if: always() && (needs.build.result == 'success' || (needs.build.result == 'skipped' && github.event.inputs.build_number != ''))
     uses: ./.github/workflows/deploy.yml
     permissions:
       id-token: write
