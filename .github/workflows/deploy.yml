@@ -141,11 +141,39 @@ jobs:
       working-directory: api
       run: dotnet publish --no-build --configuration Release --output ./publish
 
+    - name: Clean deployment package
+      working-directory: api/publish
+      run: |
+        # Remove any potential Python artifacts that might interfere
+        find . -name "*.py" -delete || true
+        find . -name "*.pyc" -delete || true
+        find . -name "__pycache__" -type d -exec rm -rf {} + || true
+        find . -name "requirements.txt" -delete || true
+        
+        # Verify we have the essential .NET files
+        ls -la
+        echo "Checking for essential .NET files:"
+        ls -la *.dll || echo "No DLL files found - this might be an issue"
+        ls -la host.json || echo "No host.json found - this might be an issue"
+
     - name: Deploy Function App
       uses: Azure/functions-action@v1
       with:
         app-name: ${{ needs.infrastructure.outputs.function-name }}
         package: api/publish
+        respect-funcignore: true
+
+    - name: Post-deployment cleanup and restart
+      run: |
+        FUNC_NAME="${{ needs.infrastructure.outputs.function-name }}"
+        echo "Restarting Function App to ensure clean state..."
+        az functionapp restart --name $FUNC_NAME --resource-group $RG_NAME
+        
+        # Wait a moment for restart
+        sleep 30
+        
+        # Check function app status
+        az functionapp show --name $FUNC_NAME --resource-group $RG_NAME --query "state" -o tsv
 
     - name: Verify deployment
       run: |

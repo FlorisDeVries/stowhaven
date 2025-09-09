@@ -204,6 +204,9 @@ resource "azurerm_linux_function_app" "main" {
     "DATA_STORAGE_ACCOUNT"            = azurerm_storage_account.data.name
     "DATA_CONTAINER"                  = azurerm_storage_container.backups.name
     "API_KEY"                         = var.api_key
+    # Explicitly prevent Python runtime confusion
+    "WEBSITE_DISABLE_MSI"             = "false"
+    "SCM_DO_BUILD_DURING_DEPLOYMENT"  = "false"
   }
 
   https_only = true
