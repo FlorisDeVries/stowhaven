@@ -1,0 +1,50 @@
+name: Full Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      skip_infrastructure:
+        description: 'Skip infrastructure deployment'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      skip_build:
+        description: 'Skip build (use existing artifact)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      build_number:
+        description: 'Build number to use (if skipping build)'
+        required: false
+        type: string
+
+env:
+  AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+
+jobs:
+  infrastructure:
+    if: github.event.inputs.skip_infrastructure != 'true'
+    uses: ./.github/workflows/infrastructure.yml
+    secrets: inherit
+
+  build:
+    if: github.event.inputs.skip_build != 'true'
+    uses: ./.github/workflows/build.yml
+
+  deploy:
+    needs: [infrastructure, build]
+    if: always() && (needs.build.result == 'success' || github.event.inputs.skip_build == 'true')
+    uses: ./.github/workflows/deploy.yml
+    with:
+      build_number: ${{ github.event.inputs.build_number || github.run_number }}
+    secrets: inherit

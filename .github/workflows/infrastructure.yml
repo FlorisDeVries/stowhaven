@@ -1,0 +1,148 @@
+name: Infrastructure
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'infra/**'
+      - '.github/workflows/infrastructure.yml'
+  workflow_dispatch:
+    inputs:
+      destroy:
+        description: 'Destroy infrastructure'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+  workflow_call:
+    inputs:
+      destroy:
+        description: 'Destroy infrastructure'
+        required: false
+        default: 'false'
+        type: string
+
+env:
+  AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  LOCATION: westeurope
+  RG_NAME: rg-fdev-weu-backup-prd
+  NAME_SUFFIX: fdev-weu-prd
+  NAME_SUFFIX_STR: fdevweuprd
+  TF_VAR_location: westeurope
+  TF_VAR_name_suffix: fdev-weu-prd
+  TF_VAR_name_suffix_str: fdevweuprd
+  TF_VAR_lifecycle_archive_after_days: 30
+  TF_VAR_log_analytics_retention_days: 30
+  TF_VAR_log_analytics_daily_quota_gb: 1
+  TF_VAR_api_key: ${{ secrets.API_KEY }}
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      function-name: ${{ steps.terraform-output.outputs.function-name }}
+      storage-name: ${{ steps.terraform-output.outputs.storage-name }}
+      function-url: ${{ steps.terraform-output.outputs.function-url }}
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: "1.5.0"
+        terraform_wrapper: false
+
+    - name: Azure Login
+      uses: azure/login@v2
+      with:
+        client-id: ${{ secrets.AZURE_CLIENT_ID }}
+        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+    - name: Create Resource Group
+      run: |
+        az group create --name $RG_NAME --location $LOCATION
+
+    - name: Setup Terraform State Storage
+      run: |
+        # Create storage account for Terraform state
+        az storage account create \
+          --name "staterraform$NAME_SUFFIX_STR" \
+          --resource-group $RG_NAME \
+          --location $LOCATION \
+          --sku Standard_LRS \
+          --kind StorageV2 \
+          --allow-blob-public-access false \
+          --min-tls-version TLS1_2 || echo "State storage account may already exist"
+
+        # Create container for state files
+        az storage container create \
+          --name tfstate \
+          --account-name "staterraform$NAME_SUFFIX_STR" \
+          --auth-mode login || echo "State container may already exist"
+
+    - name: Terraform Init
+      working-directory: infra
+      run: |
+        terraform init \
+          -backend-config="subscription_id=$AZURE_SUBSCRIPTION_ID" \
+          -backend-config="tenant_id=$AZURE_TENANT_ID" \
+          -backend-config="client_id=$AZURE_CLIENT_ID" \
+          -backend-config="use_oidc=true"
+
+    - name: Terraform Plan
+      working-directory: infra
+      run: |
+        terraform plan \
+          -var="location=$TF_VAR_location" \
+          -var="name_suffix=$TF_VAR_name_suffix" \
+          -var="name_suffix_str=$TF_VAR_name_suffix_str" \
+          -var="lifecycle_archive_after_days=$TF_VAR_lifecycle_archive_after_days" \
+          -var="log_analytics_retention_days=$TF_VAR_log_analytics_retention_days" \
+          -var="log_analytics_daily_quota_gb=$TF_VAR_log_analytics_daily_quota_gb" \
+          -var="api_key=$TF_VAR_api_key" \
+          -out=tfplan
+
+    - name: Terraform Apply
+      if: github.event.inputs.destroy != 'true'
+      working-directory: infra
+      run: terraform apply -auto-approve tfplan
+
+    - name: Terraform Destroy
+      if: github.event.inputs.destroy == 'true'
+      working-directory: infra
+      run: |
+        terraform destroy -auto-approve \
+          -var="location=$TF_VAR_location" \
+          -var="name_suffix=$TF_VAR_name_suffix" \
+          -var="name_suffix_str=$TF_VAR_name_suffix_str" \
+          -var="lifecycle_archive_after_days=$TF_VAR_lifecycle_archive_after_days" \
+          -var="log_analytics_retention_days=$TF_VAR_log_analytics_retention_days" \
+          -var="log_analytics_daily_quota_gb=$TF_VAR_log_analytics_daily_quota_gb" \
+          -var="api_key=$TF_VAR_api_key"
+
+    - name: Get Terraform Outputs
+      if: github.event.inputs.destroy != 'true'
+      id: terraform-output
+      working-directory: infra
+      run: |
+        FUNC_NAME=$(terraform output -raw function_app_name)
+        STORAGE_NAME=$(terraform output -raw data_storage_account_name)
+        FUNC_URL=$(terraform output -raw function_app_url)
+
+        echo "Function App: $FUNC_NAME"
+        echo "Storage Account: $STORAGE_NAME"
+        echo "Function App URL: $FUNC_URL"
+
+        echo "function-name=$FUNC_NAME" >> $GITHUB_OUTPUT
+        echo "storage-name=$STORAGE_NAME" >> $GITHUB_OUTPUT
+        echo "function-url=$FUNC_URL" >> $GITHUB_OUTPUT

@@ -1,0 +1,78 @@
+name: Build
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'api/**'
+      - '.github/workflows/build.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'api/**'
+  workflow_dispatch:
+  workflow_call:
+
+env:
+  DOTNET_VERSION: '9.0.x'
+  BUILD_CONFIGURATION: 'Release'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+
+    - name: Restore dependencies
+      working-directory: api
+      run: dotnet restore
+
+    - name: Build project
+      working-directory: api
+      run: dotnet build --no-restore --configuration ${{ env.BUILD_CONFIGURATION }}
+
+    - name: Run tests
+      working-directory: tests
+      run: dotnet test --no-build --configuration ${{ env.BUILD_CONFIGURATION }} --logger trx --results-directory TestResults
+
+    - name: Publish test results
+      uses: dorny/test-reporter@v1
+      if: always()
+      with:
+        name: .NET Tests
+        path: tests/TestResults/*.trx
+        reporter: dotnet-trx
+
+    - name: Publish application
+      working-directory: api
+      run: dotnet publish --no-build --configuration ${{ env.BUILD_CONFIGURATION }} --output ./publish
+
+    - name: Create build info
+      run: |
+        echo "Build Information" > build-info.txt
+        echo "Commit SHA: ${{ github.sha }}" >> build-info.txt
+        echo "Branch: ${{ github.ref_name }}" >> build-info.txt
+        echo "Build Number: ${{ github.run_number }}" >> build-info.txt
+        echo "Build Date: $(date -u)" >> build-info.txt
+        cp build-info.txt api/publish/
+
+    - name: Upload build artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: function-app-${{ github.run_number }}
+        path: api/publish
+        retention-days: 30
+
+    - name: Upload build info
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-info-${{ github.run_number }}
+        path: build-info.txt
+        retention-days: 30

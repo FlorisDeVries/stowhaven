@@ -105,13 +105,60 @@ az role assignment list \
 ### 2. Create a Resource Group
 ```bash
 az group create -n rg-backup-archive -l westeurope
-````
+```
 
-### 3. Deployment via GitHub Actions
+### 3. Pipeline Structure
+
+This project uses separate build and release pipelines for better organization:
+
+#### 🏗️ **Build Pipeline** (`.github/workflows/build.yml`)
+- Triggers on: Push to `main`/`develop`, PRs to `main`
+- Builds and tests the .NET application
+- Creates versioned artifacts
+- Runs on every code change
+
+#### 🏭 **Infrastructure Pipeline** (`.github/workflows/infrastructure.yml`)
+- Triggers on: Changes to `infra/` folder
+- Deploys/updates Azure resources via Terraform
+- Can be run manually with destroy option
+- Independent of application code
+
+#### 🚀 **Deploy Pipeline** (`.github/workflows/deploy.yml`)
+- Triggers automatically after successful build
+- Downloads build artifacts and deploys to Azure Functions
+- Can deploy any previous build artifact
+- Supports manual deployment with artifact selection
+
+#### 🔄 **Full Pipeline** (`.github/workflows/full-pipeline.yml`)
+- Orchestrates all pipelines together
+- Good for complete deployments
+- Allows skipping individual steps
+
+**Usage Examples:**
+```bash
+# Deploy latest code (auto-triggers on push to main)
+git push origin main
+
+# Deploy specific build to staging
+# Use GitHub UI: Actions → Deploy → Run workflow
+# - Environment: staging
+# - Build number: 42
+
+# Update only infrastructure
+# Use GitHub UI: Actions → Infrastructure → Run workflow
+
+# Emergency rollback
+# Use GitHub UI: Actions → Deploy → Run workflow  
+# - Build number: 35 (previous working build)
+```
+
+### 4. Legacy Single Pipeline
+
+The old monolithic pipeline is still available in `deploy.yml.old` but is not recommended for production use.
 
 * Push to the `main` branch → triggers infra + code deployment automatically.
 
-### 4. Local Testing
+### 5. Local Testing
 
 ```bash
 cd api

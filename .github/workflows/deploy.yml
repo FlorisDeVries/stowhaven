@@ -1,121 +1,92 @@
-name: Deploy Azure Function & Infra with Terraform
+name: Deploy
 
 on:
-  push:
+  workflow_run:
+    workflows: ["Build"]
+    types:
+      - completed
     branches: [ main ]
   workflow_dispatch:
-
+    inputs:
+      build_number:
+        description: 'Build number to deploy (leave empty for latest)'
+        required: false
+        type: string
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - 'production'
+          - 'staging'
+  workflow_call:
+    inputs:
+      build_number:
+        description: 'Build number to deploy'
+        required: false
+        type: string
+      environment:
+        description: 'Environment to deploy to'
+        required: false
+        default: 'production'
+        type: string
 
 env:
   AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
   AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
   AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-  LOCATION: westeurope
   RG_NAME: rg-fdev-weu-backup-prd
-  NAME_SUFFIX: fdev-weu-prd
-  NAME_SUFFIX_STR: fdevweuprd
-  TF_VAR_location: westeurope
-  TF_VAR_name_suffix: fdev-weu-prd
-  TF_VAR_name_suffix_str: fdevweuprd
-  TF_VAR_lifecycle_archive_after_days: 30
-  TF_VAR_api_key: ${{ secrets.API_KEY }}
+  FUNCTION_APP_NAME: func-fdev-weu-prd
 
 jobs:
-  infrastructure:
+  deploy:
     runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    environment: ${{ github.event.inputs.environment || 'production' }}
     permissions:
       id-token: write
       contents: read
-    outputs:
-      function-name: ${{ steps.terraform-output.outputs.function-name }}
-      storage-name: ${{ steps.terraform-output.outputs.storage-name }}
+      actions: read
 
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
+    - name: Determine build number
+      id: build-info
+      run: |
+        if [ "${{ github.event.inputs.build_number }}" != "" ]; then
+          BUILD_NUMBER="${{ github.event.inputs.build_number }}"
+        else
+          # Get the latest successful build
+          BUILD_NUMBER="${{ github.event.workflow_run.run_number || github.run_number }}"
+        fi
+        echo "Using build number: $BUILD_NUMBER"
+        echo "build-number=$BUILD_NUMBER" >> $GITHUB_OUTPUT
 
-    - name: Setup Terraform
-      uses: hashicorp/setup-terraform@v3
+    - name: Download build artifact
+      uses: actions/download-artifact@v4
       with:
-        terraform_version: "1.5.0"
-        terraform_wrapper: false
+        name: function-app-${{ steps.build-info.outputs.build-number }}
+        path: ./publish
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        repository: ${{ github.repository }}
+        run-id: ${{ github.event.workflow_run.id }}
 
-    - name: Azure Login
-      uses: azure/login@v1
+    - name: Download build info
+      uses: actions/download-artifact@v4
       with:
-        client-id: ${{ secrets.AZURE_CLIENT_ID }}
-        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        name: build-info-${{ steps.build-info.outputs.build-number }}
+        path: ./
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        repository: ${{ github.repository }}
+        run-id: ${{ github.event.workflow_run.id }}
 
-    - name: Create Resource Group
+    - name: Display build information
       run: |
-        az group create --name $RG_NAME --location $LOCATION
-
-    - name: Setup Terraform State Storage
-      run: |
-        # Create storage account for Terraform state
-        az storage account create \
-          --name "staterraform$NAME_SUFFIX_STR" \
-          --resource-group $RG_NAME \
-          --location $LOCATION \
-          --sku Standard_LRS \
-          --kind StorageV2 \
-          --allow-blob-public-access false \
-          --min-tls-version TLS1_2 || echo "State storage account may already exist"
-
-        # Create container for state files
-        az storage container create \
-          --name tfstate \
-          --account-name "staterraform$NAME_SUFFIX_STR" \
-          --auth-mode login || echo "State container may already exist"
-
-    - name: Terraform Init
-      working-directory: infra
-      run: |
-        terraform init \
-          -backend-config="subscription_id=$AZURE_SUBSCRIPTION_ID" \
-          -backend-config="tenant_id=$AZURE_TENANT_ID" \
-          -backend-config="client_id=$AZURE_CLIENT_ID" \
-          -backend-config="use_oidc=true"
-
-    - name: Terraform Plan
-      working-directory: infra
-      run: |
-        terraform plan \
-          -var="location=$TF_VAR_location" \
-          -var="name_suffix=$TF_VAR_name_suffix" \
-          -var="name_suffix_str=$TF_VAR_name_suffix_str" \
-          -var="lifecycle_archive_after_days=$TF_VAR_lifecycle_archive_after_days" \
-          -var="api_key=$TF_VAR_api_key" \
-          -out=tfplan
-
-    - name: Terraform Apply
-      working-directory: infra
-      run: terraform apply -auto-approve tfplan
-
-    - name: Get Terraform Outputs
-      id: terraform-output
-      working-directory: infra
-      run: |
-        FUNC_NAME=$(terraform output -raw function_app_name)
-        STORAGE_NAME=$(terraform output -raw data_storage_account_name)
-
-        echo "Function App: $FUNC_NAME"
-        echo "Storage Account: $STORAGE_NAME"
-
-        echo "function-name=$FUNC_NAME" >> $GITHUB_OUTPUT
-        echo "storage-name=$STORAGE_NAME" >> $GITHUB_OUTPUT
-
-  function:
-    runs-on: ubuntu-latest
-    needs: infrastructure
-    permissions:
-      id-token: write
-      contents: read
-
-    steps:
-    - name: Checkout
-      uses: actions/checkout@v4
+        echo "Deploying build artifact:"
+        cat build-info.txt
+        echo ""
+        echo "Artifact contents:"
+        ls -la publish/
 
     - name: Azure Login
       uses: azure/login@v2
@@ -124,60 +95,53 @@ jobs:
         tenant-id: ${{ secrets.AZURE_TENANT_ID }}
         subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-    - name: Setup .NET
-      uses: actions/setup-dotnet@v4
-      with:
-        dotnet-version: '9.0.x'
-
-    - name: Restore dependencies
-      working-directory: api
-      run: dotnet restore
-
-    - name: Build project
-      working-directory: api
-      run: dotnet build --no-restore --configuration Release
-
-    - name: Publish project
-      working-directory: api
-      run: dotnet publish --no-build --configuration Release --output ./publish
-
-    - name: Clean deployment package
-      working-directory: api/publish
+    - name: Check Function App exists
       run: |
-        # Remove any potential Python artifacts that might interfere
-        find . -name "*.py" -delete || true
-        find . -name "*.pyc" -delete || true
-        find . -name "__pycache__" -type d -exec rm -rf {} + || true
-        find . -name "requirements.txt" -delete || true
-        
-        # Verify we have the essential .NET files
-        ls -la
-        echo "Checking for essential .NET files:"
-        ls -la *.dll || echo "No DLL files found - this might be an issue"
-        ls -la host.json || echo "No host.json found - this might be an issue"
+        if ! az functionapp show --name $FUNCTION_APP_NAME --resource-group $RG_NAME >/dev/null 2>&1; then
+          echo "❌ Function App $FUNCTION_APP_NAME not found in resource group $RG_NAME"
+          echo "Please run the Infrastructure pipeline first to create the resources."
+          exit 1
+        fi
+        echo "✅ Function App $FUNCTION_APP_NAME found"
 
     - name: Deploy Function App
       uses: Azure/functions-action@v1
       with:
-        app-name: ${{ needs.infrastructure.outputs.function-name }}
-        package: api/publish
-        respect-funcignore: true
+        app-name: ${{ env.FUNCTION_APP_NAME }}
+        package: ./publish
 
-    - name: Post-deployment cleanup and restart
+    - name: Post-deployment verification
       run: |
-        FUNC_NAME="${{ needs.infrastructure.outputs.function-name }}"
         echo "Restarting Function App to ensure clean state..."
-        az functionapp restart --name $FUNC_NAME --resource-group $RG_NAME
+        az functionapp restart --name $FUNCTION_APP_NAME --resource-group $RG_NAME
         
-        # Wait a moment for restart
+        # Wait for restart
         sleep 30
         
         # Check function app status
-        az functionapp show --name $FUNC_NAME --resource-group $RG_NAME --query "state" -o tsv
+        STATUS=$(az functionapp show --name $FUNCTION_APP_NAME --resource-group $RG_NAME --query "state" -o tsv)
+        echo "Function App status: $STATUS"
+        
+        if [ "$STATUS" != "Running" ]; then
+          echo "⚠️  Function App is not in Running state"
+        else
+          echo "✅ Function App is running"
+        fi
+        
+        # Get the function app URL
+        URL=$(az functionapp show --name $FUNCTION_APP_NAME --resource-group $RG_NAME --query "defaultHostName" -o tsv)
+        echo "Function App URL: https://$URL"
 
-    - name: Verify deployment
+    - name: Create deployment summary
       run: |
-        FUNC_NAME="${{ needs.infrastructure.outputs.function-name }}"
-        echo "Function App: $FUNC_NAME"
-        echo "Storage Account: ${{ needs.infrastructure.outputs.storage-name }}"
-        echo "Function App URL: https://$FUNC_NAME.azurewebsites.net"
+        echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
+        echo "- **Environment**: ${{ github.event.inputs.environment || 'production' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Build Number**: ${{ steps.build-info.outputs.build-number }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Function App**: $FUNCTION_APP_NAME" >> $GITHUB_STEP_SUMMARY
+        echo "- **Resource Group**: $RG_NAME" >> $GITHUB_STEP_SUMMARY
+        echo "- **Deployment Time**: $(date -u)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Build Information" >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        cat build-info.txt >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
