@@ -2,6 +2,8 @@
 Microsoft Visual Studio Solution File, Format Version 12.00
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FlorisDeV.BackupApi", "api\FlorisDeV.BackupApi.csproj", "{657470D8-AB2F-4798-8B89-0282724455F3}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "BackupApi.Tests", "tests\BackupApi.Tests.csproj", "{2991D28D-F94D-4D29-8CE0-52BD8A215605}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU

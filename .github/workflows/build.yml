@@ -31,16 +31,15 @@ jobs:
         dotnet-version: ${{ env.DOTNET_VERSION }}
 
     - name: Restore dependencies
-      working-directory: api
-      run: dotnet restore
+      run: dotnet restore BackupApi.sln
 
-    - name: Build project
-      working-directory: api
-      run: dotnet build --no-restore --configuration ${{ env.BUILD_CONFIGURATION }}
+    - name: Build solution
+      run: dotnet build BackupApi.sln --no-restore --configuration ${{ env.BUILD_CONFIGURATION }}
 
     - name: Run tests
-      working-directory: tests
-      run: dotnet test --no-build --configuration ${{ env.BUILD_CONFIGURATION }} --logger trx --results-directory TestResults
+      run: |
+        mkdir -p tests/TestResults
+        dotnet test tests/BackupApi.Tests.csproj --no-build --configuration ${{ env.BUILD_CONFIGURATION }} --logger trx --results-directory tests/TestResults
 
     - name: Publish test results
       uses: dorny/test-reporter@v1
