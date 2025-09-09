@@ -93,26 +93,9 @@ jobs:
       checks: write
       pull-requests: write
 
-  debug-deploy:
-    needs: [check-changes, infrastructure, build]
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-    - name: Debug deploy conditions
-      run: |
-        echo "=== Deploy Debug Information ==="
-        echo "check-changes result: ${{ needs.check-changes.result }}"
-        echo "infra output: ${{ needs.check-changes.outputs.infra }}"
-        echo "api output: ${{ needs.check-changes.outputs.api }}"
-        echo "infrastructure result: ${{ needs.infrastructure.result }}"
-        echo "build result: ${{ needs.build.result }}"
-        echo "Event name: ${{ github.event_name }}"
-        echo "Build number input: ${{ github.event.inputs.build_number }}"
-        echo "Run number: ${{ github.run_number }}"
-
   deploy:
-    needs: [check-changes, infrastructure, build]
-    if: always() && (needs.build.result == 'success' || needs.build.result == 'skipped')
+    needs: [infrastructure, build]
+    if: always() && needs.build.result == 'success'
     uses: ./.github/workflows/deploy.yml
     permissions:
       id-token: write

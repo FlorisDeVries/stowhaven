@@ -209,6 +209,12 @@ resource "azurerm_linux_function_app" "main" {
     "SCM_DO_BUILD_DURING_DEPLOYMENT"  = "false"
   }
 
+  lifecycle {
+    ignore_changes = [
+      app_settings
+    ]
+  }
+
   https_only = true
 
   tags = {
