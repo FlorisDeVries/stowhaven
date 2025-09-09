@@ -42,7 +42,7 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call' }}
     permissions:
       id-token: write
       contents: read
@@ -66,12 +66,18 @@ jobs:
       with:
         name: function-app-${{ steps.build-info.outputs.build-number }}
         path: ./publish
+        github-token: ${{ github.event_name == 'workflow_run' && secrets.GITHUB_TOKEN || '' }}
+        repository: ${{ github.event_name == 'workflow_run' && github.repository || '' }}
+        run-id: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.id || '' }}
 
     - name: Download build info
       uses: actions/download-artifact@v4
       with:
         name: build-info-${{ steps.build-info.outputs.build-number }}
         path: ./
+        github-token: ${{ github.event_name == 'workflow_run' && secrets.GITHUB_TOKEN || '' }}
+        repository: ${{ github.event_name == 'workflow_run' && github.repository || '' }}
+        run-id: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.id || '' }}
 
     - name: Display build information
       run: |
