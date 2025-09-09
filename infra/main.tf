@@ -49,6 +49,18 @@ variable "api_key" {
   sensitive   = true
 }
 
+variable "log_analytics_retention_days" {
+  description = "Retention period for Log Analytics workspace in days"
+  type        = number
+  default     = 30
+}
+
+variable "log_analytics_daily_quota_gb" {
+  description = "Daily ingestion quota for Log Analytics workspace in GB"
+  type        = number
+  default     = 1
+}
+
 # Data storage account
 resource "azurerm_storage_account" "data" {
   name                     = "stabackup${var.name_suffix_str}"
@@ -70,8 +82,8 @@ resource "azurerm_storage_account" "data" {
 
 # Container for backups
 resource "azurerm_storage_container" "backups" {
-  name                  = "backups"
-  storage_account_name  = azurerm_storage_account.data.name
+  name                 = "backups"
+  storage_account_id   = azurerm_storage_account.data.id
   container_access_type = "private"
 }
 
@@ -114,33 +126,32 @@ resource "azurerm_storage_account" "function" {
   }
 }
 
+# Log Analytics Workspace
+resource "azurerm_log_analytics_workspace" "main" {
+  name                = "law-${var.name_suffix}"
+  location            = var.location
+  resource_group_name = data.azurerm_resource_group.main.name
+  sku                 = "PerGB2018"
+  retention_in_days   = var.log_analytics_retention_days
+  daily_quota_gb      = var.log_analytics_daily_quota_gb
+
+  tags = {
+    Environment = "Production"
+    Project     = "BackupAPI"
+  }
+}
+
 # Application Insights
 resource "azurerm_application_insights" "main" {
   name                = "appi-${var.name_suffix}"
   location            = var.location
   resource_group_name = data.azurerm_resource_group.main.name
   application_type    = "web"
+  workspace_id        = azurerm_log_analytics_workspace.main.id
 
   tags = {
     Environment = "Production"
     Project     = "BackupAPI"
-  }
-
-  lifecycle {
-    ignore_changes = [
-      # Ignore changes to workspace-related properties
-      workspace_id,
-      retention_in_days,
-      daily_data_cap_in_gb,
-      daily_data_cap_notifications_disabled,
-      disable_ip_masking,
-      force_customer_storage_for_profiler,
-      local_authentication_disabled,
-      internet_ingestion_enabled,
-      internet_query_enabled,
-      # Ignore tag changes if they're managed elsewhere
-      tags
-    ]
   }
 }
 
@@ -237,4 +248,25 @@ output "function_app_url" {
 output "container_name" {
   description = "Name of the storage container"
   value       = azurerm_storage_container.backups.name
+}
+
+output "log_analytics_workspace_id" {
+  description = "ID of the Log Analytics workspace"
+  value       = azurerm_log_analytics_workspace.main.id
+}
+
+output "log_analytics_workspace_name" {
+  description = "Name of the Log Analytics workspace"
+  value       = azurerm_log_analytics_workspace.main.name
+}
+
+output "application_insights_name" {
+  description = "Name of the Application Insights resource"
+  value       = azurerm_application_insights.main.name
+}
+
+output "application_insights_instrumentation_key" {
+  description = "Instrumentation key of the Application Insights resource"
+  value       = azurerm_application_insights.main.instrumentation_key
+  sensitive   = true
 }
