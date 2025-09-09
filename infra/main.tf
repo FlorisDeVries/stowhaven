@@ -82,8 +82,10 @@ resource "azurerm_storage_account" "data" {
 
 # Container for backups
 resource "azurerm_storage_container" "backups" {
-  name                 = "backups"
-  storage_account_id   = azurerm_storage_account.data.id
+  name                  = "backups"
+  # Note: storage_account_name is marked as deprecated but storage_account_id is not yet supported
+  # Keep using storage_account_name until the provider fully supports the new property
+  storage_account_name  = azurerm_storage_account.data.name
   container_access_type = "private"
 }
 
