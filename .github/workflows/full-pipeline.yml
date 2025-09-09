@@ -43,6 +43,10 @@ jobs:
   build:
     if: github.event.inputs.skip_build != 'true'
     uses: ./.github/workflows/build.yml
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
 
   deploy:
     needs: [infrastructure, build]
