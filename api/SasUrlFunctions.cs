@@ -25,6 +25,11 @@ public class SasUrlFunctions
         _dataContainer = Environment.GetEnvironmentVariable("DATA_CONTAINER") ?? "backups";
     }
 
+    /// <summary>
+    /// Generates a SAS URL for uploading a blob to Azure Blob Storage.
+    /// </summary>
+    /// <param name="req"></param>
+    /// <returns></returns>
     [Function("GetSasUpload")]
     public async Task<HttpResponseData> GetSasUpload(
         [HttpTrigger(AuthorizationLevel.Function, "post", Route = "get-sas-upload")] HttpRequestData req)
@@ -89,6 +94,11 @@ public class SasUrlFunctions
         }
     }
 
+    /// <summary>
+    /// Generates a SAS URL for downloading a blob from Azure Blob Storage.
+    /// </summary>
+    /// <param name="req"></param>
+    /// <returns></returns>
     [Function("GetSasDownload")]
     public async Task<HttpResponseData> GetSasDownload(
         [HttpTrigger(AuthorizationLevel.Function, "post", Route = "get-sas-download")] HttpRequestData req)

@@ -48,12 +48,6 @@ resource "azurerm_linux_function_app" "main" {
     "WEBSITE_DISABLE_MSI"             = "false"
   }
 
-  lifecycle {
-    ignore_changes = [
-      app_settings
-    ]
-  }
-
   https_only = true
 
   tags = local.common_tags
