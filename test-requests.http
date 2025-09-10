@@ -1,0 +1,30 @@
+### Azure Functions Test Requests
+### Use this file with VS Code REST Client extension
+
+# Variables
+@functionAppUrl = https://func-fdev-weu-prd.azurewebsites.net
+@apiKey = Iiu4FGldYIycjovf6X8bJn93lf6ZAJWv
+
+### Health Check (No authentication required)
+GET {{functionAppUrl}}/api/health
+Content-Type: application/json
+
+### Get SAS Upload URL (Requires API key)
+POST {{functionAppUrl}}/api/get-sas-upload
+Content-Type: application/json
+X-API-Key: {{apiKey}}
+
+{
+    "fileName": "test-backup.zip",
+    "expirationHours": 1
+}
+
+### Alternative with function key (if you have one)
+# POST {{functionAppUrl}}/api/get-sas-upload?code=YOUR_FUNCTION_KEY_HERE
+# Content-Type: application/json
+# X-API-Key: {{apiKey}}
+
+# {
+#     "fileName": "test-backup.zip", 
+#     "expirationHours": 1
+# }
