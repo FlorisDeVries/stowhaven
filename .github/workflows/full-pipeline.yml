@@ -94,7 +94,11 @@ jobs:
       pull-requests: write
 
   deploy:
-    needs: [build]
+    needs: [check-changes, infrastructure, build]
+    if: |
+      always() && 
+      (needs.build.result == 'success' || needs.build.result == 'skipped') &&
+      (needs.infrastructure.result == 'success' || needs.infrastructure.result == 'skipped')
     uses: ./.github/workflows/deploy.yml
     permissions:
       id-token: write
