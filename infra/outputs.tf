@@ -1,6 +1,6 @@
-output "function_app_name" {
-  description = "Name of the Function App"
-  value       = azurerm_linux_function_app.main.name
+output "container_app_name" {
+  description = "Name of the Container App"
+  value       = azurerm_container_app.main.name
 }
 
 output "data_storage_account_name" {
@@ -8,9 +8,19 @@ output "data_storage_account_name" {
   value       = azurerm_storage_account.data.name
 }
 
-output "function_app_url" {
-  description = "URL of the Function App"
-  value       = "https://${azurerm_linux_function_app.main.default_hostname}"
+output "container_app_url" {
+  description = "URL of the Container App"
+  value       = "https://${azurerm_container_app.main.ingress[0].fqdn}"
+}
+
+output "container_registry_name" {
+  description = "Name of the Container Registry"
+  value       = azurerm_container_registry.main.name
+}
+
+output "container_registry_login_server" {
+  description = "Login server URL of the Container Registry"
+  value       = azurerm_container_registry.main.login_server
 }
 
 output "container_name" {

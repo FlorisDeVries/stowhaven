@@ -1,0 +1,57 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Documentation
+README.md
+*.md
+
+# Build artifacts
+**/bin/
+**/obj/
+**/out/
+
+# IDE files
+.vscode/
+.vs/
+*.user
+*.suo
+*.sln.docstates
+
+# Azure Functions (old)
+api/
+
+# Tests
+tests/
+
+# Infrastructure
+infra/
+.terraform/
+*.tfstate
+*.tfstate.backup
+.terraform.lock.hcl
+
+# CI/CD
+.github/
+
+# Environment files
+.env
+.env.local
+.env.production
+
+# Logs
+*.log
+
+# Runtime files
+*.tmp
+*.temp
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db

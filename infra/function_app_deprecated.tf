@@ -1,3 +1,13 @@
+# DEPRECATED: Function App resources - replaced with Container Apps
+# This file is kept for reference during migration and will be removed after successful deployment
+
+# The function app resources have been replaced with:
+# - container_registry.tf: Azure Container Registry
+# - container_app.tf: Container App Environment and Container App
+
+# Original Function App configuration is preserved below as comments for reference:
+
+/*
 # App Service Plan (Consumption)
 resource "azurerm_service_plan" "main" {
   name                = "plan-${var.name_suffix}"
@@ -24,8 +34,6 @@ resource "azurerm_linux_function_app" "main" {
   }
 
   site_config {
-    # Note: Using "8.0" here because Azure RM provider doesn't support "9.0" yet
-    # The deployed .NET 9 code will still run correctly on Azure Functions v4
     application_stack {
       dotnet_version = "8.0"
       use_dotnet_isolated_runtime = true
@@ -41,10 +49,8 @@ resource "azurerm_linux_function_app" "main" {
     "DATA_STORAGE_ACCOUNT"            = azurerm_storage_account.data.name
     "DATA_CONTAINER"                  = azurerm_storage_container.backups.name
     "API_KEY"                         = var.api_key
-    # Enable build during deployment for .NET apps
     "SCM_DO_BUILD_DURING_DEPLOYMENT"  = "true"
     "ENABLE_ORYX_BUILD"               = "true"
-    # Explicitly prevent Python runtime confusion
     "WEBSITE_DISABLE_MSI"             = "false"
   }
 
@@ -52,3 +58,4 @@ resource "azurerm_linux_function_app" "main" {
 
   tags = local.common_tags
 }
+*/
