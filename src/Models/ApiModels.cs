@@ -14,7 +14,7 @@ public class SasRequest
 
 public class SasResponse
 {
-    public string SasUrl { get; set; } = string.Empty;
+    public string Url { get; set; } = string.Empty;
     public DateTimeOffset ExpiresAt { get; set; }
     public int TtlMinutes { get; set; }
 }
@@ -32,4 +32,15 @@ public class HealthStatus
     public DateTimeOffset Timestamp { get; set; }
     public string Version { get; set; } = string.Empty;
     public string Environment { get; set; } = string.Empty;
+}
+
+public class BackupCompletedEvent
+{
+    public string Path { get; set; } = string.Empty;
+    public bool Success { get; set; }
+    public long? FileSizeBytes { get; set; }
+    public DateTimeOffset CompletedAt { get; set; }
+    public string? ErrorMessage { get; set; }
+    public string? BackupId { get; set; }
+    public string ClientId { get; set; } = string.Empty;
 }

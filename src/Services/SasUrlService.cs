@@ -37,12 +37,6 @@ public class SasUrlService : ISasUrlService
             var containerClient = _blobServiceClient.GetBlobContainerClient(_dataContainer);
             var blobClient = containerClient.GetBlobClient(path);
 
-            // Check if the service client can generate SAS tokens
-            if (!_blobServiceClient.CanGenerateSasUri)
-            {
-                throw new InvalidOperationException("BlobServiceClient cannot generate SAS tokens. Ensure proper authentication is configured.");
-            }
-
             var sasBuilder = new BlobSasBuilder
             {
                 BlobContainerName = _dataContainer,
@@ -60,7 +54,7 @@ public class SasUrlService : ISasUrlService
 
             return new SasResponse
             {
-                SasUrl = sasUri.ToString(),
+                Url = sasUri.ToString(),
                 ExpiresAt = expiresAt,
                 TtlMinutes = ttl
             };
@@ -91,12 +85,6 @@ public class SasUrlService : ISasUrlService
                 throw new ArgumentException($"Blob '{path}' does not exist");
             }
 
-            // Check if the service client can generate SAS tokens
-            if (!_blobServiceClient.CanGenerateSasUri)
-            {
-                throw new InvalidOperationException("BlobServiceClient cannot generate SAS tokens. Ensure proper authentication is configured.");
-            }
-
             var sasBuilder = new BlobSasBuilder
             {
                 BlobContainerName = _dataContainer,
@@ -114,7 +102,7 @@ public class SasUrlService : ISasUrlService
 
             return new SasResponse
             {
-                SasUrl = sasUri.ToString(),
+                Url = sasUri.ToString(),
                 ExpiresAt = expiresAt,
                 TtlMinutes = ttl
             };

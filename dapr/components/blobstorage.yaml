@@ -1,0 +1,19 @@
+# DAPR Azure Blob Storage Binding
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+  name: blobstorage
+spec:
+  type: bindings.azure.blobstorage
+  version: v1
+  metadata:
+  - name: storageAccount
+    secretKeyRef:
+      name: storage-account-name
+  - name: storageAccessKey
+    secretKeyRef:
+      name: storage-access-key
+  - name: container
+    value: "backups"
+  - name: decodeBase64
+    value: "false"

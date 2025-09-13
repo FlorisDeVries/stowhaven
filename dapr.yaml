@@ -1,0 +1,14 @@
+version: 1
+common:
+  resourcesPath: ./dapr/components/local
+apps:
+- appID: backup-api
+  appDirPath: ./src
+  appPort: 8080
+  command: [ "dotnet", "run" ]
+  env:
+    DATA_STORAGE_ACCOUNT: "devstoreaccount1"
+    DATA_CONTAINER: "backups"
+    API_KEY: "your-local-api-key"
+    ASPNETCORE_ENVIRONMENT: "Development"
+    ASPNETCORE_URLS: "http://+:8080"

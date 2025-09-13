@@ -1,14 +1,17 @@
-# Container App Environment
+# Container App Environment with DAPR enabled
 resource "azurerm_container_app_environment" "main" {
   name                       = "cae-${var.name_suffix}"
   location                   = var.location
   resource_group_name        = data.azurerm_resource_group.main.name
   log_analytics_workspace_id = azurerm_log_analytics_workspace.main.id
+  
+  # Enable DAPR
+  dapr_application_insights_connection_string = azurerm_application_insights.main.connection_string
 
   tags = local.common_tags
 }
 
-# Container App
+# Container App with DAPR enabled
 resource "azurerm_container_app" "main" {
   name                         = "ca-${var.name_suffix}"
   container_app_environment_id = azurerm_container_app_environment.main.id
@@ -17,6 +20,13 @@ resource "azurerm_container_app" "main" {
 
   identity {
     type = "SystemAssigned"
+  }
+
+  # Enable DAPR
+  dapr {
+    app_id       = "backup-api"
+    app_port     = 8080
+    app_protocol = "http"
   }
 
   template {
@@ -89,4 +99,78 @@ resource "azurerm_container_app" "main" {
   }
 
   tags = local.common_tags
+}
+
+# DAPR Component - State Store (Redis)
+resource "azurerm_container_app_environment_dapr_component" "statestore" {
+  name                         = "statestore"
+  container_app_environment_id = azurerm_container_app_environment.main.id
+  component_type              = "state.redis"
+  version                     = "v1"
+
+  metadata {
+    name  = "redisHost"
+    secret_name = "redis-host"
+  }
+
+  metadata {
+    name  = "redisPassword"
+    secret_name = "redis-password"
+  }
+
+  metadata {
+    name  = "enableTLS"
+    value = "true"
+  }
+
+  secret {
+    name  = "redis-host"
+    value = azurerm_redis_cache.main.hostname
+  }
+
+  secret {
+    name  = "redis-password"
+    value = azurerm_redis_cache.main.primary_access_key
+  }
+}
+
+# DAPR Component - Secret Store (Azure Key Vault)
+resource "azurerm_container_app_environment_dapr_component" "secrets" {
+  name                         = "azurekeyvault"
+  container_app_environment_id = azurerm_container_app_environment.main.id
+  component_type              = "secretstores.azure.keyvault"
+  version                     = "v1"
+
+  metadata {
+    name  = "vaultName"
+    value = azurerm_key_vault.main.name
+  }
+
+  metadata {
+    name  = "azureClientId"
+    value = azurerm_container_app.main.identity[0].principal_id
+  }
+}
+
+# DAPR Component - Pub/Sub (Azure Service Bus)
+resource "azurerm_container_app_environment_dapr_component" "pubsub" {
+  name                         = "backup-pubsub"
+  container_app_environment_id = azurerm_container_app_environment.main.id
+  component_type              = "pubsub.azure.servicebus"
+  version                     = "v1"
+
+  metadata {
+    name  = "connectionString"
+    secret_name = "servicebus-connection-string"
+  }
+
+  metadata {
+    name  = "consumerID"
+    value = "backup-api"
+  }
+
+  secret {
+    name  = "servicebus-connection-string"
+    value = azurerm_servicebus_namespace.main.default_primary_connection_string
+  }
 }
