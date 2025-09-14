@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+    <PropertyGroup>
+        <TargetFramework>net9.0</TargetFramework>
+        <Nullable>enable</Nullable>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <DockerDefaultTargetOS>Linux</DockerDefaultTargetOS>
+        <RootNamespace>FlorisDeV.BackupApi</RootNamespace>
+        <AssemblyName>FlorisDeV.BackupApi</AssemblyName>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Azure.Storage.Blobs" Version="12.25.0" />
+        <PackageReference Include="Dapr.AspNetCore" Version="1.15.4" />
+        <PackageReference Include="Dapr.Client" Version="1.15.4" />
+        <PackageReference Include="Swashbuckle.AspNetCore" Version="9.0.4" />
+        <PackageReference Include="Refit" Version="8.0.0"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\..\common\featureflags\FlorisDeV.FeatureFlags.csproj"/>
+        <ProjectReference Include="..\..\common\healthchecks\FlorisDeV.HealthChecks.csproj"/>
+        <ProjectReference Include="..\..\common\logging\FlorisDeV.Logging.csproj"/>
+    </ItemGroup>
+
+    <ItemGroup>
+      <Content Include="..\..\..\.dockerignore">
+        <Link>.dockerignore</Link>
+      </Content>
+      <Content Include="..\..\..\doc\README.md">
+        <Link>README.md</Link>
+      </Content>
+    </ItemGroup>
+
+</Project>

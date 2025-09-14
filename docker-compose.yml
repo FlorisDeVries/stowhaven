@@ -1,0 +1,101 @@
+services:
+    backup-api:
+        container_name: backup-api
+        image: ${DOCKER_REGISTRY-}backup-api:${IMAGE_TAG:-latest}
+        build:
+            context: .
+            dockerfile: src/services/api/Dockerfile
+        env_file:
+            - .env
+        environment:
+            - ASPNETCORE_ENVIRONMENT=Development
+            - ASPNETCORE_URLS=http://+:8080
+            - LOG_PATH=/var/log
+        volumes:
+            - ./run/api/data:/var/lib/backup-api
+        user: ${UID}:${GID}
+        ports:
+            - 127.0.0.1:8210:8080
+        depends_on:
+            - azurite
+        logging:
+            driver: "gelf"
+            options:
+                gelf-address: "udp://127.0.0.1:12201"
+                tag: "backup-api"
+        deploy:
+            resources:
+                limits:
+                    cpus: '0.25'
+                    memory: 0.5g
+
+    backup-api-dapr:
+        container_name: backup-api-dapr
+        image: "daprio/daprd:${DAPR_VERSION:-1.13.6}"
+        env_file:
+            - .env
+        command: [
+            "./daprd",
+            "-app-id", "backup-api",
+            "-app-port", "8080",
+            "-components-path", "/components",
+            "-config", "/configuration/config.yaml"
+        ]
+        volumes:
+            - "./dapr/components/:/components"
+            - "./dapr/:/configuration"
+        depends_on:
+            - backup-api
+            - azurite
+        network_mode: "service:backup-api"
+        logging:
+            driver: "gelf"
+            options:
+                gelf-address: "udp://127.0.0.1:12201"
+                tag: "backup-api-dapr"
+        deploy:
+            resources:
+                limits:
+                    cpus: '0.25'
+                    memory: 0.5g
+
+    #
+    # Dependencies (Storage, Observability)
+    #
+
+    zipkin:
+        container_name: zipkin
+        image: openzipkin/zipkin-slim
+        profiles: [ "trace" ]
+        hostname: zipkin
+        ports:
+            - 127.0.0.1:9411:9411
+        restart: unless-stopped
+
+    dev-dashboard:
+        container_name: aspire-dashboard
+        image: mcr.microsoft.com/dotnet/aspire-dashboard:9
+        hostname: aspire-dashboard
+        environment:
+            - DOTNET_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS=true
+        ports:
+            - 127.0.0.1:18888:18888
+            - 127.0.0.1:4317:18889
+        restart: unless-stopped
+
+    azurite:
+        container_name: azurite
+        image: mcr.microsoft.com/azure-storage/azurite
+        hostname: azurite
+        restart: unless-stopped
+        volumes:
+            - azurite-data:/data
+        ports:
+            - 127.0.0.1:10000:10000  # Blob service
+            - 127.0.0.1:10001:10001  # Queue service
+            - 127.0.0.1:10002:10002  # Table service
+        command: azurite --blobHost 0.0.0.0 --queueHost 0.0.0.0 --tableHost 0.0.0.0 --location /data --debug /data/debug.log
+
+volumes:
+    azurite-data:
+    redis-data:

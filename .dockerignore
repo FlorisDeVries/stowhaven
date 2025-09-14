@@ -1,57 +1,25 @@
-# Git
-.git
-.gitignore
-.gitattributes
-
-# Documentation
+**/.classpath
+**/.dockerignore
+**/.env
+**/.git
+**/.gitignore
+**/.project
+**/.settings
+**/.toolstarget
+**/.vs
+**/.vscode
+**/*.*proj.user
+**/*.dbmdl
+**/*.jfm
+**/azds.yaml
+**/bin
+**/charts
+**/docker-compose*
+**/Dockerfile*
+**/node_modules
+**/npm-debug.log
+**/obj
+**/secrets.dev.yaml
+**/values.dev.yaml
+LICENSE
 README.md
-*.md
-
-# Build artifacts
-**/bin/
-**/obj/
-**/out/
-
-# IDE files
-.vscode/
-.vs/
-*.user
-*.suo
-*.sln.docstates
-
-# Azure Functions (old)
-api/
-
-# Tests
-tests/
-
-# Infrastructure
-infra/
-.terraform/
-*.tfstate
-*.tfstate.backup
-.terraform.lock.hcl
-
-# CI/CD
-.github/
-
-# Environment files
-.env
-.env.local
-.env.production
-
-# Logs
-*.log
-
-# Runtime files
-*.tmp
-*.temp
-
-# OS generated files
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
