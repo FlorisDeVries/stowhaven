@@ -1,13 +1,6 @@
 # Azure Backup API
 
-A lig### 1. Prerequisites
-- **Azure CLI** (min. 2.57)
-- **Terraform** (min. 1.5.0)
-- **.NET 9.0 SDK**
-- **Azure Functions Core Tools v4**
-- **GitHub CLI** (optional, for automated secret setup)
-
-> **Note**: The project uses .NET 9, but Terraform configuration specifies .NET 8.0 due to Azure RM provider limitations. Azure Functions v4 supports .NET 9 deployments regardless of this setting.ht **.NET Azure Function API** that issues **temporary SAS URLs** to upload/download files to **Azure Blob Storage**, including:
+A lightweight **.NET Azure Function API** that issues **temporary SAS URLs** to upload/download files to **Azure Blob Storage**, including:
 - **Infrastructure as Code** with Terraform (Storage Account, Function App, Lifecycle rules, RBAC)
 - **CI/CD** via GitHub Actions (OIDC login, infra deployment, code deployment)
 - **Lifecycle policy**: automatically move blobs to Archive tier after 30 days of inactivity
@@ -16,18 +9,34 @@ A lig### 1. Prerequisites
 
 ```
 .
-├── api/                    # .NET Azure Function code
-│   ├── SasUrlFunctions.cs  # Function: generate SAS URLs
-│   ├── Program.cs          # Function App entry point
-│   ├── BackupApi.csproj    # .NET project file
-│   ├── host.json
-│   └── local.settings.json
-├── infra/                  # Terraform templates for Azure resources
-│   └── main.tf
-├── .github/workflows/      # GitHub Actions pipelines
-│   └── deploy.yml
-├── .gitignore
-├── README.md
+├── src/
+│   ├── services/api/           # .NET Azure Function code
+│   │   ├── Controllers/        # API controllers
+│   │   ├── Services/           # Business logic services
+│   │   ├── Models/             # Data models
+│   │   ├── Constants/          # Application constants
+│   │   ├── Program.cs          # Function App entry point
+│   │   ├── ProgramExtensions.cs# Configuration extensions
+│   │   └── FlorisDeV.BackupApi.csproj
+│   └── common/                 # Shared libraries
+│       ├── featureflags/       # Feature flag management
+│       ├── healthchecks/       # Health check implementations
+│       └── logging/            # Logging and telemetry
+├── deploy/terraform/           # Terraform IaC templates
+│   ├── main.tf                 # Main infrastructure
+│   ├── storage.tf              # Storage account resources
+│   ├── container_app.tf        # Container app configuration
+│   ├── iam.tf                  # Identity and access management
+│   └── ...                     # Other infrastructure components
+├── tests/                      # Unit and integration tests
+├── .github/workflows/          # GitHub Actions CI/CD
+│   ├── build.yml              # Build pipeline
+│   ├── infrastructure.yml     # Infrastructure deployment
+│   ├── deploy.yml             # Application deployment
+│   └── full-pipeline.yml      # Orchestrated full deployment
+├── run/                        # Local development (Dapr)
+├── doc/                        # Documentation
+└── docker-compose.yml          # Local containerized development
 ```
 
 ## 🚀 Deployment
@@ -38,6 +47,8 @@ A lig### 1. Prerequisites
 - **.NET 9.0 SDK**
 - **Azure Functions Core Tools v4**
 - **GitHub CLI** (optional, for automated secret setup)
+
+> **Note**: The project uses .NET 9, but Terraform configuration specifies .NET 8.0 due to Azure RM provider limitations. Azure Functions v4 supports .NET 9 deployments regardless of this setting.
 
 ### 1.1. Setup GitHub OIDC Authentication
 Run the provided script to automatically create the Azure AD application and GitHub secrets:
@@ -161,9 +172,23 @@ The old monolithic pipeline is still available in `deploy.yml.old` but is not re
 ### 5. Local Testing
 
 ```bash
-cd api
+# Navigate to the API project
+cd src/services/api
+
+# Restore dependencies
 dotnet restore
+
+# Run locally with Azure Functions Core Tools
 func start
+```
+
+For local development with Dapr:
+```bash
+# Start with Docker Compose (includes Dapr sidecar)
+docker-compose up
+
+# Or run Dapr directly
+dapr run --app-id backup-api --app-port 7071 --dapr-http-port 3500 -- func start
 ```
 
 ## 🗝 Usage
@@ -186,6 +211,31 @@ azcopy copy "D:\Projects\file.zip" "<sas_url>" --overwrite=false
 
 * All blobs in `backups/` → moved to Archive tier **after 30 days** without modification.
 
-## 📜 License
+## Transaction Diagram
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Windows Client
+    participant E as Entra ID
+    participant A as ACA API
+    participant B as Azure Blob (ADLS Gen2)
 
-MIT License
+    C->>C: Local delta scan (compare to cached last-manifest)
+    C->>E: Get JWT (MSAL)
+    E-->>C: Access token
+
+    C->>A: POST /start-sync {deviceId, fileCount, totalBytes}
+    A->>B: (Managed Identity) Get User Delegation Key
+    A-->>C: { dirSasUrl=.../staging/{snapshotId}?sr=d&sp=cw&se=+45m }
+
+    loop for each changed/new file
+      C->>B: PUT file to .../staging/{snapshotId}/{safeRelativePath}
+      Note over C,B: Use Put Block/Commit for large files (needs 'w' perm).
+    end
+
+    C->>A: POST /commit-sync {snapshotId, manifestSummary (hashes, sizes)}
+    A->>B: (MI) Write manifest.json and update latest.json
+    A->>B: (MI) Batch delete old snapshot files
+    A-->>C: 200 OK {latestSnapshotId}
+
+```
