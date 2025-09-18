@@ -56,26 +56,32 @@ Per device namespace under a single container (example: `backups`):
 
 ```
 /devices/{deviceId}/
-  latest.json                             # pointer to current snapshot
-  snapshots/{snapshotId}/manifest.json    # file list + metadata
-  snapshots/{snapshotId}/files/...        # uploaded files (hierarchical)
-  staging/{snapshotId}/...                # temp area for in-progress uploads
+  manifest.json                          # current file list + metadata
+  files/{uniqueFileId}                   # uploaded files with unique names
+  staging/...                            # temp area for in-progress uploads
+  retired/{uniqueFileId}                 # files marked for deletion
 ```
 
 **IDs**
 - `deviceId`: deterministic (e.g., stable GUID per PC).
-- `snapshotId`: UTC timestamp + random suffix; e.g., `2025-09-16T14-30-15Z_5M8k3p`.
+- `uniqueFileId`: SHA-256 hash + timestamp + random suffix; e.g., `abc123def...789_2025-09-16T14-30-15Z_k8p3m`.
+
+**File Versioning**
+- Each file version gets a **unique blob name** based on content hash + timestamp.
+- `manifest.json` maps logical file paths to current `uniqueFileId`.
+- Updated files get new `uniqueFileId`, old files moved to `/retired/` path for lifecycle cleanup.
+- Single backup per device - no snapshot history retained.
 
 **Tiering**
 - Choose **Cool/Cold** for frequent churn (30/90 day minimum retention).
 - Choose **Archive** only for rare rotations (180 day minimum).
-- Configured via Terraform lifecycle management policies.
+- Configured via Terraform lifecycle management policies on `/retired/` prefix.
 
 ---
 
 ## 4) Data Flows (Sequence)
 
-### 4.1 Incremental multi-file sync (HNS ON recommended)
+### 4.1 Single backup sync with unique file naming
 
 ```mermaid
 sequenceDiagram
@@ -89,20 +95,136 @@ sequenceDiagram
     C->>E: Get JWT
     E-->>C: JWT
 
-    C->>F: POST /api/backup/start-sync with deviceId, fileCount, totalBytes
+    C->>F: POST /api/backup/start-sync with deviceId, fileChanges[]
     F->>B: Get UD Key (MI)
     F-->>C: dirSasUrl for staging directory
 
     loop foreach changed/new file
-      C->>B: PUT file to staging/{snapshotId}/path
+      C->>C: Generate uniqueFileId (hash+timestamp+random)
+      C->>B: PUT file to staging/{uniqueFileId}
     end
 
-    C->>F: POST /api/backup/commit-sync with snapshotId, manifestSummary
-    F->>B: Validate, write manifest.json, update latest.json, cleanup old
-    F-->>C: 200 OK with latestSnapshotId
+    C->>F: POST /api/backup/commit-sync with fileMap (path->uniqueFileId)
+    F->>B: Move staged files to /devices/{deviceId}/files/
+    F->>B: Move old files to /devices/{deviceId}/retired/
+    F->>B: Update manifest.json with new file mappings
+    F-->>C: 200 OK
 ```
 
 > **HNS ON** enables directory-scoped SAS (`sr=d`). If HNS is **OFF**, fall back to minting **per-blob** SAS URLs in batches.
+
+### 4.2 File Operation Scenarios
+
+```mermaid
+flowchart TD
+    Start([Start Delta Scan]) --> Walk[Walk Filesystem]
+    Walk --> FileFound{File Found}
+    
+    FileFound -->|Yes| InLocalDB{Exists in Local State DB?}
+    FileFound -->|No| CheckMissing[Check for Deleted Files]
+    
+    InLocalDB -->|No| NewFile[File Created Scenario]
+    InLocalDB -->|Yes| CompareMetadata{Size/mtime/FileID Changed?}
+    
+    CompareMetadata -->|No| NoChange[No Change - Skip]
+    CompareMetadata -->|Yes| ChangedFile[File Changed Scenario]
+    
+    NewFile --> ComputeHash1[Compute SHA256]
+    ComputeHash1 --> GenerateID1[Generate uniqueFileId]
+    GenerateID1 --> AddToQueue1[Add to Upload Queue]
+    AddToQueue1 --> UpdateLocalDB1[Update Local State DB]
+    
+    ChangedFile --> ComputeHash2[Compute New SHA256]
+    ComputeHash2 --> GenerateID2[Generate new uniqueFileId]
+    GenerateID2 --> AddToQueue2[Add to Upload Queue]
+    AddToQueue2 --> MarkOldRetired[Mark old file for retirement]
+    MarkOldRetired --> UpdateLocalDB2[Update Local State DB]
+    
+    CheckMissing --> CompareDB{File in DB but not found?}
+    CompareDB -->|Yes| VerifyDeleted{Verify Actually Deleted?}
+    CompareDB -->|No| Complete[Scan Complete]
+    
+    VerifyDeleted -->|Yes| DeletedFile[File Deleted Scenario]
+    VerifyDeleted -->|No| AccessError[Access Error - Skip]
+    
+    DeletedFile --> RemoveFromManifest[Remove from Manifest]
+    RemoveFromManifest --> RemoveFromDB[Remove from Local State DB]
+    RemoveFromDB --> MoveToRetired[Move file to /retired/]
+    
+    NoChange --> Continue[Continue Scan]
+    UpdateLocalDB1 --> Continue
+    UpdateLocalDB2 --> Continue
+    MoveToRetired --> Continue
+    AccessError --> Continue
+    Continue --> Walk
+    
+    Complete --> CommitPhase[Commit Phase]
+    CommitPhase --> MoveFromStaging[Move files from staging to /files/]
+    MoveFromStaging --> RetireOldFiles[Move old files to /retired/]
+    RetireOldFiles --> WriteManifest[Update manifest.json]
+    WriteManifest --> LifecycleCleanup[Lifecycle Management Cleanup]
+    
+    style NewFile fill:#1a365d,stroke:#63b3ed,stroke-width:2px,color:#ffffff
+    style ChangedFile fill:#744210,stroke:#f6ad55,stroke-width:2px,color:#ffffff
+    style DeletedFile fill:#742a2a,stroke:#fc8181,stroke-width:2px,color:#ffffff
+    style CommitPhase fill:#2d3748,stroke:#a0aec0,stroke-width:2px,color:#ffffff
+```
+
+#### 4.2.1 File Created
+
+**Detection:**
+- **Local state DB** comparison: New file appears in filesystem walk that wasn't present in previous scan.
+- File has no entry in the local state database (`relativePath` not found).
+
+**Process:**
+1. File discovered during delta scan with ignore rules applied.
+2. Compute `sha256` hash and collect metadata (`length`, `lastWriteUtc`, optional NTFS File ID).
+3. Generate `uniqueFileId`: `{sha256}_{timestamp}_{random}` (e.g., `abc123...789_2025-09-17T10-30-00Z_k8p3m`).
+4. Upload to staging area: `staging/{uniqueFileId}`.
+5. During commit phase: move to `/devices/{deviceId}/files/{uniqueFileId}`.
+6. Update `manifest.json` with mapping: `{"relativePath": "documents/file.txt", "uniqueFileId": "abc123...k8p3m", "size": 1024, "lastModified": "2025-09-17T10:30:00Z"}`.
+7. Update local state DB with new entry after successful commit.
+
+#### 4.2.2 File Changed
+
+**Detection:**
+- **Size + mtime check**: File exists in local state DB but `(length, lastWriteUtc)` differs from stored values.
+- **Hash verification**: If size/mtime match but optional `sha256` differs (for paranoid mode).
+- **NTFS File ID change**: File ID (FRN) differs, indicating file was replaced.
+
+**Process:**
+1. Detected file is added to upload queue.
+2. Compute new `sha256` hash and update metadata.
+3. Generate new `uniqueFileId`: `{newSha256}_{timestamp}_{random}`.
+4. Upload new version to staging: `staging/{newUniqueFileId}`.
+5. **Old file retirement**: During commit phase:
+   - Move old file from `/devices/{deviceId}/files/{oldUniqueFileId}` to `/devices/{deviceId}/retired/{oldUniqueFileId}`.
+   - Move new file from staging to `/devices/{deviceId}/files/{newUniqueFileId}`.
+   - Update `manifest.json` with new mapping: `{"relativePath": "documents/file.txt", "uniqueFileId": "newUniqueFileId", ...}`.
+6. Update local state DB with new metadata after successful commit.
+7. Lifecycle management cleans up files in `/retired/` after retention period.
+
+#### 4.2.3 File Deleted
+
+**Detection:**
+- **Absence detection**: File exists in local state DB but is not found during current filesystem walk.
+- File entry exists from previous scan but `relativePath` is no longer accessible or doesn't exist.
+
+**Process:**
+1. During delta scan, track all files seen in current run.
+2. Compare with previous local state DB entries - missing files are candidates for deletion.
+3. Verify deletion (not just inaccessible due to permissions/errors):
+   - Attempt `File.Exists()` check.
+   - Parent directory still exists and is accessible.
+4. **Marking for removal**:
+   - Remove entry from `manifest.json` for the deleted file path.
+   - Remove from local state DB.
+5. During commit phase:
+   - Move file from `/devices/{deviceId}/files/{uniqueFileId}` to `/devices/{deviceId}/retired/{uniqueFileId}`.
+   - Update `manifest.json` without the deleted file entry.
+6. Lifecycle management handles cleanup of files in `/retired/` after retention period.
+
+**Note**: Actual blob deletion is deferred to lifecycle management policies to avoid early deletion fees and provide recovery opportunities.
 
 ---
 
@@ -116,202 +238,6 @@ sequenceDiagram
   - Expiry: 15–60 minutes typical.
 - Azure Container App authenticates via Entra (App Registration) and uses its **Managed Identity** for storage actions.
 - Optional: **Blob index tags** (e.g., `state=retired`) to drive lifecycle cleanup policies.
-
----
-
-## 6) Azure Container Apps API Contract (v1)
-
-Base URL: `https://{container-app-name}.{region}.azurecontainerapps.io`
-
-### 6.1 `POST /api/backup/start-sync`
-**Headers:** `Authorization: Bearer {jwt}`
-
-**Request**
-```json
-{
-  "deviceId": "pc-1234",
-  "fileCount": 7421,
-  "totalBytes": 987654321
-}
-```
-
-**Response**
-```json
-{
-  "snapshotId": "2025-09-16T14-30-15Z_9sDf9a",
-  "dirSasUrl": "https://.../staging/{snapshotId}?sr=d&sp=cw&se=..."
-}
-```
-
-### 6.2 `POST /api/backup/commit-sync`
-**Headers:** `Authorization: Bearer {jwt}`
-
-**Request**
-```json
-{
-  "snapshotId": "2025-09-16T14-30-15Z_9sDf9a",
-  "manifest": {
-    "files": [
-      { "path": "Users/Alice/Documents/tax.pdf", "size": 81234, "sha256": "..." }
-    ],
-    "totalBytes": 987654321,
-    "fileCount": 7421
-  }
-}
-```
-
-**Response**
-```json
-{
-  "latestSnapshotId": "2025-09-16T14-30-15Z_9sDf9a"
-}
-```
-
-### 6.3 `GET /api/backup/latest?deviceId=pc-1234`
-**Headers:** `Authorization: Bearer {jwt}`
-
-**Response**
-```json
-{
-  "type": "snapshot",
-  "id": "2025-09-16T14-30-15Z_9sDf9a",
-  "manifestUrl": "https://.../snapshots/{id}/manifest.json?...readSas...",
-  "createdUtc": "2025-09-16T14:30:15Z"
-}
-```
-
-**Notes**
-- Azure Container App validates uploads (HEAD + properties) before publishing `latest.json`.
-- Concurrency: `latest.json` is updated with **ETag/lease** to prevent races.
-- Old content is deleted **server-side** (or marked `state=retired` for lifecycle).
-
----
-
-## 7) .NET Implementation Details
-
-### 7.1 Container App Structure
-```
-Controllers/
-  BackupController.cs          # Main API endpoints
-Services/
-  ISasService.cs              # SAS token generation interface
-  SasService.cs               # User Delegation SAS implementation
-  IBackupService.cs           # Business logic interface
-  BackupService.cs            # Core backup orchestration
-Models/
-  StartSyncRequest.cs         # Request/response models
-  CommitSyncRequest.cs
-  ...
-Constants/
-  BackupConstants.cs          # Storage paths, timeouts, etc.
-```
-
-### 7.2 Key Dependencies
-```xml
-<PackageReference Include="Azure.Storage.Blobs" Version="12.19.1" />
-<PackageReference Include="Azure.Identity" Version="1.10.4" />
-<PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.0" />
-<PackageReference Include="Microsoft.AspNetCore.Authorization" Version="8.0.0" />
-```
-
-### 7.3 Configuration (via Terraform)
-```csharp
-// appsettings.json / Environment Variables
-{
-  "STORAGE_ACCOUNT_NAME": "backupstg{suffix}",
-  "BACKUP_CONTAINER_NAME": "backups",
-  "SAS_EXPIRY_MINUTES": "45",
-  "MAX_UPLOAD_SIZE_MB": "10240"
-}
-```
-
-### 7.4 Authentication & Authorization
-- Use `Microsoft.AspNetCore.Authentication.JwtBearer` for JWT validation.
-- Configure Entra ID App Registration in Terraform.
-- Validate `deviceId` ownership through JWT claims (e.g., `sub` or custom claim).
-- Standard ASP.NET Core authorization patterns with policies.
-
----
-
-## 8) Infrastructure (Terraform Extensions)
-
-### 8.1 Additional Resources Needed
-```hcl
-# Backup-specific container
-resource "azurerm_storage_container" "backups" {
-  name                  = "backups"
-  storage_account_name  = azurerm_storage_account.main.name
-  container_access_type = "private"
-}
-
-# Hierarchical Namespace (for directory SAS)
-resource "azurerm_storage_account" "main" {
-  # ... existing config ...
-  is_hns_enabled = true  # Enable ADLS Gen2 features
-}
-
-# Additional RBAC for backup operations
-resource "azurerm_role_assignment" "backup_blob_delegator" {
-  scope                = azurerm_storage_account.main.id
-  role_definition_name = "Storage Blob Delegator"
-  principal_id         = azurerm_container_app.main.identity[0].principal_id
-}
-
-# Lifecycle management policy
-resource "azurerm_storage_management_policy" "backup_lifecycle" {
-  storage_account_id = azurerm_storage_account.main.id
-
-  rule {
-    name    = "delete-retired-backups"
-    enabled = true
-
-    filters {
-      prefix_match = ["backups/devices/"]
-      blob_types   = ["blockBlob"]
-      
-      blob_index_match {
-        name      = "state"
-        operation = "=="
-        value     = "retired"
-      }
-    }
-
-    actions {
-      base_blob {
-        delete_after_days_since_modification_greater_than = 95
-      }
-    }
-  }
-}
-```
-
-### 8.2 Container App Configuration
-```hcl
-resource "azurerm_container_app" "main" {
-  # ... existing config ...
-  
-  template {
-    container {
-      # ... existing container config ...
-      
-      env {
-        name  = "STORAGE_ACCOUNT_NAME"
-        value = azurerm_storage_account.main.name
-      }
-      
-      env {
-        name  = "BACKUP_CONTAINER_NAME"
-        value = azurerm_storage_container.backups.name
-      }
-      
-      env {
-        name  = "SAS_EXPIRY_MINUTES"
-        value = "45"
-      }
-    }
-  }
-}
-```
 
 ---
 
@@ -345,6 +271,7 @@ Program Files*/
 ### 9.2 Uploader
 - Large **Block Blob** uploads with parallel `Put Block` + `Put Block List`.
 - Block size 128–256 MiB typical; tune threads by CPU/IOPS.
+- **Unique File Naming**: Generate `uniqueFileId` as `{sha256}_{timestamp}_{random}` before upload.
 - Headers:
   - `x-ms-blob-type: BlockBlob`
   - `x-ms-access-tier: Cold|Cool|Archive` (set at upload time)
@@ -352,34 +279,104 @@ Program Files*/
 - Integrity:
   - Rolling **MD5/CRC64** and/or **SHA-256** per file; send in `/commit-*` for server validation.
 - Resume:
-  - Re-stage missing blocks and re-commit if interrupted (idempotent on `snapshotId + block IDs`).
+  - Re-stage missing blocks and re-commit if interrupted (idempotent on `uniqueFileId + block IDs`).
+- **File Mapping**: Maintain mapping from `relativePath` to `uniqueFileId` for commit phase.
 
 ---
 
 ## 10) Cost Management & Retention
 
-- **Minimum retention**: Cool (30 d), Cold (90 d), Archive (180 d). Early deletion fees apply if blobs are deleted/overwritten sooner.
+### 10.1 Storage Tier Strategy & 30-Day Rule
+
+**Initial Upload Tier: Cold Storage**
+- All files uploaded initially to **Cold tier** (90-day minimum retention).
+- Provides good balance: cheaper than Cool, but accessible for potential early changes/corrections.
+- Cost: ~€0.0152/GB/month vs Cool (€0.018/GB/month).
+
+**30-Day Promotion to Archive**
+- After 30 days, **Lifecycle Management** automatically promotes blobs from Cold → **Archive tier**.
+- Archive tier: ~€0.00099/GB/month (cheapest long-term storage).
+- 180-day minimum retention in Archive, but files are rarely accessed after 30 days.
+
+**Early Retention Fee Avoidance**
+- **File moves** (`/files/` → `/retired/`) are **rename operations** - **NO early deletion fees**.
+- Only actual **deletion** of blobs triggers early retention penalties.
+- Strategy: Files stay in their current tier when moved to `/retired/`, lifecycle rules handle final cleanup.
+
+### 10.2 Lifecycle Management Rules
+
+```terraform
+# Terraform lifecycle management policy example
+resource "azurerm_storage_management_policy" "backup_lifecycle" {
+  storage_account_id = azurerm_storage_account.backup.id
+
+  rule {
+    name    = "backup-tier-promotion"
+    enabled = true
+    
+    filters {
+      prefix_match = ["devices/"]
+      blob_types   = ["blockBlob"]
+    }
+    
+    actions {
+      base_blob {
+        # Promote to Archive after 30 days
+        tier_to_archive_after_days_since_creation = 30
+        # Delete from /retired/ after minimum retention + grace period
+        delete_after_days_since_creation = 210  # 180 (archive min) + 30 (grace)
+      }
+    }
+  }
+  
+  rule {
+    name    = "retired-cleanup"
+    enabled = true
+    
+    filters {
+      prefix_match = ["devices/*/retired/"]
+      blob_types   = ["blockBlob"]
+    }
+    
+    actions {
+      base_blob {
+        # Delete retired files after minimum retention period
+        delete_after_days_since_creation = 210
+      }
+    }
+  }
+}
+```
+
+### 10.3 Cost Optimization Benefits
+
+- **Minimum retention**: Cold (90 d), Archive (180 d). Early deletion fees apply only for actual blob deletion.
 - To **avoid penalties** while rotating frequently:
-  - Always upload to **new names** (suffix/timestamp).
-  - Mark previous blobs `state=retired` and use **Lifecycle Management** to delete after the tier's min days.
+  - Always upload to **new unique names** (`uniqueFileId` format).
+  - Move previous files to `/retired/` directory (no fees for moves).
+  - Use **Lifecycle Management** to delete after tier minimum retention periods.
 - **Container App costs**: Pay-per-use model keeps costs minimal for infrequent backup operations.
 
 ### Example Cost Estimate (1TB/month)
-- **Storage**: €2-4/TB/month (Cool/Cold tier)
+- **Storage**: 
+  - Month 1-30: €15.20/TB (Cold tier)
+  - Month 30+: €0.99/TB (Archive tier)
+  - Blended annual average: ~€2-3/TB/month
 - **Transactions**: ~€0.10/month (assuming 10k operations)
 - **Container App execution**: ~€0.10/month (minimal compute time and scaling)
 - **Egress**: €0 (uploads are ingress; downloads charged separately)
+- **Early deletion fees**: €0 (avoided through move operations + lifecycle timing)
 
 ---
 
 ## 11) Reliability, Idempotency & Retries
 
-- **Idempotent commits**: `/commit-*` uses `snapshotId`; replays are safe.
-- **Pointer update** (`latest.json`) protected by ETag/lease; retries with backoff.
+- **Idempotent commits**: `/commit-*` uses file mappings (`relativePath` -> `uniqueFileId`); replays are safe.
+- **Manifest updates** protected by ETag/lease; retries with backoff.
 - **Exponential backoff + jitter** for network/storage retries.
 - **Checksums** verified server-side before publishing.
-- **Partial uploads** never become current; old latest remains valid.
-- **Container App reliability**: Stateless design; all state in blob storage.
+- **Partial uploads** never become current; old manifest remains valid until successful commit.
+- **Container App reliability**: Stateless design; all state in blob storage manifest.
 
 ---
 
@@ -393,107 +390,7 @@ Program Files*/
 
 ---
 
-## 13) Development & Deployment
-
-### 13.1 Local Development
-- Use Azurite for local storage emulation.
-- Mock Entra ID authentication for testing.
-- Docker Compose setup for integrated testing.
-
-### 13.2 CI/CD Pipeline Extensions
-```yaml
-# .github/workflows/deploy.yml additions
-- name: Deploy Container App
-  run: |
-    dotnet publish src/Services/api --configuration Release
-    # Build and deploy container image to Azure Container App using existing pipeline
-```
-
-### 13.3 Testing Strategy
-- **Unit tests**: SAS generation, request validation, business logic.
-- **Integration tests**: End-to-end upload flows with test storage account.
-- **Load tests**: Concurrent uploads, large file handling.
-- **Security tests**: SAS permission validation, authentication flows.
-
----
-
-## 14) Security Considerations
-
-- Enforce HTTPS, short SAS TTLs, optional IP restriction (`sip`).
-- No delete/list permissions in SAS; deletes only via Container App with Managed Identity.
-- Consider **immutability policies** (time-based retention) for ransomware resistance (optional).
-- Optional: **Encryption scopes** to enforce SSE configuration; client-side encryption recommended regardless.
-- **Input validation**: Strict validation of deviceId, file paths, sizes.
-- **Rate limiting**: Implement throttling to prevent abuse.
-
----
-
-## 15) Configuration Matrix (Key Knobs)
-
-| Setting | Default | Notes |
-|---|---|---|
-| Tier | Cold | Use Cool for shorter retention or Archive for infrequent rotation |
-| HNS | ON (required) | Enables directory-scoped SAS (`sr=d`) |
-| SAS TTL | 45 min | Balance UX vs. exposure |
-| Block size | 128–256 MiB | Tune for throughput/ops cost |
-| Hashing | Candidates only | SHA-256 only for changed/new files |
-| Ignore rules | .backupignore | Gitignore-style, per drive |
-| Function timeout | 10 min | For commit operations |
-
----
-
-## 16) Future Enhancements
-
-- **Content-addressed storage** (global dedup by `sha256` under `/objects/{hash}` + manifests as references).
-- **Delta/rsync-like** chunking for large files.
-- **Restore service** that assembles a zip/7z on demand (beware egress costs).
-- **Rehydration manager** for Cold/Archive restores (queue + notifications).
-- **Versioning UI** and per-folder policies.
-- **Multi-region replication** for disaster recovery.
-- **Durable Functions** for long-running operations and orchestration.
-
----
-
-## 17) Implementation Phases
-
-### Phase 1: MVP (Multi-file sync)
-- Basic SAS minting function for directory uploads
-- Multi-file sync flow with manifest management
-- Simple client prototype with delta scanning
-- Basic Terraform extensions for HNS-enabled storage
-
-### Phase 2: Enhanced Features
-- Advanced client scanner optimizations
-- Improved error handling and retries
-- Performance tuning for large file sets
-- Enhanced manifest validation
-
-### Phase 3: Production Hardening
-- Comprehensive error handling
-- Performance optimizations
-- Security enhancements
-- Monitoring and alerting
-
-### Phase 4: Advanced Features
-- Content deduplication
-- Restore workflows
-- Multi-device management
-- Web-based management portal
-
----
-
-## 18) Risks & Mitigations
-
-- **Frequent rotation + Archive** → early deletion fees. Mitigate by using Cool/Cold or lifecycle with delayed deletion.
-- **Large directory trees** → slow scans. Mitigate with USN Journal & ignore rules.
-- **Locked files** → inconsistent reads. Mitigate with VSS in later iteration.
-- **Network instability** → failed uploads. Mitigate with block resumes and retries.
-- **Function cold starts** → slow initial requests. Consider Premium plan or keep-warm strategies.
-- **Storage account limits** → hitting transaction/bandwidth limits. Mitigate with multiple storage accounts or premium tiers.
-
----
-
-## 19) Success Metrics
+## 13) Success Metrics
 
 - **Cost efficiency**: Stay under €3/TB/month all-in cost.
 - **Reliability**: 99.9% successful backup completion rate.
