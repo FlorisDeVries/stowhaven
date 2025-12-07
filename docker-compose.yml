@@ -42,8 +42,8 @@ services:
             "-config", "/configuration/config.yaml"
         ]
         volumes:
-            - "./dapr/components/:/components"
-            - "./dapr/:/configuration"
+            - "./run/components/:/components"
+            - "./run/configuration/:/configuration"
         depends_on:
             - backup-api
             - azurite

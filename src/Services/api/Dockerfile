@@ -8,7 +8,7 @@
 # Build arguments
 # ---------------
 
-# The build/app version usually comming from CI/CD pipeline
+# The build/app version usually coming from CI/CD pipeline
 ARG BUILD_VERSION=1.0.0
 
 # The dotnet base container version/tag.
@@ -46,7 +46,7 @@ RUN \
         (apt-get update && apt-get install -y --no-install-recommends tzdata && rm -rf /var/lib/apt/lists/*) || \
         # cbl-mariner
         (tdnf install -y tzdata && tdnf clean all) \
-    ) \
+    )
 
 COPY ["src/services/api/FlorisDeV.BackupApi.csproj", "src/services/api/"]
 COPY ["src/common/featureflags/FlorisDeV.FeatureFlags.csproj", "src/common/featureflags/"]
@@ -60,7 +60,7 @@ RUN --mount=type=cache,id=nuget_manager,target=/root/.nuget/packages \
     -p:PublishReadyToRun=true
 
 # copy all project files
-COPY src/. .
+COPY src/. src/.
 COPY .editorconfig .
 
 # publish (build)
@@ -107,4 +107,4 @@ USER ${CONTAINER_USER:-app}
 # enable health checks (requires curl installed)
 HEALTHCHECK --interval=5s --timeout=10s --retries=3 CMD curl --fail http://localhost:${WEBSITES_PORT:-8080}/health/liveness || exit 1
 
-ENTRYPOINT ["./punchout-connector-manager"]
+ENTRYPOINT ["./backup-api"]
