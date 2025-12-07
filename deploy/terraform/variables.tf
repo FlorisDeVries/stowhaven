@@ -1,19 +1,19 @@
 variable "location" {
   description = "Azure region for resources"
   type        = string
-  default     = "westeurope"
+  default     = "northeurope"
 }
 
 variable "name_suffix" {
   description = "Suffix for resource names"
   type        = string
-  default     = "fdev-weu-prd"
+  default     = "fdev-neu-prd"
 }
 
 variable "name_suffix_str" {
   description = "Suffix for storage account names (no dashes)"
   type        = string
-  default     = "fdevweuprd"
+  default     = "fdevneuprd"
 }
 
 variable "lifecycle_archive_after_days" {

@@ -8,8 +8,8 @@ terraform {
   }
   
   backend "azurerm" {
-    resource_group_name  = "rg-fdev-weu-backup-prd"
-    storage_account_name = "staterraformfdevweuprd"
+    resource_group_name  = "rg-fdev-neu-backup-prd"
+    storage_account_name = "staterraformfdevneuprd"
     container_name       = "tfstate"
     key                  = "backup-api.tfstate"
   }
