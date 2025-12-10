@@ -16,128 +16,133 @@ namespace FlorisDeV.BackupApi;
 
 public static class ProgramExtensions
 {
-    public static void AddApplicationServices(this WebApplicationBuilder builder)
+    extension(WebApplicationBuilder builder)
     {
-        builder.Services.AddScoped<ISasUrlService, SasUrlService>();
-    }
-
-    public static void AddCustomDaprClient(this WebApplicationBuilder builder)
-    {
-        builder.Services.AddDaprClient(configure =>
+        public void AddApplicationServices()
         {
-            configure.UseJsonSerializationOptions(new JsonSerializerOptions
+            builder.Services.AddScoped<ISasUrlService, SasUrlService>();
+            builder.Services.AddScoped<IBackupRunService, BackupRunService>();
+            builder.Services.AddScoped<IManifestManager, ManifestManager>();
+        }
+
+        public void AddCustomDaprClient()
+        {
+            builder.Services.AddDaprClient(configure =>
             {
-                Converters =
+                configure.UseJsonSerializationOptions(new JsonSerializerOptions
                 {
-                    new JsonStringEnumConverter(JsonNamingPolicy.CamelCase)
+                    Converters =
+                    {
+                        new JsonStringEnumConverter(JsonNamingPolicy.CamelCase)
+                    }
+                });
+            });
+        }
+
+        public void AddCustomLogging()
+        {
+            builder.Host.AddSerilog(builder.Environment.ApplicationName);
+            builder.Services.AddHttpLogging(logging => logging.LoggingFields = HttpLoggingFields.All);
+            builder.Services.AddProblemDetails(options =>
+            {
+                options.CustomizeProblemDetails = context =>
+                {
+                    var contextFeature = context.HttpContext.Features.Get<IExceptionHandlerFeature>();
+                    var exception = contextFeature?.Error;
+
+                    if (exception == null)
+                    {
+                        return;
+                    }
+
+                    var problemDetails = context.ProblemDetails;
+                    var response = context.HttpContext.Response;
+
+                    problemDetails.Title = exception.GetType().Name;
+                    problemDetails.Detail = exception.Message;
+
+                    if (exception is not ApiException apiException)
+                    {
+                        return;
+                    }
+
+                    // set the response status and problem details codes
+                    // equal to the one returned by the client api exception
+                    problemDetails.Status = (int)apiException.StatusCode;
+                    response.StatusCode = (int)apiException.StatusCode;
+                };
+            });
+        }
+
+        public void AddCustomSwagger(Assembly assembly)
+        {
+            builder.Services.AddSwaggerGen(c =>
+            {
+                var productVersion = FileVersionInfo.GetVersionInfo(assembly.Location).ProductVersion;
+
+                c.SwaggerDoc("main", new OpenApiInfo
+                {
+                    Title = builder.Environment.ApplicationName,
+                    Version = productVersion,
+                    Description = "Backup endpoints secured with api key authentication"
+                });
+
+                // make all params camelCased
+                c.DescribeAllParametersInCamelCase();
+                c.UseAllOfToExtendReferenceSchemas();
+
+                // Use documentation from code
+                foreach (var xmlFile in
+                         Directory.GetFiles(AppContext.BaseDirectory, "*.xml", SearchOption.TopDirectoryOnly))
+                {
+                    c.IncludeXmlComments(xmlFile, includeControllerXmlComments: true);
                 }
             });
-        });
-    }
+        }
 
-    public static void AddCustomLogging(this WebApplicationBuilder builder)
-    {
-        builder.Host.AddSerilog(builder.Environment.ApplicationName);
-        builder.Services.AddHttpLogging(logging => logging.LoggingFields = HttpLoggingFields.All);
-        builder.Services.AddProblemDetails(options =>
+        public void AddCustomCache()
         {
-            options.CustomizeProblemDetails = context =>
-            {
-                var contextFeature = context.HttpContext.Features.Get<IExceptionHandlerFeature>();
-                var exception = contextFeature?.Error;
+            builder.Services.AddMemoryCache();
+            builder.Services.AddDistributedMemoryCache(); // or AddDistributedRedisCache
+        }
 
-                if (exception == null)
+        public void AddCustomRateLimitPolicies()
+        {
+            builder.Services.AddRateLimiter(o =>
+            {
+                o.AddSlidingWindowLimiter(RateLimitPolicies.ExternalHealthCheckPolicy, options =>
                 {
-                    return;
-                }
-
-                var problemDetails = context.ProblemDetails;
-                var response = context.HttpContext.Response;
-
-                problemDetails.Title = exception.GetType().Name;
-                problemDetails.Detail = exception.Message;
-
-                if (exception is not ApiException apiException)
-                {
-                    return;
-                }
-
-                // set the response status and problem details codes
-                // equal to the one returned by the client api exception
-                problemDetails.Status = (int)apiException.StatusCode;
-                response.StatusCode = (int)apiException.StatusCode;
-            };
-        });
-    }
-
-    public static void AddCustomSwagger(this WebApplicationBuilder builder, Assembly assembly)
-    {
-        builder.Services.AddSwaggerGen(c =>
-        {
-            var productVersion = FileVersionInfo.GetVersionInfo(assembly.Location).ProductVersion;
-
-            c.SwaggerDoc("main", new OpenApiInfo
-            {
-                Title = builder.Environment.ApplicationName,
-                Version = productVersion,
-                Description = "Backup endpoints secured with api key authentication"
+                    options.PermitLimit = 6;
+                    options.Window = TimeSpan.FromMinutes(1);
+                    options.SegmentsPerWindow = 6;
+                    options.QueueLimit = 1;
+                });
             });
+        }
 
-            // make all params camelCased
-            c.DescribeAllParametersInCamelCase();
-            c.UseAllOfToExtendReferenceSchemas();
-
-            // Use documentation from code
-            foreach (var xmlFile in
-                     Directory.GetFiles(AppContext.BaseDirectory, "*.xml", SearchOption.TopDirectoryOnly))
-            {
-                c.IncludeXmlComments(xmlFile, includeControllerXmlComments: true);
-            }
-        });
-    }
-
-    public static void AddCustomCache(this WebApplicationBuilder builder)
-    {
-        builder.Services.AddMemoryCache();
-        builder.Services.AddDistributedMemoryCache(); // or AddDistributedRedisCache
-    }
-
-    public static void AddCustomRateLimitPolicies(this WebApplicationBuilder builder)
-    {
-        builder.Services.AddRateLimiter(o =>
+        public void ConfigureRouting()
         {
-            o.AddSlidingWindowLimiter(RateLimitPolicies.ExternalHealthCheckPolicy, options =>
+            builder.Services.Configure<RouteOptions>(options => { options.LowercaseUrls = true; });
+        }
+
+        public void ConfigureWebServer()
+        {
+            builder.WebHost.UseKestrel(options =>
             {
-                options.PermitLimit = 6;
-                options.Window = TimeSpan.FromMinutes(1);
-                options.SegmentsPerWindow = 6;
-                options.QueueLimit = 1;
+                options.Limits.KeepAliveTimeout = TimeSpan.FromMinutes(1);
+                options.AddServerHeader = false;
             });
-        });
-    }
+        }
 
-    public static void ConfigureRouting(this WebApplicationBuilder builder)
-    {
-        builder.Services.Configure<RouteOptions>(options => { options.LowercaseUrls = true; });
-    }
-
-    public static void ConfigureWebServer(this WebApplicationBuilder builder)
-    {
-        builder.WebHost.UseKestrel(options =>
+        public void ConfigureProxyForwarding()
         {
-            options.Limits.KeepAliveTimeout = TimeSpan.FromMinutes(1);
-            options.AddServerHeader = false;
-        });
-    }
-
-    public static void ConfigureProxyForwarding(this WebApplicationBuilder builder)
-    {
-        builder.Services.Configure<ForwardedHeadersOptions>(options =>
-        {
-            options.ForwardedHeaders = ForwardedHeaders.All;
-            options.KnownNetworks.Clear();
-            options.KnownProxies.Clear();
-        });
+            builder.Services.Configure<ForwardedHeadersOptions>(options =>
+            {
+                options.ForwardedHeaders = ForwardedHeaders.All;
+                options.KnownIPNetworks.Clear();
+                options.KnownProxies.Clear();
+            });
+        }
     }
 
     public static void AddCustomDaprIntegration(this IMvcBuilder builder)

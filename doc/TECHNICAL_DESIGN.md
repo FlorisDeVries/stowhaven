@@ -1,14 +1,3 @@
-Here’s the updated design with the “sweet spot” iteration baked in:
-
-* **Directory-scoped SAS to staging per run**
-* **Async commit worker**
-* **Manifest/state in Azure Table Storage via Dapr**
-* **ACA + Dapr sidecar**
-
----
-
-# Cloud Backup API - Technical Design (v2 – Sweet Spot + Dapr + Table Storage)
-
 ## 1) Goals & Non-Goals
 
 **Goals**
@@ -63,7 +52,7 @@ flowchart TD
     Client -->|7 Upload run-manifest.json| Blob
 
     %% Commit
-    Client -->|8 Commit-Run\n(manifest path only)| API
+    Client -->|8 Commit-Run| API
     API -->|9 Publish commit job| Queue
 
     %% Worker
@@ -205,43 +194,43 @@ The client-side delta logic remains largely the same; what changes is **how** ch
 flowchart TD
     Start([Start Delta Scan]) --> Walk[Walk filesystem]
     Walk --> FileFound{File found?}
-    
+
     FileFound -->|Yes| InLocalDB{Exists in local DB?}
     FileFound -->|No| CheckMissing[Check deleted files]
-    
+
     InLocalDB -->|No| NewFile[New file]
     InLocalDB -->|Yes| CompareMetadata{Size or mtime changed?}
-    
+
     CompareMetadata -->|No| NoChange[No change]
     CompareMetadata -->|Yes| ChangedFile[File changed]
-    
+
     NewFile --> ComputeHash1[Compute sha256]
     ComputeHash1 --> GenerateID1[Generate uniqueFileId]
     GenerateID1 --> AddToQueue1[Add to upload queue]
     AddToQueue1 --> UpdateLocalDB1[Update local DB]
-    
+
     ChangedFile --> ComputeHash2[Compute new sha256]
     ComputeHash2 --> GenerateID2[Generate new uniqueFileId]
     GenerateID2 --> AddToQueue2[Add to upload queue]
     AddToQueue2 --> MarkOldRetired[Mark old version retired]
     MarkOldRetired --> UpdateLocalDB2[Update local DB]
-    
+
     CheckMissing --> CompareDB{Missing in scan?}
     CompareDB -->|Yes| VerifyDeleted{Verify deleted}
     CompareDB -->|No| Complete[Scan complete]
-    
+
     VerifyDeleted -->|Yes| DeletedFile[File deleted]
     VerifyDeleted -->|No| AccessError[Access error - skip]
-    
+
     DeletedFile --> MarkForRemoval[Mark for removal]
     MarkForRemoval --> RemoveFromDB[Update local DB]
-    
+
     NoChange --> Continue[Continue scan]
     UpdateLocalDB1 --> Continue
     UpdateLocalDB2 --> Continue
     AccessError --> Continue
     Continue --> Walk
-    
+
     Complete --> BuildCommit[Build commit payload]
     BuildCommit --> SubmitCommit[Submit commit run]
 

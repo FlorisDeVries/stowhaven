@@ -24,6 +24,31 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FlorisDeV.HealthChecks", "s
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FlorisDeV.Logging", "src\common\logging\FlorisDeV.Logging.csproj", "{E92601E7-7C63-407E-8F44-B3D9D16AD114}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "doc", "doc", "{897BF15F-3C27-438C-B83D-7002F0E6EC13}"
+	ProjectSection(SolutionItems) = preProject
+		doc\.env.example = doc\.env.example
+		doc\README.md = doc\README.md
+		doc\TECHNICAL_DESIGN.md = doc\TECHNICAL_DESIGN.md
+	EndProjectSection
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "costs", "costs", "{B965404E-9C8F-4595-BAB5-0E637BB69D25}"
+	ProjectSection(SolutionItems) = preProject
+		doc\costs\Azure Pricing Calculator.png = doc\costs\Azure Pricing Calculator.png
+		doc\costs\ExportedEstimate.xlsx = doc\costs\ExportedEstimate.xlsx
+	EndProjectSection
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "run", "run", "{B043250E-11DB-4955-97BD-F1CE1BA79AE9}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "components", "components", "{DDF31014-917E-4379-854D-11330AA8ACCB}"
+	ProjectSection(SolutionItems) = preProject
+		run\components\secret-store.yaml = run\components\secret-store.yaml
+	EndProjectSection
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "configuration", "configuration", "{97062AFE-01D1-462B-AB34-5E1F3AE89C0D}"
+	ProjectSection(SolutionItems) = preProject
+		run\configuration\config.yaml = run\configuration\config.yaml
+	EndProjectSection
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -61,5 +86,8 @@ Global
 		{92B20B6D-3152-404E-99F9-D6A5EB28CB49} = {8DE6DD91-BD93-4A1B-81E7-0C34E6BCCE20}
 		{36F0158C-F609-4717-A5DF-D0E8CA9CFEE5} = {8DE6DD91-BD93-4A1B-81E7-0C34E6BCCE20}
 		{E92601E7-7C63-407E-8F44-B3D9D16AD114} = {8DE6DD91-BD93-4A1B-81E7-0C34E6BCCE20}
+		{B965404E-9C8F-4595-BAB5-0E637BB69D25} = {897BF15F-3C27-438C-B83D-7002F0E6EC13}
+		{DDF31014-917E-4379-854D-11330AA8ACCB} = {B043250E-11DB-4955-97BD-F1CE1BA79AE9}
+		{97062AFE-01D1-462B-AB34-5E1F3AE89C0D} = {B043250E-11DB-4955-97BD-F1CE1BA79AE9}
 	EndGlobalSection
 EndGlobal

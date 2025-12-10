@@ -6,6 +6,19 @@ using FlorisDeV.BackupApi.Models;
 
 namespace FlorisDeV.BackupApi.Services;
 
+public interface ISasUrlService
+{
+    Task<SasUrl> GenerateUploadSasUrlAsync(string path, int? ttlMinutes = null);
+    Task<SasUrl> GenerateDownloadSasUrlAsync(string path, int? ttlMinutes = null);
+}
+
+public class SasUrl
+{
+    public string Url { get; set; } = string.Empty;
+    public DateTimeOffset ExpiresAt { get; set; }
+    public int TtlMinutes { get; set; }
+}
+
 public class SasUrlService(ILogger<SasUrlService> logger, DaprClient daprClient) : ISasUrlService
 {
 
@@ -52,7 +65,7 @@ public class SasUrlService(ILogger<SasUrlService> logger, DaprClient daprClient)
         }
     }
 
-    public async Task<SasResponse> GenerateUploadSasUrlAsync(string path, int? ttlMinutes = null)
+    public async Task<SasUrl> GenerateUploadSasUrlAsync(string path, int? ttlMinutes = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
 
@@ -77,7 +90,7 @@ public class SasUrlService(ILogger<SasUrlService> logger, DaprClient daprClient)
             sasBuilder.SetPermissions(BlobSasPermissions.Create | BlobSasPermissions.Write);
 
             var sasUrl = blobClient.GenerateSasUri(sasBuilder).ToString();
-            var response = new SasResponse
+            var response = new SasUrl
             {
                 Url = sasUrl,
                 ExpiresAt = expiresAt
@@ -93,7 +106,7 @@ public class SasUrlService(ILogger<SasUrlService> logger, DaprClient daprClient)
         }
     }
 
-    public async Task<SasResponse> GenerateDownloadSasUrlAsync(string path, int? ttlMinutes = null)
+    public async Task<SasUrl> GenerateDownloadSasUrlAsync(string path, int? ttlMinutes = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
 
@@ -125,7 +138,7 @@ public class SasUrlService(ILogger<SasUrlService> logger, DaprClient daprClient)
             sasBuilder.SetPermissions(BlobSasPermissions.Read);
 
             var sasUrl = blobClient.GenerateSasUri(sasBuilder).ToString();
-            var response = new SasResponse
+            var response = new SasUrl
             {
                 Url = sasUrl,
                 ExpiresAt = expiresAt

@@ -1,6 +1,4 @@
 using System.Reflection;
-using Microsoft.ApplicationInsights.Extensibility;
-using Dapr.Client;
 using FlorisDeV.BackupApi;
 using FlorisDeV.BackupApi.Constants;
 using FlorisDeV.HealthChecks;
