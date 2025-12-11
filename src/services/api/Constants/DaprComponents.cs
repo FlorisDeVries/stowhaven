@@ -2,5 +2,5 @@
 
 public class DaprComponents
 {
-    public const string ManifestStateStore = "manifeststore";
+    public const string ManifestStateStore = "manifest-state-store";
 }

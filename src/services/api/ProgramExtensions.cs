@@ -2,6 +2,7 @@
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using FlorisDeV.BackupApi.Authentication;
 using FlorisDeV.BackupApi.Constants;
 using FlorisDeV.BackupApi.Services;
 using FlorisDeV.Logging;
@@ -84,8 +85,38 @@ public static class ProgramExtensions
                 {
                     Title = builder.Environment.ApplicationName,
                     Version = productVersion,
-                    Description = "Backup endpoints secured with api key authentication"
+                    Description = builder.Environment.IsDevelopment() 
+                        ? "Backup endpoints (Development mode - no authentication required)"
+                        : "Backup endpoints secured with api key authentication"
                 });
+
+                // Add API Key authentication for non-development environments
+                if (!builder.Environment.IsDevelopment())
+                {
+                    c.AddSecurityDefinition("ApiKey", new OpenApiSecurityScheme
+                    {
+                        Description = "API Key authentication. Pass your API key in the X-API-Key header.",
+                        Name = "X-API-Key",
+                        In = ParameterLocation.Header,
+                        Type = SecuritySchemeType.ApiKey,
+                        Scheme = "ApiKey"
+                    });
+
+                    c.AddSecurityRequirement(new OpenApiSecurityRequirement
+                    {
+                        {
+                            new OpenApiSecurityScheme
+                            {
+                                Reference = new OpenApiReference
+                                {
+                                    Type = ReferenceType.SecurityScheme,
+                                    Id = "ApiKey"
+                                }
+                            },
+                            Array.Empty<string>()
+                        }
+                    });
+                }
 
                 // make all params camelCased
                 c.DescribeAllParametersInCamelCase();
@@ -98,6 +129,31 @@ public static class ProgramExtensions
                     c.IncludeXmlComments(xmlFile, includeControllerXmlComments: true);
                 }
             });
+        }
+
+        public void AddCustomAuthentication()
+        {
+            if (builder.Environment.IsDevelopment())
+            {
+                // For local development: allow anonymous access
+                builder.Services
+                    .AddAuthentication("AllowAnonymous")
+                    .AddScheme<Microsoft.AspNetCore.Authentication.AuthenticationSchemeOptions, AllowAnonymousAuthenticationHandler>(
+                        "AllowAnonymous", 
+                        options => { });
+            }
+            else
+            {
+                // For production: configure your actual authentication scheme
+                // Example: API Key authentication (you can replace this with Azure AD, JWT, etc.)
+                builder.Services
+                    .AddAuthentication("ApiKey")
+                    .AddScheme<Microsoft.AspNetCore.Authentication.AuthenticationSchemeOptions, ApiKeyAuthenticationHandler>(
+                        "ApiKey", 
+                        options => { });
+            }
+
+            builder.Services.AddAuthorization();
         }
 
         public void AddCustomCache()

@@ -13,8 +13,8 @@ ARG BUILD_VERSION=1.0.0
 
 # The dotnet base container version/tag.
 # Use https://mcr.microsoft.com/v2/dotnet/sdk/tags/list to list all available tags
-ARG SDK_VERSION=9.0-noble
-ARG RUNTIME_VERSION=9.0-noble-chiseled-extra
+ARG SDK_VERSION=10.0-noble
+ARG RUNTIME_VERSION=10.0-noble-chiseled-extra
 
 # Targets specific runtime environments (native compilation).
 # This parameter is connected to the runtime version specified above.
@@ -107,4 +107,4 @@ USER ${CONTAINER_USER:-app}
 # enable health checks (requires curl installed)
 HEALTHCHECK --interval=5s --timeout=10s --retries=3 CMD curl --fail http://localhost:${WEBSITES_PORT:-8080}/health/liveness || exit 1
 
-ENTRYPOINT ["./backup-api"]
+ENTRYPOINT ["./FlorisDeV.BackupApi"]

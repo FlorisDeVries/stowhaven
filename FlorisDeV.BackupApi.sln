@@ -42,6 +42,7 @@ EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "components", "components", "{DDF31014-917E-4379-854D-11330AA8ACCB}"
 	ProjectSection(SolutionItems) = preProject
 		run\components\secret-store.yaml = run\components\secret-store.yaml
+		run\components\manifest-state-store.yaml = run\components\manifest-state-store.yaml
 	EndProjectSection
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "configuration", "configuration", "{97062AFE-01D1-462B-AB34-5E1F3AE89C0D}"

@@ -20,7 +20,7 @@ builder.AddCustomCache();
 builder.AddCustomRateLimitPolicies();
 builder.AddStandardHealthChecks();
 
-// TODO: Add Authentication and Authorization
+builder.AddCustomAuthentication();
 
 builder.AddApplicationServices();
 builder.ConfigureRouting();
@@ -47,6 +47,8 @@ app.UseAuthentication();
 app.UseAuthorization();
 app.UseRateLimiter();
 
+// Map controllers - RequireAuthorization applies authentication
+// In development, anonymous auth handler allows all requests
 app.MapControllers().RequireAuthorization();
 app.MapSubscribeHandler();
 

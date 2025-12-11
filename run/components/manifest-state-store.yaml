@@ -1,0 +1,26 @@
+﻿# NOTE ABOUT LOCAL DEVELOPMENT:
+# Azurite (the local Azure Storage emulator) does NOT support the Azure Table Storage API.
+# It only supports the Blob and Queue APIs.
+#
+# The Dapr component "state.azure.tablestorage" requires the real Azure Table Storage API
+# and cannot communicate with Azurite's limited Table emulation. This results in
+# authentication errors and failed component initialization when using Table Storage locally.
+#
+# For this reason, we use "state.azure.blobstorage" for the local state store instead.
+# Blob Storage works reliably with Azurite and is fully compatible with Dapr's key/value
+# state store interface, making it the recommended choice for local development.
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+    name: manifest-state-store
+spec:
+    type: state.azure.blobstorage
+    version: v1
+    metadata:
+        - name: containerName
+          value: manifest-state-store
+        - name: connectionString
+          secretKeyRef:
+              name: AZURE_STORAGE_CONNECTION_STRING
+auth:
+    secretStore: secret-store
