@@ -4,11 +4,13 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using FlorisDeV.BackupApi.Authentication;
 using FlorisDeV.BackupApi.Constants;
+using FlorisDeV.BackupApi.Filters;
 using FlorisDeV.BackupApi.Services;
 using FlorisDeV.Logging;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.HttpLogging;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.OpenApi.Models;
 using Refit;
@@ -73,6 +75,8 @@ public static class ProgramExtensions
                     response.StatusCode = (int)apiException.StatusCode;
                 };
             });
+            
+            // Note: Exception handling is now done via GlobalExceptionFilter for better control
         }
 
         public void AddCustomSwagger(Assembly assembly)

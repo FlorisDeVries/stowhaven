@@ -1,6 +1,7 @@
 using System.Reflection;
 using FlorisDeV.BackupApi;
 using FlorisDeV.BackupApi.Constants;
+using FlorisDeV.BackupApi.Filters;
 using FlorisDeV.HealthChecks;
 using FlorisDeV.Logging;
 using FlorisDeV.Logging.ErrorHandling;
@@ -29,7 +30,11 @@ builder.ConfigureProxyForwarding();
 
 builder.Services
     .AddEndpointsApiExplorer()
-    .AddControllers(options => options.Filters.Add<ProblemDetailsResultFilter>())
+    .AddControllers(options =>
+    {
+        options.Filters.Add<ProblemDetailsResultFilter>();
+        options.Filters.Add<GlobalExceptionFilter>();
+    })
     .AddCustomDaprIntegration();
 
 var app = builder.Build();

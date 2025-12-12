@@ -8,6 +8,12 @@ public class BackupRun
     public DateTimeOffset? CompletedAt { get; set; }
     public BackupRunStatus Status { get; set; }
     public int FilesBackedUp { get; set; }
+    
+    /// <summary>
+    /// ETag for optimistic concurrency control.
+    /// Updated by the state store on each write operation.
+    /// </summary>
+    public string? ETag { get; set; }
 }
 
 public class RunStatistics
