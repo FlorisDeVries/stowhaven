@@ -1,29 +1,29 @@
 ﻿using Dapr.Client;
 using FlorisDeV.BackupApi.Constants;
 using FlorisDeV.BackupApi.Exceptions;
-using FlorisDeV.BackupApi.Models.StateStore;
+using FlorisDeV.BackupApi.Models.State;
 
 namespace FlorisDeV.BackupApi.Services;
 
 public interface IManifestManager
 {
-    Task<BackupRunDto> CreateBackupRunAsync(Guid deviceId, Guid runId, DateTimeOffset startedAt,
+    Task<BackupRun> CreateBackupRunAsync(Guid deviceId, Guid runId, DateTimeOffset startedAt,
         CancellationToken cancellationToken = default);
 
-    Task<BackupRunDto> GetBackupRunAsync(Guid deviceId, Guid runId, CancellationToken cancellationToken = default);
+    Task<BackupRun> GetBackupRunAsync(Guid deviceId, Guid runId, CancellationToken cancellationToken = default);
 
-    Task<BackupRunDto> CommitBackupRunAsync(Guid deviceId, Guid runId, CancellationToken cancellationToken = default);
+    Task<BackupRun> CommitBackupRunAsync(Guid deviceId, Guid runId, CancellationToken cancellationToken = default);
 }
 
 public class ManifestManager(
     DaprClient daprClient
 ) : IManifestManager
 {
-    public async Task<BackupRunDto> CreateBackupRunAsync(Guid deviceId, Guid runId, DateTimeOffset startedAt,
+    public async Task<BackupRun> CreateBackupRunAsync(Guid deviceId, Guid runId, DateTimeOffset startedAt,
         CancellationToken cancellationToken = default)
     {
         var stateKey = $"{deviceId}/backupruns/{runId}";
-        var state = new BackupRunDto
+        var state = new BackupRun
         {
             RunId = runId,
             DeviceId = deviceId,
@@ -36,17 +36,17 @@ public class ManifestManager(
         return state;
     }
 
-    public Task<BackupRunDto> GetBackupRunAsync(Guid deviceId, Guid runId, CancellationToken cancellationToken = default)
+    public Task<BackupRun> GetBackupRunAsync(Guid deviceId, Guid runId, CancellationToken cancellationToken = default)
     {
         var stateKey = $"{deviceId}/backupruns/{runId}";
-        return daprClient.GetStateAsync<BackupRunDto>(DaprComponents.ManifestStateStore, stateKey,
+        return daprClient.GetStateAsync<BackupRun>(DaprComponents.ManifestStateStore, stateKey,
             cancellationToken: cancellationToken);
     }
 
-    public async Task<BackupRunDto> CommitBackupRunAsync(Guid deviceId, Guid runId, CancellationToken cancellationToken = default)
+    public async Task<BackupRun> CommitBackupRunAsync(Guid deviceId, Guid runId, CancellationToken cancellationToken = default)
     {
         var stateKey = $"{deviceId}/backupruns/{runId}";
-        var run = await daprClient.GetStateAsync<BackupRunDto>(DaprComponents.ManifestStateStore, stateKey,
+        var run = await daprClient.GetStateAsync<BackupRun>(DaprComponents.ManifestStateStore, stateKey,
             cancellationToken: cancellationToken);
 
         if (run == null)

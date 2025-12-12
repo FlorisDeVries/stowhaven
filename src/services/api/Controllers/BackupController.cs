@@ -1,7 +1,7 @@
 ﻿using FlorisDeV.BackupApi.Exceptions;
-using FlorisDeV.BackupApi.Models.Requests;
-using FlorisDeV.BackupApi.Models.Responses;
-using FlorisDeV.BackupApi.Models.StateStore;
+using FlorisDeV.BackupApi.Models.Api.Requests;
+using FlorisDeV.BackupApi.Models.Api.Responses;
+using FlorisDeV.BackupApi.Models.Application;
 using FlorisDeV.BackupApi.Services;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Mvc;
@@ -31,10 +31,10 @@ public class BackupController(
         }
 
         // Start backup-run
-        BackupRunDto run;
+        BackupRunStartResult result;
         try
         {
-            run = await backupRunService.StartBackupRunAsync(request.DeviceId, cancellationToken);
+            result = await backupRunService.StartBackupRunAsync(request.DeviceId, cancellationToken);
         }
         catch (Exception e)
         {
@@ -50,10 +50,11 @@ public class BackupController(
 
         var response = new StartBackupRunResponse()
         {
-            DeviceId = run.DeviceId,
-            RunId = run.RunId,
-            StartedAt = run.StartedAt,
-            Status = run.Status
+            DeviceId = result.Run.DeviceId,
+            RunId = result.Run.RunId,
+            StartedAt = result.Run.StartedAt,
+            Status = result.Run.Status,
+            SasUrlInfo = result.SasUrl
         };
 
         return Ok(response);

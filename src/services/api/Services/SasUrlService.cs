@@ -1,31 +1,98 @@
+using System.Security;
 using Azure.Identity;
 using Azure.Storage.Blobs;
+using Azure.Storage.Blobs.Models;
 using Azure.Storage.Sas;
 using Dapr.Client;
-using FlorisDeV.BackupApi.Models;
+using FlorisDeV.BackupApi.Models.Infrastructure;
 
 namespace FlorisDeV.BackupApi.Services;
 
 public interface ISasUrlService
 {
-    Task<SasUrl> GenerateUploadSasUrlAsync(string path, int? ttlMinutes = null);
-    Task<SasUrl> GenerateDownloadSasUrlAsync(string path, int? ttlMinutes = null);
-}
-
-public class SasUrl
-{
-    public string Url { get; set; } = string.Empty;
-    public DateTimeOffset ExpiresAt { get; set; }
-    public int TtlMinutes { get; set; }
+    Task<SasUrlInfo> GenerateUploadSasUrlAsync(string path, int? ttlMinutes = null,
+        CancellationToken cancellationToken = default);
 }
 
 public class SasUrlService(ILogger<SasUrlService> logger, DaprClient daprClient) : ISasUrlService
 {
-
     private readonly string _secretStoreName = "secret-store";
     private BlobServiceClient? _blobServiceClient;
-    private string? _dataStorageAccount;
-    private string? _dataContainer;
+    private string _dataStorageAccount = null!;
+    private string _dataContainer = null!;
+    private UserDelegationKey? _cachedKey;
+    private DateTimeOffset _keyExpiresAt;
+
+    public async Task<SasUrlInfo> GenerateUploadSasUrlAsync(string path, int? ttlMinutes = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+
+        // Validate path
+        path = ValidatePath(path);
+
+        var ttl = ttlMinutes ?? 60;
+        var expiresAt = DateTimeOffset.UtcNow.AddMinutes(ttl);
+
+        try
+        {
+            var blobServiceClient = await GetBlobServiceClientAsync();
+            var sasBuilder = new BlobSasBuilder
+            {
+                BlobContainerName = _dataContainer,
+                BlobName = path,
+                Resource = "d", // directory
+                ExpiresOn = expiresAt,
+                StartsOn = DateTimeOffset.UtcNow.AddMinutes(-5), // Allow 5 minutes clock skew
+                Protocol = SasProtocol.Https
+            };
+
+            sasBuilder.SetPermissions(BlobSasPermissions.Create | BlobSasPermissions.Write);
+
+            // Use User Delegation Key for enhanced security (no account key exposure)
+            var key = await GetDelegationKeyAsync(blobServiceClient, expiresAt, cancellationToken);
+            var sasToken = sasBuilder.ToSasQueryParameters(
+                key,
+                _dataStorageAccount
+            ).ToString();
+
+            var result = new SasUrlInfo
+            {
+                Url = new Uri(
+                    $"https://{_dataStorageAccount}.blob.core.windows.net/{_dataContainer}/{path}?{sasToken}"),
+                ExpiresAt = expiresAt,
+                TtlMinutes = ttl
+            };
+
+            logger.LogInformation("Generated upload SAS URL for path: {Path}, expires at: {ExpiresAt}", path,
+                expiresAt);
+            return result;
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Error generating upload SAS URL for path: {Path}", path);
+            throw;
+        }
+    }
+
+    private string ValidatePath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            throw new ArgumentException("Path cannot be null or whitespace", nameof(path));
+
+        path = path.Trim('/');
+
+        if (path.Contains("..", StringComparison.Ordinal))
+            throw new SecurityException("Invalid path traversal");
+
+        if (!path.StartsWith("staging/", StringComparison.Ordinal))
+            throw new SecurityException("Upload SAS may only target staging/");
+
+        if (path.Contains('.', StringComparison.Ordinal))
+            throw new SecurityException("Upload SAS must target a directory, not a blob");
+
+        return path;
+    }
 
     private async Task<BlobServiceClient> GetBlobServiceClientAsync()
     {
@@ -37,7 +104,8 @@ public class SasUrlService(ILogger<SasUrlService> logger, DaprClient daprClient)
         // Get storage configuration from DAPR secrets
         _dataStorageAccount = await GetSecretAsync("storage-account-name")
                               ?? Environment.GetEnvironmentVariable("DATA_STORAGE_ACCOUNT")
-                              ?? throw new InvalidOperationException("DATA_STORAGE_ACCOUNT not found in secrets or environment");
+                              ?? throw new InvalidOperationException(
+                                  "DATA_STORAGE_ACCOUNT not found in secrets or environment");
 
         _dataContainer = await GetSecretAsync("data-container")
                          ?? Environment.GetEnvironmentVariable("DATA_CONTAINER")
@@ -65,92 +133,20 @@ public class SasUrlService(ILogger<SasUrlService> logger, DaprClient daprClient)
         }
     }
 
-    public async Task<SasUrl> GenerateUploadSasUrlAsync(string path, int? ttlMinutes = null)
+    private async Task<UserDelegationKey> GetDelegationKeyAsync(
+        BlobServiceClient client,
+        DateTimeOffset expiresAt,
+        CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        if (_cachedKey != null && _keyExpiresAt > expiresAt.AddMinutes(5))
+            return _cachedKey;
 
-        var ttl = ttlMinutes ?? 60;
-        var expiresAt = DateTimeOffset.UtcNow.AddMinutes(ttl);
+        var keyExpiry = DateTimeOffset.UtcNow.AddHours(2);
+        _cachedKey = await client.GetUserDelegationKeyAsync(
+            DateTimeOffset.UtcNow.AddMinutes(-5),
+            keyExpiry, cancellationToken);
 
-        try
-        {
-            var blobServiceClient = await GetBlobServiceClientAsync();
-            var containerClient = blobServiceClient.GetBlobContainerClient(_dataContainer);
-            var blobClient = containerClient.GetBlobClient(path);
-
-            var sasBuilder = new BlobSasBuilder
-            {
-                BlobContainerName = _dataContainer,
-                BlobName = path,
-                Resource = "b", // blob
-                ExpiresOn = expiresAt,
-                StartsOn = DateTimeOffset.UtcNow.AddMinutes(-5) // Allow 5 minutes clock skew
-            };
-
-            sasBuilder.SetPermissions(BlobSasPermissions.Create | BlobSasPermissions.Write);
-
-            var sasUrl = blobClient.GenerateSasUri(sasBuilder).ToString();
-            var response = new SasUrl
-            {
-                Url = sasUrl,
-                ExpiresAt = expiresAt
-            };
-
-            logger.LogInformation("Generated upload SAS URL for path: {Path}, expires at: {ExpiresAt}", path, expiresAt);
-            return response;
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "Error generating upload SAS URL for path: {Path}", path);
-            throw;
-        }
-    }
-
-    public async Task<SasUrl> GenerateDownloadSasUrlAsync(string path, int? ttlMinutes = null)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(path);
-
-        var ttl = ttlMinutes ?? 60;
-        var expiresAt = DateTimeOffset.UtcNow.AddMinutes(ttl);
-
-        try
-        {
-            var blobServiceClient = await GetBlobServiceClientAsync();
-            var containerClient = blobServiceClient.GetBlobContainerClient(_dataContainer);
-            var blobClient = containerClient.GetBlobClient(path);
-
-            // Check if blob exists
-            var exists = await blobClient.ExistsAsync();
-            if (!exists.Value)
-            {
-                throw new FileNotFoundException($"Blob not found: {path}");
-            }
-
-            var sasBuilder = new BlobSasBuilder
-            {
-                BlobContainerName = _dataContainer,
-                BlobName = path,
-                Resource = "b", // blob
-                ExpiresOn = expiresAt,
-                StartsOn = DateTimeOffset.UtcNow.AddMinutes(-5) // Allow 5 minutes clock skew
-            };
-
-            sasBuilder.SetPermissions(BlobSasPermissions.Read);
-
-            var sasUrl = blobClient.GenerateSasUri(sasBuilder).ToString();
-            var response = new SasUrl
-            {
-                Url = sasUrl,
-                ExpiresAt = expiresAt
-            };
-
-            logger.LogInformation("Generated download SAS URL for path: {Path}, expires at: {ExpiresAt}", path, expiresAt);
-            return response;
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "Error generating download SAS URL for path: {Path}", path);
-            throw;
-        }
+        _keyExpiresAt = keyExpiry;
+        return _cachedKey;
     }
 }

@@ -1,4 +1,4 @@
-namespace FlorisDeV.BackupApi.Models.Responses;
+namespace FlorisDeV.BackupApi.Models.Api.Responses;
 
 public class ErrorResponse
 {

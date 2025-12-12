@@ -1,6 +1,6 @@
-﻿namespace FlorisDeV.BackupApi.Models.StateStore;
+﻿namespace FlorisDeV.BackupApi.Models.State;
 
-public class BackupRunDto
+public class BackupRun
 {
     public Guid DeviceId { get; set; }
     public Guid RunId { get; set; }

@@ -1,6 +1,6 @@
 ﻿using System.ComponentModel.DataAnnotations;
 
-namespace FlorisDeV.BackupApi.Models.Requests;
+namespace FlorisDeV.BackupApi.Models.Api.Requests;
 
 public class StartBackupRunRequest
 {
