@@ -2,10 +2,12 @@
 using FlorisDeV.BackupApi.Models.Api.Responses;
 using FlorisDeV.BackupApi.Models.Application;
 using FlorisDeV.BackupApi.Services;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 namespace FlorisDeV.BackupApi.Controllers;
 
+[Authorize]
 [ApiController]
 [Route("backup")]
 public class BackupController(

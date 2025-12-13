@@ -7,11 +7,13 @@ using FlorisDeV.BackupApi.Constants;
 using FlorisDeV.BackupApi.Filters;
 using FlorisDeV.BackupApi.Services;
 using FlorisDeV.Logging;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.HttpLogging;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using Refit;
 
@@ -75,7 +77,7 @@ public static class ProgramExtensions
                     response.StatusCode = (int)apiException.StatusCode;
                 };
             });
-            
+
             // Note: Exception handling is now done via GlobalExceptionFilter for better control
         }
 
@@ -89,21 +91,22 @@ public static class ProgramExtensions
                 {
                     Title = builder.Environment.ApplicationName,
                     Version = productVersion,
-                    Description = builder.Environment.IsDevelopment() 
+                    Description = builder.Environment.IsDevelopment()
                         ? "Backup endpoints (Development mode - no authentication required)"
-                        : "Backup endpoints secured with api key authentication"
+                        : "Backup endpoints secured with JWT Bearer authentication via Azure AD"
                 });
 
-                // Add API Key authentication for non-development environments
+                // Add JWT Bearer security definition for non-development environments
                 if (!builder.Environment.IsDevelopment())
                 {
-                    c.AddSecurityDefinition("ApiKey", new OpenApiSecurityScheme
+                    c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
                     {
-                        Description = "API Key authentication. Pass your API key in the X-API-Key header.",
-                        Name = "X-API-Key",
+                        Description = "JWT Authorization header using the Bearer scheme. Example: \"Authorization: Bearer {token}\"",
+                        Name = "Authorization",
                         In = ParameterLocation.Header,
-                        Type = SecuritySchemeType.ApiKey,
-                        Scheme = "ApiKey"
+                        Type = SecuritySchemeType.Http,
+                        Scheme = "bearer",
+                        BearerFormat = "JWT"
                     });
 
                     c.AddSecurityRequirement(new OpenApiSecurityRequirement
@@ -114,7 +117,7 @@ public static class ProgramExtensions
                                 Reference = new OpenApiReference
                                 {
                                     Type = ReferenceType.SecurityScheme,
-                                    Id = "ApiKey"
+                                    Id = "Bearer"
                                 }
                             },
                             Array.Empty<string>()
@@ -140,24 +143,31 @@ public static class ProgramExtensions
             if (builder.Environment.IsDevelopment())
             {
                 // For local development: allow anonymous access
+                // WARNING: This bypasses all authentication - never use in production!
                 builder.Services
                     .AddAuthentication("AllowAnonymous")
                     .AddScheme<Microsoft.AspNetCore.Authentication.AuthenticationSchemeOptions, AllowAnonymousAuthenticationHandler>(
-                        "AllowAnonymous", 
-                        options => { });
+                        "AllowAnonymous",
+                        _ => { });
             }
             else
             {
-                // For production: configure your actual authentication scheme
-                // Example: API Key authentication (you can replace this with Azure AD, JWT, etc.)
+                // Production: JWT Bearer authentication via Azure AD
                 builder.Services
-                    .AddAuthentication("ApiKey")
-                    .AddScheme<Microsoft.AspNetCore.Authentication.AuthenticationSchemeOptions, ApiKeyAuthenticationHandler>(
-                        "ApiKey", 
-                        options => { });
+                    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+                    .AddJwtBearer(options => options.ConfigureJwtBearer(builder.Configuration, builder.Environment));
             }
 
-            builder.Services.AddAuthorization();
+            // Configure authorization policies
+            builder.Services.AddAuthorization(options =>
+            {
+                // Default policy requires authentication
+                options.FallbackPolicy = options.DefaultPolicy;
+
+                // Example: Policy requiring specific role
+                options.AddPolicy("RequireAdminRole", policy =>
+                    policy.RequireRole("Admin", "Developer"));
+            });
         }
 
         public void AddCustomCache()
