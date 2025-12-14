@@ -23,7 +23,22 @@ public class GlobalExceptionFilterTests
     {
         _loggerMock = new Mock<ILogger<GlobalExceptionFilter>>();
         _environmentMock = new Mock<IHostEnvironment>();
-        _filter = new GlobalExceptionFilter(_loggerMock.Object, _environmentMock.Object);
+        
+        // Create all handlers
+        var handlers = new List<IExceptionHandler>
+        {
+            new BackupRunNotFoundExceptionHandler(),
+            new BackupRunAlreadyCommittedExceptionHandler(),
+            new ConcurrentUpdateExceptionHandler(),
+            new InvalidBackupRunStateExceptionHandler(),
+            new SecretNotFoundExceptionHandler(),
+            new SecretStoreUnavailableExceptionHandler(),
+            new ArgumentNullExceptionHandler(),
+            new ArgumentExceptionHandler(),
+            new UnhandledExceptionHandler(_environmentMock.Object)
+        };
+        
+        _filter = new GlobalExceptionFilter(_loggerMock.Object, handlers);
     }
 
     [Fact]

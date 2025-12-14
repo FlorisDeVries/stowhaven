@@ -29,6 +29,7 @@ builder.ConfigureWebServer();
 builder.ConfigureProxyForwarding();
 
 builder.Services
+    .AddExceptionHandlers() // Register all exception handlers
     .AddEndpointsApiExplorer()
     .AddControllers(options =>
     {
