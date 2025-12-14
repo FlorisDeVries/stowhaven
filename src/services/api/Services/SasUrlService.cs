@@ -1,5 +1,6 @@
 using System.Security;
 using Azure.Identity;
+using Azure.Storage;
 using Azure.Storage.Blobs;
 using Azure.Storage.Blobs.Models;
 using Azure.Storage.Sas;
@@ -14,9 +15,11 @@ public interface ISasUrlService
         CancellationToken cancellationToken = default);
 }
 
-public class SasUrlService(ILogger<SasUrlService> logger, DaprClient daprClient) : ISasUrlService
+public class SasUrlService(
+    ILogger<SasUrlService> logger,
+    ISecretService secretService
+) : ISasUrlService
 {
-    private readonly string _secretStoreName = "secret-store";
     private BlobServiceClient? _blobServiceClient;
     private string _dataStorageAccount = null!;
     private string _dataContainer = null!;
@@ -36,7 +39,7 @@ public class SasUrlService(ILogger<SasUrlService> logger, DaprClient daprClient)
 
         try
         {
-            var blobServiceClient = await GetBlobServiceClientAsync();
+            var blobServiceClient = await GetBlobServiceClientAsync(cancellationToken);
             var sasBuilder = new BlobSasBuilder
             {
                 BlobContainerName = _dataContainer,
@@ -49,17 +52,30 @@ public class SasUrlService(ILogger<SasUrlService> logger, DaprClient daprClient)
 
             sasBuilder.SetPermissions(BlobSasPermissions.Create | BlobSasPermissions.Write);
 
-            // Use User Delegation Key for enhanced security (no account key exposure)
-            var key = await GetDelegationKeyAsync(blobServiceClient, expiresAt, cancellationToken);
-            var sasToken = sasBuilder.ToSasQueryParameters(
-                key,
-                _dataStorageAccount
-            ).ToString();
+            string sasToken;
+            if (await UsingAzurite(cancellationToken))
+            {
+                // Use Account Key for Azurite (local development)
+                var accountKey = await secretService.GetRequiredSecretAsync("DATA_STORAGE_ACCOUNT_KEY");
+                var credential = new StorageSharedKeyCredential(_dataStorageAccount, accountKey);
+
+                sasToken = sasBuilder.ToSasQueryParameters(
+                    credential
+                ).ToString();
+            }
+            else
+            {
+                // Use User Delegation Key for enhanced security (no account key exposure)
+                var key = await GetDelegationKeyAsync(blobServiceClient, expiresAt, cancellationToken);
+                sasToken = sasBuilder.ToSasQueryParameters(
+                    key,
+                    _dataStorageAccount
+                ).ToString();
+            }
 
             var result = new SasUrlInfo
             {
-                Url = new Uri(
-                    $"https://{_dataStorageAccount}.blob.core.windows.net/{_dataContainer}/{path}?{sasToken}"),
+                Url = new Uri($"{blobServiceClient.Uri}/{_dataContainer}/{path}?{sasToken}"),
                 ExpiresAt = expiresAt,
                 TtlMinutes = ttl
             };
@@ -94,7 +110,7 @@ public class SasUrlService(ILogger<SasUrlService> logger, DaprClient daprClient)
         return path;
     }
 
-    private async Task<BlobServiceClient> GetBlobServiceClientAsync()
+    private async Task<BlobServiceClient> GetBlobServiceClientAsync(CancellationToken cancellationToken = default)
     {
         if (_blobServiceClient != null)
         {
@@ -102,35 +118,32 @@ public class SasUrlService(ILogger<SasUrlService> logger, DaprClient daprClient)
         }
 
         // Get storage configuration from DAPR secrets
-        _dataStorageAccount = await GetSecretAsync("storage-account-name")
-                              ?? Environment.GetEnvironmentVariable("DATA_STORAGE_ACCOUNT")
+        _dataStorageAccount = await secretService.GetRequiredSecretAsync("DATA_STORAGE_ACCOUNT")
                               ?? throw new InvalidOperationException(
                                   "DATA_STORAGE_ACCOUNT not found in secrets or environment");
 
-        _dataContainer = await GetSecretAsync("data-container")
-                         ?? Environment.GetEnvironmentVariable("DATA_CONTAINER")
-                         ?? "backups";
+        _dataContainer = await secretService.GetRequiredSecretAsync("DATA_CONTAINER")
+                         ?? throw new InvalidOperationException(
+                             "DATA_CONTAINER not found in secrets or environment");
 
-        // Use managed identity for authentication
-        var credential = new DefaultAzureCredential();
-        var blobServiceUri = new Uri($"https://{_dataStorageAccount}.blob.core.windows.net");
-        _blobServiceClient = new BlobServiceClient(blobServiceUri, credential);
+        if (await UsingAzurite(cancellationToken))
+        {
+            // LOCAL DEVELOPMENT: Account-key auth
+            var accountKey = await secretService.GetRequiredSecretAsync("DATA_STORAGE_ACCOUNT_KEY");
+            var credential = new StorageSharedKeyCredential(_dataStorageAccount, accountKey);
+            var blobEndpoint = await secretService.GetRequiredSecretAsync("DATA_STORAGE_BLOB_ENDPOINT");
+
+            _blobServiceClient = new BlobServiceClient(new Uri(blobEndpoint!), credential);
+        }
+        else
+        {
+            // Azure
+            var credential = new DefaultAzureCredential();
+            var blobServiceUri = new Uri($"https://{_dataStorageAccount}.blob.core.windows.net");
+            _blobServiceClient = new BlobServiceClient(blobServiceUri, credential);
+        }
 
         return _blobServiceClient;
-    }
-
-    private async Task<string?> GetSecretAsync(string secretName)
-    {
-        try
-        {
-            var secret = await daprClient.GetSecretAsync(_secretStoreName, secretName);
-            return secret.TryGetValue(secretName, out var value) ? value : null;
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex, "Failed to get secret {SecretName} from DAPR secret store", secretName);
-            return null;
-        }
     }
 
     private async Task<UserDelegationKey> GetDelegationKeyAsync(
@@ -148,5 +161,11 @@ public class SasUrlService(ILogger<SasUrlService> logger, DaprClient daprClient)
 
         _keyExpiresAt = keyExpiry;
         return _cachedKey;
+    }
+
+    private async Task<bool> UsingAzurite(CancellationToken cancellationToken = default)
+    {
+        var useAzurite = await secretService.GetRequiredSecretAsync("USE_AZURITE");
+        return bool.TryParse(useAzurite, out var result) && result;
     }
 }

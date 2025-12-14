@@ -10,28 +10,26 @@ namespace FlorisDeV.BackupApi.Filters;
 /// Global exception filter that maps domain exceptions to appropriate HTTP status codes
 /// and formats them as ProblemDetails responses.
 /// </summary>
-public class GlobalExceptionFilter : IExceptionFilter
+public class GlobalExceptionFilter(
+    ILogger<GlobalExceptionFilter> logger,
+    IHostEnvironment environment
+) : IExceptionFilter
 {
-    private readonly ILogger<GlobalExceptionFilter> _logger;
-    private readonly IHostEnvironment _environment;
-
-    public GlobalExceptionFilter(ILogger<GlobalExceptionFilter> logger, IHostEnvironment environment)
-    {
-        _logger = logger;
-        _environment = environment;
-    }
-
     public void OnException(ExceptionContext context)
     {
         // Map exception to status code and problem details
         var (statusCode, problemDetails) = context.Exception switch
         {
             BackupRunNotFoundException notFoundEx => MapNotFoundException(notFoundEx, context),
-            BackupRunAlreadyCommittedException alreadyCommittedEx => MapAlreadyCommittedException(alreadyCommittedEx, context),
+            BackupRunAlreadyCommittedException alreadyCommittedEx => MapAlreadyCommittedException(alreadyCommittedEx,
+                context),
             ConcurrentUpdateException concurrencyEx => MapConcurrentUpdateException(concurrencyEx, context),
             InvalidBackupRunStateException invalidStateEx => MapInvalidStateException(invalidStateEx, context),
             ArgumentNullException argNullEx => MapArgumentNullException(argNullEx, context),
             ArgumentException argEx => MapArgumentException(argEx, context),
+            SecretNotFoundException secretNotFoundEx => MapSecretNotFoundException(secretNotFoundEx, context),
+            SecretStoreUnavailableException secretStoreUnavailableEx => MapSecretStoreUnavailableException(
+                secretStoreUnavailableEx, context),
             _ => MapUnhandledException(context.Exception, context)
         };
 
@@ -94,10 +92,10 @@ public class GlobalExceptionFilter : IExceptionFilter
 
         problemDetails.Extensions["deviceId"] = exception.DeviceId;
         problemDetails.Extensions["runId"] = exception.RunId;
-        
+
         if (!string.IsNullOrEmpty(exception.ExpectedETag))
             problemDetails.Extensions["expectedETag"] = exception.ExpectedETag;
-        
+
         if (!string.IsNullOrEmpty(exception.ActualETag))
             problemDetails.Extensions["actualETag"] = exception.ActualETag;
 
@@ -161,7 +159,7 @@ public class GlobalExceptionFilter : IExceptionFilter
         Exception exception,
         ExceptionContext context)
     {
-        var detail = _environment.IsDevelopment()
+        var detail = environment.IsDevelopment()
             ? exception.Message
             : "An unexpected error occurred. Please try again later.";
 
@@ -173,13 +171,45 @@ public class GlobalExceptionFilter : IExceptionFilter
         );
 
         // Include stack trace in development mode
-        if (_environment.IsDevelopment())
+        if (environment.IsDevelopment())
         {
             problemDetails.Extensions["stackTrace"] = exception.StackTrace;
             problemDetails.Extensions["exceptionType"] = exception.GetType().Name;
         }
 
         return (StatusCodes.Status500InternalServerError, problemDetails);
+    }
+
+    private (int statusCode, ProblemDetails problemDetails) MapSecretNotFoundException(
+        SecretNotFoundException secretNotFoundEx, ExceptionContext context)
+    {
+        var problemDetails = CreateProblemDetails(
+            context,
+            StatusCodes.Status500InternalServerError,
+            "Secret store unavailable",
+            secretNotFoundEx.Message
+        );
+
+        problemDetails.Extensions["secretStore"] = secretNotFoundEx.SecretStore;
+        problemDetails.Extensions["secretName"] = secretNotFoundEx.SecretName;
+
+        return (StatusCodes.Status500InternalServerError, problemDetails);
+    }
+
+    private (int statusCode, ProblemDetails problemDetails) MapSecretStoreUnavailableException(
+        SecretStoreUnavailableException secretStoreUnavailableEx,
+        ExceptionContext context)
+    {
+        var problemDetails = CreateProblemDetails(
+            context,
+            StatusCodes.Status503ServiceUnavailable,
+            "Secret store unavailable",
+            secretStoreUnavailableEx.Message
+        );
+
+        problemDetails.Extensions["secretStore"] = secretStoreUnavailableEx.SecretStore;
+
+        return (StatusCodes.Status503ServiceUnavailable, problemDetails);
     }
 
     private ProblemDetails CreateProblemDetails(
@@ -212,7 +242,7 @@ public class GlobalExceptionFilter : IExceptionFilter
             _ => LogLevel.Information
         };
 
-        _logger.Log(
+        logger.Log(
             logLevel,
             exception,
             "Exception handled by GlobalExceptionFilter: {ExceptionType} - {Message}",
