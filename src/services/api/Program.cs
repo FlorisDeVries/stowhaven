@@ -58,8 +58,14 @@ app.UseRateLimiter();
 app.MapControllers().RequireAuthorization();
 app.MapSubscribeHandler();
 
-app.MapStandardHealthChecks()
-    .MapHealthChecks("/healthz").RequireRateLimiting(RateLimitPolicies.ExternalHealthCheckPolicy);
+// Health check endpoints
+app.MapStandardHealthChecks();
+
+// Additional health check endpoint with detailed information (anonymous for monitoring)
+app.MapHealthChecks("/healthz", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
+{
+    ResponseWriter = FlorisDeV.HealthChecks.HealthCheckResponseWriter.WriteDetailedResponse
+}).RequireRateLimiting(RateLimitPolicies.ExternalHealthCheckPolicy);
 
 app.MapGet("/", () => Results.LocalRedirect("~/swagger")).ExcludeFromDescription();
 

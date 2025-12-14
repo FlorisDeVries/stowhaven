@@ -9,7 +9,7 @@ namespace FlorisDeV.BackupApi.Controllers;
 
 [Authorize]
 [ApiController]
-[Route("backup")]
+[Route("api/[controller]")]
 public class BackupController(
     IBackupRunService backupRunService
 ) : ControllerBase

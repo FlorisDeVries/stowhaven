@@ -28,6 +28,7 @@ public static class ProgramExtensions
             builder.Services.AddScoped<ISasUrlService, SasUrlService>();
             builder.Services.AddScoped<IBackupRunService, BackupRunService>();
             builder.Services.AddScoped<IManifestManager, ManifestManager>();
+            builder.Services.AddScoped<ISecretService, SecretService>();
         }
 
         public void AddCustomDaprClient()
