@@ -1,11 +1,13 @@
+using System.Diagnostics;
 using System.Security;
 using Azure.Identity;
 using Azure.Storage;
 using Azure.Storage.Blobs;
 using Azure.Storage.Blobs.Models;
 using Azure.Storage.Sas;
-using Dapr.Client;
 using FlorisDeV.BackupApi.Models.Infrastructure;
+using FlorisDeV.BackupApi.Telemetry;
+using Microsoft.Extensions.Logging;
 
 namespace FlorisDeV.BackupApi.Services;
 
@@ -15,9 +17,10 @@ public interface ISasUrlService
         CancellationToken cancellationToken = default);
 }
 
-public class SasUrlService(
+public partial class SasUrlService(
     ILogger<SasUrlService> logger,
-    ISecretService secretService
+    ISecretService secretService,
+    TelemetryProvider telemetry
 ) : ISasUrlService
 {
     private BlobServiceClient? _blobServiceClient;
@@ -31,15 +34,24 @@ public class SasUrlService(
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
 
+        using var activity = telemetry.ActivitySource.StartActivity("GenerateUploadSasUrl");
+        var stopwatch = Stopwatch.StartNew();
+
         // Validate path
         path = ValidatePath(path);
+        activity?.SetTag(ActivityAttributes.SasUrlPath, path);
 
         var ttl = ttlMinutes ?? 60;
         var expiresAt = DateTimeOffset.UtcNow.AddMinutes(ttl);
+        activity?.SetTag(ActivityAttributes.SasUrlTtlMinutes, ttl);
+
+        var metricTags = new TagList { { "operation", "generate_upload_sas" } };
 
         try
         {
             var blobServiceClient = await GetBlobServiceClientAsync(cancellationToken);
+            activity?.SetTag(ActivityAttributes.StorageAccount, _dataStorageAccount);
+
             var sasBuilder = new BlobSasBuilder
             {
                 BlobContainerName = _dataContainer,
@@ -80,13 +92,32 @@ public class SasUrlService(
                 TtlMinutes = ttl
             };
 
-            logger.LogInformation("Generated upload SAS URL for path: {Path}, expires at: {ExpiresAt}", path,
-                expiresAt);
+            stopwatch.Stop();
+            telemetry.SasUrlsGenerated.Add(1, metricTags);
+            telemetry.SasUrlTtl.Record(ttl, metricTags);
+            telemetry.OperationDuration.Record(stopwatch.ElapsedMilliseconds, metricTags);
+
+            activity?.SetTag(ActivityAttributes.OperationStatus, "success");
+
             return result;
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Error generating upload SAS URL for path: {Path}", path);
+            stopwatch.Stop();
+            var errorTags = new TagList
+            {
+                { "operation", "generate_upload_sas" },
+                { "error.type", ex.GetType().Name }
+            };
+            telemetry.OperationDuration.Record(stopwatch.ElapsedMilliseconds, errorTags);
+
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.SetTag(ActivityAttributes.OperationStatus, "error");
+            activity?.SetTag(ActivityAttributes.ErrorType, ex.GetType().Name);
+            activity?.SetTag(ActivityAttributes.ErrorMessage, ex.Message);
+            activity?.AddException(ex);
+
+            LogErrorGeneratingSasUrl(logger, path, ex);
             throw;
         }
     }
@@ -168,4 +199,11 @@ public class SasUrlService(
         var useAzurite = await secretService.GetRequiredSecretAsync("USE_AZURITE");
         return bool.TryParse(useAzurite, out var result) && result;
     }
+
+    #region Logging
+
+    [LoggerMessage(LogLevel.Error, "Error generating upload SAS URL for path: {path}")]
+    static partial void LogErrorGeneratingSasUrl(ILogger logger, string path, Exception ex);
+
+    #endregion
 }

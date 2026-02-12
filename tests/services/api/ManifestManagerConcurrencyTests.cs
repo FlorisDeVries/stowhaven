@@ -3,6 +3,7 @@ using FlorisDeV.BackupApi.Constants;
 using FlorisDeV.BackupApi.Exceptions;
 using FlorisDeV.BackupApi.Models.State;
 using FlorisDeV.BackupApi.Services;
+using FlorisDeV.BackupApi.Telemetry;
 using Microsoft.Extensions.Logging;
 using Moq;
 using Xunit;
@@ -13,13 +14,16 @@ public class ManifestManagerConcurrencyTests
 {
     private readonly Mock<DaprClient> _daprClientMock;
     private readonly Mock<ILogger<ManifestManager>> _loggerMock;
+    private readonly Mock<TelemetryProvider> _telemetryProviderMock;
     private readonly ManifestManager _service;
 
     public ManifestManagerConcurrencyTests()
     {
         _daprClientMock = new Mock<DaprClient>();
         _loggerMock = new Mock<ILogger<ManifestManager>>();
-        _service = new ManifestManager(_daprClientMock.Object, _loggerMock.Object);
+        _telemetryProviderMock  = new Mock<TelemetryProvider>();
+
+        _service = new ManifestManager(_daprClientMock.Object, _loggerMock.Object, _telemetryProviderMock.Object);
     }
 
     [Fact]
@@ -203,7 +207,7 @@ public class ManifestManagerConcurrencyTests
                 It.IsAny<string>(),
                 It.IsAny<ConsistencyMode?>(),
                 It.IsAny<IReadOnlyDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()))
+                It.IsAny<CancellationToken>()))!
             .ReturnsAsync(((BackupRun?)null, (string?)null));
 
         // Act & Assert
@@ -260,7 +264,7 @@ public class ManifestManagerConcurrencyTests
                 It.IsAny<string>(),
                 It.IsAny<ConsistencyMode?>(),
                 It.IsAny<IReadOnlyDictionary<string, string>>(),
-                It.IsAny<CancellationToken>()))
+                It.IsAny<CancellationToken>()))!
             .ReturnsAsync(((BackupRun?)null, (string?)null));
 
         // Act & Assert

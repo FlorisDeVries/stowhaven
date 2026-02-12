@@ -1,6 +1,9 @@
-﻿using Dapr.Client;
+﻿using System.Diagnostics;
+using Dapr.Client;
 using FlorisDeV.BackupApi.Constants;
 using FlorisDeV.BackupApi.Exceptions;
+using FlorisDeV.BackupApi.Telemetry;
+using Microsoft.Extensions.Logging;
 
 namespace FlorisDeV.BackupApi.Services;
 
@@ -10,31 +13,42 @@ public interface ISecretService
     Task<string?> GetRequiredSecretAsync(string secretName);
 }
 
-public class SecretService(
+public partial class SecretService(
     DaprClient daprClient,
-    ILogger<SecretService> logger
+    ILogger<SecretService> logger,
+    TelemetryProvider telemetry
 ) : ISecretService
 {
     public async Task<string?> GetSecretAsync(string secretName)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(secretName);
 
+        using var activity = telemetry.ActivitySource.StartActivity("GetSecret");
+        activity?.SetTag(ActivityAttributes.SecretName, secretName);
+        activity?.SetTag(ActivityAttributes.SecretStoreComponent, DaprComponents.SecretStore);
+
         try
         {
             var secrets = await daprClient.GetSecretAsync(DaprComponents.SecretStore, secretName);
             if (secrets.TryGetValue(secretName, out var value))
+            {
+                telemetry.SecretRetrievals.Add(1, new TagList { { "secret_store", DaprComponents.SecretStore }, { "result", "found" } });
                 return value;
+            }
 
-            logger.LogWarning("Secret '{SecretName}' not found", secretName);
+            telemetry.SecretRetrievals.Add(1, new TagList { { "secret_store", DaprComponents.SecretStore }, { "result", "not_found" } });
+            LogSecretNotFound(logger, secretName);
             return null;
         }
         catch (Exception ex)
         {
-            logger.LogError(
-                ex,
-                "Secret store '{SecretStore}' unavailable while retrieving '{SecretName}'",
-                DaprComponents.SecretStore,
-                secretName);
+            telemetry.SecretRetrievals.Add(1, new TagList { { "secret_store", DaprComponents.SecretStore }, { "result", "error" }, { "error.type", ex.GetType().Name } });
+
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.SetTag(ActivityAttributes.ErrorType, ex.GetType().Name);
+            activity?.AddException(ex);
+
+            LogSecretStoreUnavailable(logger, DaprComponents.SecretStore, secretName, ex);
 
             throw new SecretStoreUnavailableException(
                 DaprComponents.SecretStore,
@@ -53,4 +67,14 @@ public class SecretService(
 
         return value;
     }
+
+    #region Logging
+
+    [LoggerMessage(LogLevel.Warning, "Secret '{secretName}' not found")]
+    static partial void LogSecretNotFound(ILogger logger, string secretName);
+
+    [LoggerMessage(LogLevel.Error, "Secret store '{secretStore}' unavailable while retrieving '{secretName}'")]
+    static partial void LogSecretStoreUnavailable(ILogger logger, string secretStore, string secretName, Exception ex);
+
+    #endregion
 }

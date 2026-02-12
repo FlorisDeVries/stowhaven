@@ -2,9 +2,12 @@ using System.Reflection;
 using FlorisDeV.BackupApi;
 using FlorisDeV.BackupApi.Constants;
 using FlorisDeV.BackupApi.Filters;
+using FlorisDeV.FeatureFlags;
 using FlorisDeV.HealthChecks;
 using FlorisDeV.Logging;
 using FlorisDeV.Logging.ErrorHandling;
+using FlorisDeV.Logging.Middleware;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -27,6 +30,7 @@ builder.AddApplicationServices();
 builder.ConfigureRouting();
 builder.ConfigureWebServer();
 builder.ConfigureProxyForwarding();
+builder.AddAzureFeatureFlags();
 
 builder.Services
     .AddExceptionHandlers() // Register all exception handlers
@@ -41,8 +45,12 @@ builder.Services
 var app = builder.Build();
 
 app.UseForwardedHeaders();
-// app.UseSecurityHeaders();
 app.UseExceptionHandler();
+
+app.UseCorrelationId();
+app.UseLogSampling();
+
+app.UseAzureFeatureFlags();
 
 app.UseCloudEvents();
 
@@ -50,6 +58,9 @@ app.UseCustomSwagger(environment.ApplicationName);
 
 app.UseRouting();
 app.UseAuthentication();
+
+app.UseUserContextEnrichment();
+
 app.UseAuthorization();
 app.UseRateLimiter();
 
@@ -62,9 +73,9 @@ app.MapSubscribeHandler();
 app.MapStandardHealthChecks();
 
 // Additional health check endpoint with detailed information (anonymous for monitoring)
-app.MapHealthChecks("/healthz", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
+app.MapHealthChecks("/healthz", new HealthCheckOptions
 {
-    ResponseWriter = FlorisDeV.HealthChecks.HealthCheckResponseWriter.WriteDetailedResponse
+    ResponseWriter = HealthCheckResponseWriter.WriteDetailedResponse
 }).RequireRateLimiting(RateLimitPolicies.ExternalHealthCheckPolicy);
 
 app.MapGet("/", () => Results.LocalRedirect("~/swagger")).ExcludeFromDescription();
@@ -72,6 +83,10 @@ app.MapGet("/", () => Results.LocalRedirect("~/swagger")).ExcludeFromDescription
 try
 {
     app.Logger.LogInformation("Starting {ApplicationName}...", environment.ApplicationName);
+    
+    // Log startup configuration for troubleshooting
+    app.LogStartupConfiguration();
+    
     app.Run();
 }
 catch (Exception error)

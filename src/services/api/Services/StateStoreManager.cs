@@ -1,7 +1,10 @@
-﻿using Dapr.Client;
+﻿using System.Diagnostics;
+using Dapr.Client;
 using FlorisDeV.BackupApi.Constants;
 using FlorisDeV.BackupApi.Exceptions;
 using FlorisDeV.BackupApi.Models.State;
+using FlorisDeV.BackupApi.Telemetry;
+using Microsoft.Extensions.Logging;
 
 namespace FlorisDeV.BackupApi.Services;
 
@@ -15,15 +18,22 @@ public interface IManifestManager
     Task<BackupRun> CommitBackupRunAsync(Guid deviceId, Guid runId, CancellationToken cancellationToken = default);
 }
 
-public class ManifestManager(
+public partial class ManifestManager(
     DaprClient daprClient,
-    ILogger<ManifestManager> logger
+    ILogger<ManifestManager> logger,
+    TelemetryProvider telemetry
 ) : IManifestManager
 {
     public async Task<BackupRun> CreateBackupRunAsync(Guid deviceId, Guid runId, DateTimeOffset startedAt,
         CancellationToken cancellationToken = default)
     {
+        using var activity = telemetry.ActivitySource.StartActivity("CreateBackupRun");
         var stateKey = $"{deviceId}/backupruns/{runId}";
+
+        activity?.SetTag(ActivityAttributes.StateKey, stateKey);
+        activity?.SetTag(ActivityAttributes.DeviceId, deviceId.ToString());
+        activity?.SetTag(ActivityAttributes.RunId, runId.ToString());
+
         var state = new BackupRun
         {
             RunId = runId,
@@ -34,14 +44,22 @@ public class ManifestManager(
 
         await daprClient.SaveStateAsync(DaprComponents.ManifestStateStore, stateKey, state,
             cancellationToken: cancellationToken);
+
+        telemetry.StateOperations.Add(1, new TagList { { "operation", "create" }, { "store", "manifest" } });
         
-        logger.LogInformation("Created backup run {RunId} for device {DeviceId}", runId, deviceId);
+        LogBackupRunCreated(logger, runId, deviceId);
         return state;
     }
 
     public async Task<BackupRun> GetBackupRunAsync(Guid deviceId, Guid runId, CancellationToken cancellationToken = default)
     {
+        using var activity = telemetry.ActivitySource.StartActivity("GetBackupRun");
         var stateKey = $"{deviceId}/backupruns/{runId}";
+
+        activity?.SetTag(ActivityAttributes.StateKey, stateKey);
+        activity?.SetTag(ActivityAttributes.DeviceId, deviceId.ToString());
+        activity?.SetTag(ActivityAttributes.RunId, runId.ToString());
+
         var (run, etag) = await daprClient.GetStateAndETagAsync<BackupRun>(
             DaprComponents.ManifestStateStore, 
             stateKey,
@@ -51,9 +69,12 @@ public class ManifestManager(
         {
             // Store the ETag in the model for later use
             run.ETag = etag;
+            activity?.SetTag(ActivityAttributes.StateETag, etag);
+            telemetry.StateOperations.Add(1, new TagList { { "operation", "get" }, { "store", "manifest" }, { "result", "found" } });
             return run;
         }
-        
+
+        telemetry.StateOperations.Add(1, new TagList { { "operation", "get" }, { "store", "manifest" }, { "result", "not_found" } });
         throw new BackupRunNotFoundException(deviceId, runId);
     }
 
@@ -102,17 +123,26 @@ public class ManifestManager(
         if (!success)
         {
             // ETag mismatch - concurrent update detected
-            logger.LogWarning(
-                "Concurrent update detected for backup run {RunId} of device {DeviceId}. ETag: {ETag}",
-                runId, deviceId, etag);
+            LogConcurrentUpdateDetected(logger, runId, deviceId, etag);
             
             throw new ConcurrentUpdateException(deviceId, runId, etag, actualETag: null);
         }
 
-        logger.LogInformation(
-            "Committed backup run {RunId} for device {DeviceId} with status {Status}",
-            runId, deviceId, run.Status);
+        LogBackupRunCommitted(logger, runId, deviceId, run.Status);
 
         return run;
     }
+
+    #region Logging
+
+    [LoggerMessage(LogLevel.Information, "Created backup run {runId} for device {deviceId}")]
+    static partial void LogBackupRunCreated(ILogger logger, Guid runId, Guid deviceId);
+
+    [LoggerMessage(LogLevel.Warning, "Concurrent update detected for backup run {runId} of device {deviceId}. ETag: {etag}")]
+    static partial void LogConcurrentUpdateDetected(ILogger logger, Guid runId, Guid deviceId, string etag);
+
+    [LoggerMessage(LogLevel.Information, "Committed backup run {runId} for device {deviceId} with status {status}")]
+    static partial void LogBackupRunCommitted(ILogger logger, Guid runId, Guid deviceId, BackupRunStatus status);
+
+    #endregion
 }

@@ -10,22 +10,19 @@ namespace FlorisDeV.BackupApi.Authentication;
 /// Used for local development only.
 /// WARNING: Never use this handler in production environments.
 /// </summary>
-public class AllowAnonymousAuthenticationHandler : AuthenticationHandler<AuthenticationSchemeOptions>
+public class AllowAnonymousAuthenticationHandler(
+    IOptionsMonitor<AuthenticationSchemeOptions> options,
+    ILoggerFactory logger,
+    UrlEncoder encoder
+) : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
 {
-    private readonly ILogger<AllowAnonymousAuthenticationHandler> _logger;
-
-    public AllowAnonymousAuthenticationHandler(
-        IOptionsMonitor<AuthenticationSchemeOptions> options,
-        ILoggerFactory logger,
-        UrlEncoder encoder)
-        : base(options, logger, encoder)
-    {
-        _logger = logger.CreateLogger<AllowAnonymousAuthenticationHandler>();
-    }
+    private readonly ILogger<AllowAnonymousAuthenticationHandler> _logger =
+        logger.CreateLogger<AllowAnonymousAuthenticationHandler>();
 
     protected override Task<AuthenticateResult> HandleAuthenticateAsync()
     {
-        _logger.LogDebug("Allowing anonymous access for development");
+        _logger.LogWarning("Allowing anonymous access. Exception made for DEVELOPMENT environment. " +
+                           "If you see this message in production, stop immediately and fix your authentication configuration!");
 
         // Create a fake identity for anonymous access
         var claims = new[]

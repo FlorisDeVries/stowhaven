@@ -4,16 +4,16 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using FlorisDeV.BackupApi.Authentication;
 using FlorisDeV.BackupApi.Constants;
-using FlorisDeV.BackupApi.Filters;
 using FlorisDeV.BackupApi.Services;
+using FlorisDeV.BackupApi.Telemetry;
 using FlorisDeV.Logging;
+using FlorisDeV.Logging.Filtering;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.HttpLogging;
 using Microsoft.AspNetCore.HttpOverrides;
-using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
-using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using Refit;
 
@@ -25,6 +25,7 @@ public static class ProgramExtensions
     {
         public void AddApplicationServices()
         {
+            builder.Services.AddSingleton<TelemetryProvider>();
             builder.Services.AddScoped<ISasUrlService, SasUrlService>();
             builder.Services.AddScoped<IBackupRunService, BackupRunService>();
             builder.Services.AddScoped<IManifestManager, ManifestManager>();
@@ -48,7 +49,30 @@ public static class ProgramExtensions
         public void AddCustomLogging()
         {
             builder.Host.AddSerilog(builder.Environment.ApplicationName);
-            builder.Services.AddHttpLogging(logging => logging.LoggingFields = HttpLoggingFields.All);
+
+            // Configure log sampling options
+            builder.Services.Configure<LogSamplingOptions>(
+                builder.Configuration.GetSection(LogSamplingOptions.SectionName));
+
+            builder.Services.AddHttpLogging(o =>
+            {
+                o.LoggingFields =
+                    HttpLoggingFields.RequestMethod |
+                    HttpLoggingFields.RequestPath |
+                    HttpLoggingFields.RequestQuery |
+                    HttpLoggingFields.ResponseStatusCode |
+                    HttpLoggingFields.Duration |
+                    HttpLoggingFields.RequestHeaders |
+                    HttpLoggingFields.ResponseHeaders;
+
+                // Only log harmless headers you need
+                o.RequestHeaders.Add("User-Agent");
+                o.RequestHeaders.Add("X-Request-Id");
+                o.RequestHeaders.Add("Traceparent");
+
+                o.ResponseHeaders.Add("X-Request-Id");
+                o.ResponseHeaders.Add("Traceparent");
+            });
             builder.Services.AddProblemDetails(options =>
             {
                 options.CustomizeProblemDetails = context =>
@@ -102,7 +126,8 @@ public static class ProgramExtensions
                 {
                     c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
                     {
-                        Description = "JWT Authorization header using the Bearer scheme. Example: \"Authorization: Bearer {token}\"",
+                        Description =
+                            "JWT Authorization header using the Bearer scheme. Example: \"Authorization: Bearer {token}\"",
                         Name = "Authorization",
                         In = ParameterLocation.Header,
                         Type = SecuritySchemeType.Http,
@@ -147,7 +172,8 @@ public static class ProgramExtensions
                 // WARNING: This bypasses all authentication - never use in production!
                 builder.Services
                     .AddAuthentication("AllowAnonymous")
-                    .AddScheme<Microsoft.AspNetCore.Authentication.AuthenticationSchemeOptions, AllowAnonymousAuthenticationHandler>(
+                    .AddScheme<AuthenticationSchemeOptions,
+                        AllowAnonymousAuthenticationHandler>(
                         "AllowAnonymous",
                         _ => { });
             }

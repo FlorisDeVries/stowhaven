@@ -66,11 +66,15 @@ services:
     zipkin:
         container_name: zipkin
         image: openzipkin/zipkin-slim
-        profiles: [ "trace" ]
         hostname: zipkin
         ports:
             - 127.0.0.1:9411:9411
         restart: unless-stopped
+        deploy:
+            resources:
+                limits:
+                    cpus: '0.25'
+                    memory: 512m
 
     dev-dashboard:
         container_name: aspire-dashboard

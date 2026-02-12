@@ -99,18 +99,7 @@ public static class JwtBearerAuthenticationHandler
 
                 return Task.CompletedTask;
             },
-            OnMessageReceived = context =>
-            {
-                // Optional: Support token from query string for specific scenarios (e.g., SignalR)
-                // Uncomment if needed:
-                // var accessToken = context.Request.Query["access_token"];
-                // if (!string.IsNullOrEmpty(accessToken))
-                // {
-                //     context.Token = accessToken;
-                // }
-
-                return Task.CompletedTask;
-            }
+            OnMessageReceived = _ => Task.CompletedTask
         };
 
         // Additional security options
@@ -123,7 +112,7 @@ public static class JwtBearerAuthenticationHandler
             options.IncludeErrorDetails = true;
         }
     }
-    
+
 }
 
 public static class ClaimsPrincipalExtensions
