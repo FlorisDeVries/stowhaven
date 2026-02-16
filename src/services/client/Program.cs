@@ -1,5 +1,6 @@
 ﻿using System.Reflection;
 using FlorisDeV.BackupClient;
+using FlorisDeV.BackupClient.Clients.BackupApi;
 using FlorisDeV.BackupClient.Services;
 using FlorisDeV.BackupClient.Telemetry;
 using FlorisDeV.Logging;
@@ -18,7 +19,8 @@ var host = Host.CreateDefaultBuilder(args)
     .ConfigureServices((context, services) =>
     {
         services.AddApplicationServices();
-        services.AddApplicationConfigurations(context.Configuration);
+        services.AddApplicationConfigurations(context.Configuration, context.HostingEnvironment);
+        services.AddBackupApi(context.Configuration);
     })
     .AddOpenTelemetry(
         context => TelemetryProvider.CreateResourceAttributes(context.HostingEnvironment.EnvironmentName),
@@ -32,7 +34,7 @@ try
 {
     var logger = host.Services.GetRequiredService<ILogger<Program>>();
     logger.LogInformation("Application starting...");
-    
+
     // Log startup configuration for troubleshooting
     host.LogStartupConfiguration();
 
