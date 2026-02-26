@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using Microsoft.Extensions.FileSystemGlobbing;
 using Microsoft.Extensions.Logging;
@@ -29,6 +30,34 @@ public interface IFileSystemService
     /// <exception cref="DirectoryNotFoundException">Thrown when the specified directory does not exist.</exception>
     /// <exception cref="OperationCanceledException">Thrown when the operation is cancelled.</exception>
     Task<IReadOnlyList<FileMetadata>> ScanDirectoryAsync(
+        string directoryPath,
+        string[]? excludePatterns = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Recursively scans a directory and streams metadata for files as they are discovered.
+    /// This method provides constant memory usage regardless of file count, making it suitable
+    /// for processing very large directories (millions of files).
+    /// </summary>
+    /// <param name="directoryPath">
+    /// The absolute path to the root directory to scan. Must exist.
+    /// </param>
+    /// <param name="excludePatterns">
+    /// Optional glob patterns to exclude files and directories (e.g., "**/node_modules/**", "*.tmp", ".git/**").
+    /// Uses Microsoft.Extensions.FileSystemGlobbing syntax. If null, no exclusions are applied.
+    /// </param>
+    /// <param name="cancellationToken">Cancellation token for the async operation.</param>
+    /// <returns>
+    /// An async enumerable that yields file metadata as files are discovered. Files that cannot
+    /// be accessed due to permission issues are logged and skipped (not yielded).
+    /// </returns>
+    /// <exception cref="DirectoryNotFoundException">Thrown when the specified directory does not exist.</exception>
+    /// <exception cref="OperationCanceledException">Thrown when the operation is cancelled.</exception>
+    /// <remarks>
+    /// Use this method instead of ScanDirectoryAsync when working with large directories to minimize
+    /// memory usage. The stream can be processed with 'await foreach' or LINQ operators from System.Linq.Async.
+    /// </remarks>
+    IAsyncEnumerable<FileMetadata> ScanDirectoryStreamAsync(
         string directoryPath,
         string[]? excludePatterns = null,
         CancellationToken cancellationToken = default);
@@ -140,6 +169,147 @@ public partial class FileSystemService(ILogger<FileSystemService> logger) : IFil
 
         LogDirectoryScanned(directoryPath, files.Count);
         return files;
+    }
+
+    public async IAsyncEnumerable<FileMetadata> ScanDirectoryStreamAsync(
+        string directoryPath,
+        string[]? excludePatterns = null,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        if (!Directory.Exists(directoryPath))
+        {
+            throw new DirectoryNotFoundException($"Directory not found: {directoryPath}");
+        }
+
+        // Setup glob matcher for exclusions
+        Matcher? exclusionMatcher = null;
+        if (excludePatterns?.Length > 0)
+        {
+            exclusionMatcher = new Matcher();
+            exclusionMatcher.AddInclude("**/*"); // Include all files by default
+            foreach (var pattern in excludePatterns)
+            {
+                // Convert simple extension patterns (*.ext) to recursive patterns (**/*.ext)
+                // to match user expectations of excluding files at any level
+                var normalizedPattern = pattern.StartsWith("*.") && !pattern.Contains('/') && !pattern.Contains('\\')
+                    ? $"**/{pattern}"
+                    : pattern;
+                exclusionMatcher.AddExclude(normalizedPattern);
+            }
+        }
+
+        var fileCount = 0;
+        await foreach (var file in ScanDirectoryRecursiveStreamAsync(directoryPath, directoryPath, exclusionMatcher, cancellationToken))
+        {
+            fileCount++;
+            yield return file;
+        }
+
+        LogDirectoryScanned(directoryPath, fileCount);
+    }
+
+    private async IAsyncEnumerable<FileMetadata> ScanDirectoryRecursiveStreamAsync(
+        string rootPath,
+        string currentPath,
+        Matcher? exclusionMatcher,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        // Scan files in current directory
+        IEnumerable<string> files;
+        try
+        {
+            files = Directory.EnumerateFiles(currentPath);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            LogDirectoryAccessDenied(currentPath, ex);
+            yield break;
+        }
+
+        foreach (var filePath in files)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var relativePath = Path.GetRelativePath(rootPath, filePath);
+
+            // Check if file should be excluded
+            if (exclusionMatcher != null)
+            {
+                var matchResult = exclusionMatcher.Match(relativePath);
+                if (!matchResult.HasMatches)
+                {
+                    continue;
+                }
+            }
+
+            FileMetadata? metadata = null;
+            try
+            {
+                metadata = await GetFileMetadataAsync(filePath, cancellationToken);
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                // Expected: Permission denied for some files - log and skip
+                LogFileMetadataError(filePath, ex);
+            }
+            catch (FileNotFoundException ex)
+            {
+                // Expected: File may have been deleted between enumeration and metadata read
+                LogFileMetadataError(filePath, ex);
+            }
+            catch (IOException ex)
+            {
+                // Expected: File may be locked or have I/O errors - log and skip
+                LogFileMetadataError(filePath, ex);
+            }
+            // Other exceptions (e.g., OutOfMemoryException) should bubble up
+
+            if (metadata != null)
+            {
+                yield return metadata;
+            }
+        }
+
+        // Recursively scan subdirectories
+        IEnumerable<string> directories;
+        try
+        {
+            directories = Directory.EnumerateDirectories(currentPath);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            LogDirectoryAccessDenied(currentPath, ex);
+            yield break;
+        }
+
+        foreach (var directory in directories)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var dirInfo = new DirectoryInfo(directory);
+            if (dirInfo.Attributes.HasFlag(FileAttributes.ReparsePoint))
+            {
+                // Skip symbolic links to avoid loops
+                continue;
+            }
+
+            var relativePath = Path.GetRelativePath(rootPath, directory);
+
+            // Check if directory should be excluded
+            if (exclusionMatcher != null)
+            {
+                var matchResult = exclusionMatcher.Match(relativePath);
+                if (!matchResult.HasMatches)
+                {
+                    continue;
+                }
+            }
+
+            await foreach (var file in ScanDirectoryRecursiveStreamAsync(rootPath, directory, exclusionMatcher, cancellationToken))
+            {
+                yield return file;
+            }
+        }
     }
 
     private async Task ScanDirectoryRecursiveAsync(

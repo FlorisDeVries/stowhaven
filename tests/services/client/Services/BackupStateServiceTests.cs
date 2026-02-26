@@ -570,7 +570,7 @@ public class BackupStateServiceTests : IDisposable
         var files = new List<FileMetadata>();
         var baseTime = DateTimeOffset.UtcNow.AddDays(-1);
 
-        for (int i = 0; i < count; i++)
+        for (var i = 0; i < count; i++)
         {
             var index = startIndex + i;
             files.Add(new FileMetadata(

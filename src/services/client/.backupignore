@@ -1,47 +1,113 @@
 # Backup Ignore File
+# Patterns use glob syntax (similar to .gitignore)
 # Lines starting with # are comments
-# Supports glob patterns like .gitignore
+# Use ** to match any number of directories
 
-# Temporary files
-*.tmp
-*.temp
-*.swp
-*~
+# ===== System Files =====
+**/.DS_Store
+**/Thumbs.db
+**/desktop.ini
+**/$RECYCLE.BIN/**
+**/System Volume Information/**
 
-# Log files
-*.log
+# ===== Temporary Files =====
+**/*.tmp
+**/*.temp
+**/*.swp
+**/*~
+**/.tmp/**
 
-# Build outputs
-bin/**
-obj/**
-build/**
-dist/**
-out/**
+# ===== Log Files =====
+**/*.log
+**/logs/**
 
-# Dependencies
-node_modules/**
-packages/**
-.nuget/**
+# ===== Build Outputs =====
+**/bin/**
+**/obj/**
+**/build/**
+**/dist/**
+**/out/**
+**/target/**
 
-# Version control
-.git/**
-.svn/**
-.hg/**
+# ===== Package Managers & Dependencies =====
+**/node_modules/**
+**/bower_components/**
+**/.nuget/**
+**/packages/**
+**/__pycache__/**
+**/venv/**
+**/virtualenv/**
+**/.venv/**
 
-# IDE files
-.vs/**
-.vscode/**
-.idea/**
-*.suo
-*.user
+# ===== Version Control =====
+**/.git/**
+**/.svn/**
+**/.hg/**
 
-# OS files
-.DS_Store
-Thumbs.db
-desktop.ini
+# ===== IDE & Editor Files =====
+**/.vs/**
+**/.vscode/**
+**/.idea/**
+**/*.suo
+**/*.user
+**/.project
+**/.classpath
 
-# Local database files
-*.db
-*.sqlite
+# ===== Caches =====
+**/.cache/**
+**/Cache/**
+**/cache/**
 
-# Add your own patterns below:
+# ===== Windows Specific =====
+# Windows system (if backing up entire drive)
+**/Windows/**
+**/Program Files/**
+**/Program Files (x86)/**
+**/ProgramData/Microsoft/Windows/**
+**/pagefile.sys
+**/hiberfil.sys
+**/swapfile.sys
+
+# Windows user caches
+**/AppData/Local/Temp/**
+**/AppData/Local/Microsoft/Windows/INetCache/**
+**/AppData/Local/Microsoft/Windows/Temporary Internet Files/**
+**/AppData/Local/Packages/*/TempState/**
+**/AppData/Local/CrashDumps/**
+
+# Browser caches (Windows)
+**/AppData/Local/Google/Chrome/User Data/*/Cache/**
+**/AppData/Local/Google/Chrome/User Data/*/Code Cache/**
+**/AppData/Local/Mozilla/Firefox/Profiles/*/cache2/**
+**/AppData/Local/Microsoft/Edge/User Data/*/Cache/**
+
+# ===== Unix/Linux/macOS Specific =====
+# System directories (if backing up from root)
+/proc/**
+/sys/**
+/dev/**
+/run/**
+/tmp/**
+/var/tmp/**
+/var/cache/**
+/var/log/**
+
+# Unix user caches
+**/.cache/**
+**/.local/share/Trash/**
+**/Library/Caches/**
+**/Library/Logs/**
+**/.Trash/**
+
+# Browser caches (Unix)
+**/.mozilla/firefox/*/cache2/**
+**/.config/google-chrome/*/Cache/**
+**/Library/Application Support/Google/Chrome/*/Cache/**
+
+# ===== Database Files (Local Dev) =====
+# Uncomment if you don't want to backup local dev databases
+# *.db
+# *.sqlite
+
+# ===== Add Your Custom Patterns Below =====
+

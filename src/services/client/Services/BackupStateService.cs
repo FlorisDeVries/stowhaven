@@ -54,6 +54,48 @@ public interface IBackupStateService
     /// Called after successful backup to clean up deleted file tracking.
     /// </summary>
     Task RemoveDeletedFilesAsync(IReadOnlyList<string> relativePaths, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Upserts multiple file states in a single transaction for efficient batch processing.
+    /// </summary>
+    /// <param name="files">Files to upsert into the backup state.</param>
+    /// <param name="baseDirectory">The base directory to compute relative paths from.</param>
+    /// <param name="runId">The backup run ID for these files.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <remarks>
+    /// Use this method when processing files in batches to minimize database round-trips
+    /// and improve performance for large file sets.
+    /// </remarks>
+    Task UpsertFileStateBatchAsync(
+        IReadOnlyList<FileMetadata> files,
+        string baseDirectory,
+        Guid runId, 
+        CancellationToken cancellationToken = default);
+}
+
+/// <summary>
+/// Helper extensions for BackupStateService to work with multi-target backups.
+/// </summary>
+internal static class BackupStateServiceExtensions
+{
+    /// <summary>
+    /// Upserts tagged file states (files with target name prefix).
+    /// </summary>
+    public static async Task UpsertTaggedFileStateBatchAsync(
+        this IBackupStateService service,
+        IReadOnlyList<BackupService.TaggedFile> taggedFiles,
+        Guid runId,
+        CancellationToken cancellationToken = default)
+    {
+        // Convert tagged files to FileMetadata with storage paths
+        var filesWithStoragePaths = taggedFiles
+            .Select(tf => (StoragePath: tf.GetStoragePath(), File: tf.Metadata))
+            .ToList();
+
+        // Use internal method that stores with explicit relative paths
+        await ((BackupStateService)service).UpsertFileStateBatchWithExplicitPathsAsync(
+            filesWithStoragePaths, runId, cancellationToken);
+    }
 }
 
 /// <summary>
@@ -109,8 +151,8 @@ public partial class BackupStateService : IBackupStateService, IDisposable
                 return deviceState;
             }
 
-            // No device state exists - create new
-            var newDeviceId = Guid.NewGuid();
+            // No device state exists - create new with hardware-based ID
+            var newDeviceId = DeviceIdGenerator.GenerateDeviceId();
             var newState = new DeviceState(newDeviceId, null, null, null, 0, 0);
 
             await using var insertCommand = new SqliteCommand(BackupStateSql.InsertDeviceStateQuery, connection);
@@ -385,6 +427,118 @@ public partial class BackupStateService : IBackupStateService, IDisposable
         }
     }
 
+    public async Task UpsertFileStateBatchAsync(
+        IReadOnlyList<FileMetadata> files,
+        string baseDirectory,
+        Guid runId,
+        CancellationToken cancellationToken = default)
+    {
+        if (files.Count == 0)
+            return;
+
+        await EnsureInitializedAsync(cancellationToken);
+
+        await _dbLock.WaitAsync(cancellationToken);
+        try
+        {
+            await using var connection = new SqliteConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+
+            await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+
+            try
+            {
+                var backedUpAt = DateTimeOffset.UtcNow;
+
+                foreach (var file in files)
+                {
+                    // Compute relative path from base directory for consistent storage
+                    var relativePath = Path.GetRelativePath(baseDirectory, file.FilePath);
+
+                    await using var command = new SqliteCommand(BackupStateSql.UpsertBackupFileQuery, connection, transaction);
+                    command.Parameters.AddWithValue("@RelativePath", relativePath);
+                    command.Parameters.AddWithValue("@Sha256Hash", file.Hash ?? string.Empty);
+                    command.Parameters.AddWithValue("@SizeBytes", file.SizeBytes);
+                    command.Parameters.AddWithValue("@LastModifiedUtc", file.LastModified.ToString("O"));
+                    command.Parameters.AddWithValue("@BackedUpAt", backedUpAt.ToString("O"));
+                    command.Parameters.AddWithValue("@BackupRunId", runId.ToString());
+                    command.Parameters.AddWithValue("@UniqueFileId", DBNull.Value);
+
+                    await command.ExecuteNonQueryAsync(cancellationToken);
+                }
+
+                await transaction.CommitAsync(cancellationToken);
+
+                LogFileStatesBatchUpserted(files.Count, runId);
+            }
+            catch
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                throw;
+            }
+        }
+        finally
+        {
+            _dbLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Internal method to upsert file states with pre-computed storage paths.
+    /// Used by multi-target backup where paths include target prefix.
+    /// </summary>
+    internal async Task UpsertFileStateBatchWithExplicitPathsAsync(
+        IReadOnlyList<(string StoragePath, FileMetadata File)> filesWithPaths,
+        Guid runId,
+        CancellationToken cancellationToken = default)
+    {
+        if (filesWithPaths.Count == 0)
+            return;
+
+        await EnsureInitializedAsync(cancellationToken);
+
+        await _dbLock.WaitAsync(cancellationToken);
+        try
+        {
+            await using var connection = new SqliteConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+
+            await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+
+            try
+            {
+                var backedUpAt = DateTimeOffset.UtcNow;
+
+                foreach (var (storagePath, file) in filesWithPaths)
+                {
+                    await using var command = new SqliteCommand(BackupStateSql.UpsertBackupFileQuery, connection, transaction);
+                    command.Parameters.AddWithValue("@RelativePath", storagePath); // Use storage path directly
+                    command.Parameters.AddWithValue("@Sha256Hash", file.Hash ?? string.Empty);
+                    command.Parameters.AddWithValue("@SizeBytes", file.SizeBytes);
+                    command.Parameters.AddWithValue("@LastModifiedUtc", file.LastModified.ToString("O"));
+                    command.Parameters.AddWithValue("@BackedUpAt", backedUpAt.ToString("O"));
+                    command.Parameters.AddWithValue("@BackupRunId", runId.ToString());
+                    command.Parameters.AddWithValue("@UniqueFileId", DBNull.Value);
+
+                    await command.ExecuteNonQueryAsync(cancellationToken);
+                }
+
+                await transaction.CommitAsync(cancellationToken);
+
+                LogFileStatesBatchUpserted(filesWithPaths.Count, runId);
+            }
+            catch
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                throw;
+            }
+        }
+        finally
+        {
+            _dbLock.Release();
+        }
+    }
+
     private async Task EnsureInitializedAsync(CancellationToken cancellationToken)
     {
         if (_initialized)
@@ -453,6 +607,12 @@ public partial class BackupStateService : IBackupStateService, IDisposable
         Level = LogLevel.Information,
         Message = "Removed {Count} deleted file records from state")]
     private partial void LogDeletedFilesRemoved(int count);
+
+    [LoggerMessage(
+        EventId = 7,
+        Level = LogLevel.Information,
+        Message = "Batch upserted {Count} file states for run {RunId}")]
+    private partial void LogFileStatesBatchUpserted(int count, Guid runId);
 
     #endregion
 }

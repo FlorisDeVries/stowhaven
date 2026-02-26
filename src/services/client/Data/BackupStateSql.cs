@@ -9,8 +9,17 @@ internal static class BackupStateSql
     /// <summary>
     /// Creates the database schema if it doesn't exist.
     /// Includes tables and indexes for optimal query performance.
+    /// Also enables SQLite optimizations like WAL mode for better concurrency.
     /// </summary>
     internal const string CreateSchemaScript = @"
+        -- Enable WAL mode for better concurrency (allows concurrent reads during writes)
+        PRAGMA journal_mode=WAL;
+        
+        -- Optimize for speed
+        PRAGMA synchronous=NORMAL;
+        PRAGMA cache_size=-64000;  -- 64MB cache
+        PRAGMA temp_store=MEMORY;
+        
         -- Device and backup metadata (single row)
         CREATE TABLE IF NOT EXISTS DeviceState (
             DeviceId TEXT PRIMARY KEY,

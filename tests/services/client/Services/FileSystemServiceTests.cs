@@ -18,7 +18,7 @@ public class FileSystemServiceTests : IDisposable
         // Create unique temp directory for each test
         _testDirectory = Path.Combine(Path.GetTempPath(), $"backup-test-{Guid.NewGuid()}");
         Directory.CreateDirectory(_testDirectory);
-        
+
         _sut = new FileSystemService(NullLogger<FileSystemService>.Instance);
     }
 
@@ -112,7 +112,7 @@ public class FileSystemServiceTests : IDisposable
 
         // Act
         var result = await _sut.ScanDirectoryAsync(
-            _testDirectory, 
+            _testDirectory,
             excludePatterns: ["*.tmp", "*.log", "*.bak"]);
 
         // Assert
@@ -160,7 +160,7 @@ public class FileSystemServiceTests : IDisposable
     public async Task ScanDirectoryAsync_WithCancellationToken_StopsScanningWhenCancelled()
     {
         // Arrange - create many files to ensure cancellation happens during scan
-        for (int i = 0; i < 100; i++)
+        for (var i = 0; i < 100; i++)
         {
             CreateTestFile($"file{i}.txt", $"content{i}");
         }
@@ -192,7 +192,7 @@ public class FileSystemServiceTests : IDisposable
         // Assert
         stream.Should().NotBeNull();
         stream.CanRead.Should().BeTrue();
-        
+
         using var reader = new StreamReader(stream);
         var content = await reader.ReadToEndAsync();
         content.Should().Be("Hello, World!");
@@ -379,6 +379,148 @@ public class FileSystemServiceTests : IDisposable
 
     #endregion
 
+    #region ScanDirectoryStreamAsync Tests
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task ScanDirectoryStreamAsync_WithNoFiles_ReturnsEmptyStream()
+    {
+        // Act
+        var results = new List<FileMetadata>();
+        await foreach (var file in _sut.ScanDirectoryStreamAsync(_testDirectory))
+        {
+            results.Add(file);
+        }
+
+        // Assert
+        results.Should().BeEmpty();
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task ScanDirectoryStreamAsync_WithFilesInRootDirectory_StreamsAllFiles()
+    {
+        // Arrange
+        CreateTestFile("file1.txt", "content1");
+        CreateTestFile("file2.txt", "content2");
+        CreateTestFile("file3.log", "content3");
+
+        // Act
+        var results = new List<FileMetadata>();
+        await foreach (var file in _sut.ScanDirectoryStreamAsync(_testDirectory))
+        {
+            results.Add(file);
+        }
+
+        // Assert
+        results.Should().HaveCount(3);
+        results.Should().OnlyContain(f => f.FilePath.StartsWith(_testDirectory));
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task ScanDirectoryStreamAsync_WithNestedDirectories_StreamsRecursively()
+    {
+        // Arrange
+        CreateTestFile("root.txt", "root");
+        CreateTestFile("subdir/file1.txt", "sub1");
+        CreateTestFile("subdir/nested/file2.txt", "nested");
+        CreateTestFile("another/file3.txt", "another");
+
+        // Act
+        var results = new List<FileMetadata>();
+        await foreach (var file in _sut.ScanDirectoryStreamAsync(_testDirectory))
+        {
+            results.Add(file);
+        }
+
+        // Assert
+        results.Should().HaveCount(4);
+        results.Should().Contain(f => f.FilePath.EndsWith("root.txt"));
+        results.Should().Contain(f => f.FilePath.Contains("subdir") && f.FilePath.EndsWith("file1.txt"));
+        results.Should().Contain(f => f.FilePath.Contains("nested") && f.FilePath.EndsWith("file2.txt"));
+        results.Should().Contain(f => f.FilePath.Contains("another") && f.FilePath.EndsWith("file3.txt"));
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task ScanDirectoryStreamAsync_WithExcludePattern_FiltersMatchingFiles()
+    {
+        // Arrange
+        CreateTestFile("keep.txt", "keep");
+        CreateTestFile("exclude.tmp", "exclude");
+        CreateTestFile("also-keep.log", "keep");
+        CreateTestFile("exclude-too.tmp", "exclude");
+
+        // Act
+        var results = new List<FileMetadata>();
+        await foreach (var file in _sut.ScanDirectoryStreamAsync(_testDirectory, excludePatterns: ["*.tmp"]))
+        {
+            results.Add(file);
+        }
+
+        // Assert
+        results.Should().HaveCount(2);
+        results.Should().OnlyContain(f => !f.FilePath.EndsWith(".tmp"));
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task ScanDirectoryStreamAsync_WithCancellationToken_StopsStreamingWhenCancelled()
+    {
+        // Arrange - create many files to ensure cancellation happens during scan
+        for (var i = 0; i < 100; i++)
+        {
+            CreateTestFile($"file{i}.txt", $"content{i}");
+        }
+
+        var cts = new CancellationTokenSource();
+        cts.Cancel(); // Cancel immediately
+
+        // Act
+        var act = async () =>
+        {
+            await foreach (var file in _sut.ScanDirectoryStreamAsync(_testDirectory, cancellationToken: cts.Token))
+            {
+                // Should not reach here
+            }
+        };
+
+        // Assert
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task ScanDirectoryStreamAsync_YieldsFilesOneByOne_ConstantMemory()
+    {
+        // Arrange - create many files
+        for (var i = 0; i < 50; i++)
+        {
+            CreateTestFile($"file{i}.txt", $"content{i}");
+        }
+
+        // Act - process files one at a time without loading all into memory
+        var processedCount = 0;
+        await foreach (var file in _sut.ScanDirectoryStreamAsync(_testDirectory))
+        {
+            processedCount++;
+            file.Should().NotBeNull();
+            file.FilePath.Should().NotBeNullOrEmpty();
+
+            // Simulate processing without storing all files
+            if (processedCount % 10 == 0)
+            {
+                // Could log progress, etc.
+            }
+        }
+
+        // Assert
+        processedCount.Should().Be(50);
+    }
+
+    #endregion
+
     #region Helper Methods
 
     /// <summary>
@@ -389,12 +531,12 @@ public class FileSystemServiceTests : IDisposable
     {
         var fullPath = Path.Combine(_testDirectory, relativePath);
         var directory = Path.GetDirectoryName(fullPath);
-        
+
         if (!string.IsNullOrEmpty(directory))
         {
             Directory.CreateDirectory(directory);
         }
-        
+
         File.WriteAllText(fullPath, content);
         return fullPath;
     }

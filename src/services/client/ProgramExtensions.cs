@@ -19,6 +19,7 @@ public static class ProgramExtensions
     public static void AddApplicationServices(this IServiceCollection services)
     {
         services.AddSingleton<TelemetryProvider>();
+        services.AddSingleton<ResiliencePipelineProvider>();
         services.AddSingleton<IFileSystemService, FileSystemService>();
         services.AddSingleton<IBackupStateService, BackupStateService>();
         services.AddTransient<IBackupService, BackupService>();
@@ -29,7 +30,7 @@ public static class ProgramExtensions
         // Register BackupClient configuration
         services.AddOptions<BackupClientOptions>()
             .Bind(configuration.GetSection(BackupClientOptions.SectionName))
-            .Validate(o => !string.IsNullOrWhiteSpace(o.BackupTargetDirectory), "BackupClient:BackupTargetDirectory is required")
+            .Validate(o => o.BackupTargets != null && o.BackupTargets.Count > 0, "BackupClient:BackupTargets must contain at least one target")
             .ValidateOnStart();
 
         // Register Database configuration
