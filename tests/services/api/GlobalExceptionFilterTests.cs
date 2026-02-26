@@ -42,6 +42,7 @@ public class GlobalExceptionFilterTests
     }
 
     [Fact]
+    [Trait("Category", "Unit")]
     public void OnException_WithBackupRunNotFoundException_Returns404()
     {
         // Arrange
@@ -66,6 +67,7 @@ public class GlobalExceptionFilterTests
     }
 
     [Fact]
+    [Trait("Category", "Unit")]
     public void OnException_WithBackupRunAlreadyCommittedException_Returns409()
     {
         // Arrange
@@ -88,6 +90,7 @@ public class GlobalExceptionFilterTests
     }
 
     [Fact]
+    [Trait("Category", "Unit")]
     public void OnException_WithConcurrentUpdateException_Returns409()
     {
         // Arrange
@@ -112,6 +115,7 @@ public class GlobalExceptionFilterTests
     }
 
     [Fact]
+    [Trait("Category", "Unit")]
     public void OnException_WithInvalidBackupRunStateException_Returns422()
     {
         // Arrange
@@ -140,6 +144,7 @@ public class GlobalExceptionFilterTests
     }
 
     [Fact]
+    [Trait("Category", "Unit")]
     public void OnException_WithArgumentException_Returns400()
     {
         // Arrange
@@ -160,6 +165,7 @@ public class GlobalExceptionFilterTests
     }
 
     [Fact]
+    [Trait("Category", "Unit")]
     public void OnException_WithArgumentNullException_Returns400()
     {
         // Arrange
@@ -179,6 +185,7 @@ public class GlobalExceptionFilterTests
     }
 
     [Fact]
+    [Trait("Category", "Unit")]
     public void OnException_WithUnhandledException_Returns500()
     {
         // Arrange
@@ -200,6 +207,7 @@ public class GlobalExceptionFilterTests
     }
 
     [Fact]
+    [Trait("Category", "Unit")]
     public void OnException_InDevelopmentMode_IncludesStackTrace()
     {
         // Arrange
@@ -220,6 +228,7 @@ public class GlobalExceptionFilterTests
     }
 
     [Fact]
+    [Trait("Category", "Unit")]
     public void OnException_AlwaysIncludesTraceId()
     {
         // Arrange

@@ -1,0 +1,47 @@
+# Backup Ignore File
+# Lines starting with # are comments
+# Supports glob patterns like .gitignore
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*~
+
+# Log files
+*.log
+
+# Build outputs
+bin/**
+obj/**
+build/**
+dist/**
+out/**
+
+# Dependencies
+node_modules/**
+packages/**
+.nuget/**
+
+# Version control
+.git/**
+.svn/**
+.hg/**
+
+# IDE files
+.vs/**
+.vscode/**
+.idea/**
+*.suo
+*.user
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local database files
+*.db
+*.sqlite
+
+# Add your own patterns below:

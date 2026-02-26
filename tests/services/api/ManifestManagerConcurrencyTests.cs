@@ -27,6 +27,7 @@ public class ManifestManagerConcurrencyTests
     }
 
     [Fact]
+    [Trait("Category", "Unit")]
     public async Task CommitBackupRunAsync_WithValidETag_SuccessfullyCommits()
     {
         // Arrange
@@ -80,6 +81,7 @@ public class ManifestManagerConcurrencyTests
     }
 
     [Fact]
+    [Trait("Category", "Unit")]
     public async Task CommitBackupRunAsync_WithETagMismatch_ThrowsConcurrentUpdateException()
     {
         // Arrange
@@ -126,6 +128,7 @@ public class ManifestManagerConcurrencyTests
     }
 
     [Fact]
+    [Trait("Category", "Unit")]
     public async Task CommitBackupRunAsync_AlreadyCommitted_ThrowsBackupRunAlreadyCommittedException()
     {
         // Arrange
@@ -160,6 +163,7 @@ public class ManifestManagerConcurrencyTests
     }
 
     [Fact]
+    [Trait("Category", "Unit")]
     public async Task CommitBackupRunAsync_FailedState_ThrowsInvalidBackupRunStateException()
     {
         // Arrange
@@ -195,6 +199,7 @@ public class ManifestManagerConcurrencyTests
     }
 
     [Fact]
+    [Trait("Category", "Unit")]
     public async Task CommitBackupRunAsync_RunNotFound_ThrowsBackupRunNotFoundException()
     {
         // Arrange
@@ -219,6 +224,7 @@ public class ManifestManagerConcurrencyTests
     }
 
     [Fact]
+    [Trait("Category", "Unit")]
     public async Task GetBackupRunAsync_StoresETagInModel()
     {
         // Arrange
@@ -252,6 +258,7 @@ public class ManifestManagerConcurrencyTests
     }
 
     [Fact]
+    [Trait("Category", "Unit")]
     public async Task GetBackupRunAsync_NotFound_ThrowsBackupRunNotFoundException()
     {
         // Arrange

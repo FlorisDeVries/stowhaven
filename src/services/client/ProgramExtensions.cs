@@ -3,11 +3,13 @@ using Azure.Identity;
 using FlorisDeV.BackupClient.Authentication;
 using FlorisDeV.BackupClient.Clients.BackupApi;
 using FlorisDeV.BackupClient.Clients.BackupApi.Config;
+using FlorisDeV.BackupClient.Config;
 using FlorisDeV.BackupClient.Services;
 using FlorisDeV.BackupClient.Telemetry;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace FlorisDeV.BackupClient;
@@ -17,12 +19,24 @@ public static class ProgramExtensions
     public static void AddApplicationServices(this IServiceCollection services)
     {
         services.AddSingleton<TelemetryProvider>();
-
+        services.AddSingleton<IFileSystemService, FileSystemService>();
+        services.AddSingleton<IBackupStateService, BackupStateService>();
         services.AddTransient<IBackupService, BackupService>();
     }
 
     public static void AddApplicationConfigurations(this IServiceCollection services, IConfiguration configuration, IHostEnvironment environment)
     {
+        // Register BackupClient configuration
+        services.AddOptions<BackupClientOptions>()
+            .Bind(configuration.GetSection(BackupClientOptions.SectionName))
+            .Validate(o => !string.IsNullOrWhiteSpace(o.BackupTargetDirectory), "BackupClient:BackupTargetDirectory is required")
+            .ValidateOnStart();
+
+        // Register Database configuration
+        services.AddOptions<DatabaseOptions>()
+            .Bind(configuration.GetSection(DatabaseOptions.SectionName))
+            .ValidateOnStart();
+
         // Register Azure AD configuration
         services.AddOptions<AzureAdOptions>()
             .Bind(configuration.GetSection(AzureAdOptions.SectionName))
