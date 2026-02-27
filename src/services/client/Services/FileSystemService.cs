@@ -141,33 +141,13 @@ public partial class FileSystemService(ILogger<FileSystemService> logger) : IFil
         string[]? excludePatterns = null,
         CancellationToken cancellationToken = default)
     {
-        if (!Directory.Exists(directoryPath))
-        {
-            throw new DirectoryNotFoundException($"Directory not found: {directoryPath}");
-        }
-
         var files = new List<FileMetadata>();
-
-        // Setup glob matcher for exclusions
-        Matcher? exclusionMatcher = null;
-        if (excludePatterns?.Length > 0)
+        
+        await foreach (var file in ScanDirectoryStreamAsync(directoryPath, excludePatterns, cancellationToken))
         {
-            exclusionMatcher = new Matcher();
-            exclusionMatcher.AddInclude("**/*"); // Include all files by default
-            foreach (var pattern in excludePatterns)
-            {
-                // Convert simple extension patterns (*.ext) to recursive patterns (**/*.ext)
-                // to match user expectations of excluding files at any level
-                var normalizedPattern = pattern.StartsWith("*.") && !pattern.Contains('/') && !pattern.Contains('\\')
-                    ? $"**/{pattern}"
-                    : pattern;
-                exclusionMatcher.AddExclude(normalizedPattern);
-            }
+            files.Add(file);
         }
-
-        await ScanDirectoryRecursiveAsync(directoryPath, directoryPath, files, exclusionMatcher, cancellationToken);
-
-        LogDirectoryScanned(directoryPath, files.Count);
+        
         return files;
     }
 
@@ -181,7 +161,6 @@ public partial class FileSystemService(ILogger<FileSystemService> logger) : IFil
             throw new DirectoryNotFoundException($"Directory not found: {directoryPath}");
         }
 
-        // Setup glob matcher for exclusions
         Matcher? exclusionMatcher = null;
         if (excludePatterns?.Length > 0)
         {
@@ -214,7 +193,6 @@ public partial class FileSystemService(ILogger<FileSystemService> logger) : IFil
         Matcher? exclusionMatcher,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        // Scan files in current directory
         IEnumerable<string> files;
         try
         {
@@ -232,7 +210,6 @@ public partial class FileSystemService(ILogger<FileSystemService> logger) : IFil
 
             var relativePath = Path.GetRelativePath(rootPath, filePath);
 
-            // Check if file should be excluded
             if (exclusionMatcher != null)
             {
                 var matchResult = exclusionMatcher.Match(relativePath);
@@ -270,7 +247,6 @@ public partial class FileSystemService(ILogger<FileSystemService> logger) : IFil
             }
         }
 
-        // Recursively scan subdirectories
         IEnumerable<string> directories;
         try
         {
@@ -295,7 +271,6 @@ public partial class FileSystemService(ILogger<FileSystemService> logger) : IFil
 
             var relativePath = Path.GetRelativePath(rootPath, directory);
 
-            // Check if directory should be excluded
             if (exclusionMatcher != null)
             {
                 var matchResult = exclusionMatcher.Match(relativePath);
@@ -309,76 +284,6 @@ public partial class FileSystemService(ILogger<FileSystemService> logger) : IFil
             {
                 yield return file;
             }
-        }
-    }
-
-    private async Task ScanDirectoryRecursiveAsync(
-        string rootPath,
-        string currentPath,
-        List<FileMetadata> files,
-        Matcher? exclusionMatcher,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            // Scan files in current directory
-            foreach (var filePath in Directory.EnumerateFiles(currentPath))
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                var relativePath = Path.GetRelativePath(rootPath, filePath);
-
-                // Check if file should be excluded
-                if (exclusionMatcher != null)
-                {
-                    var matchResult = exclusionMatcher.Match(relativePath);
-                    if (!matchResult.HasMatches)
-                    {
-                        continue;
-                    }
-                }
-
-                try
-                {
-                    var metadata = await GetFileMetadataAsync(filePath, cancellationToken);
-                    files.Add(metadata);
-                }
-                catch (Exception ex)
-                {
-                    LogFileMetadataError(filePath, ex);
-                }
-            }
-
-            // Recursively scan subdirectories
-            foreach (var directory in Directory.EnumerateDirectories(currentPath))
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                var dirInfo = new DirectoryInfo(directory);
-                if (dirInfo.Attributes.HasFlag(FileAttributes.ReparsePoint))
-                {
-                    // Skip symbolic links to avoid loops
-                    continue;
-                }
-
-                var relativePath = Path.GetRelativePath(rootPath, directory);
-
-                // Check if directory should be excluded
-                if (exclusionMatcher != null)
-                {
-                    var matchResult = exclusionMatcher.Match(relativePath);
-                    if (!matchResult.HasMatches)
-                    {
-                        continue;
-                    }
-                }
-
-                await ScanDirectoryRecursiveAsync(rootPath, directory, files, exclusionMatcher, cancellationToken);
-            }
-        }
-        catch (UnauthorizedAccessException ex)
-        {
-            LogDirectoryAccessDenied(currentPath, ex);
         }
     }
 

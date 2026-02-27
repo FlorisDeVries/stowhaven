@@ -31,7 +31,6 @@ public class BackupClientOptions
                 "No backup targets configured. At least one target must be specified in 'BackupTargets'.");
         }
 
-        // Validate target names (no slashes or backslashes)
         foreach (var (name, _) in BackupTargets)
         {
             if (name.Contains('/') || name.Contains('\\'))

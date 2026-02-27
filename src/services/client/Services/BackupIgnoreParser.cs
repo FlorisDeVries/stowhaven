@@ -11,7 +11,7 @@ public static class BackupIgnoreParser
     /// </summary>
     /// <param name="ignoreFilePath">Path to the .backupignore file</param>
     /// <returns>Array of glob patterns to exclude, or null if file doesn't exist</returns>
-    public static string[]? ReadIgnoreFile(string ignoreFilePath)
+    internal static string[]? ReadIgnoreFile(string ignoreFilePath)
     {
         if (!File.Exists(ignoreFilePath))
             return null;
@@ -22,7 +22,6 @@ public static class BackupIgnoreParser
         {
             var trimmedLine = line.Trim();
 
-            // Skip empty lines and comments
             if (string.IsNullOrWhiteSpace(trimmedLine) || trimmedLine.StartsWith('#'))
                 continue;
 
@@ -40,8 +39,8 @@ public static class BackupIgnoreParser
     /// <returns>Combined array of all exclusion patterns</returns>
     public static string[]? GetCombinedPatterns(string? ignoreFilePath, string[]? additionalPatterns)
     {
-        var filePatterns = !string.IsNullOrWhiteSpace(ignoreFilePath) 
-            ? ReadIgnoreFile(ignoreFilePath) 
+        var filePatterns = !string.IsNullOrWhiteSpace(ignoreFilePath)
+            ? ReadIgnoreFile(ignoreFilePath)
             : null;
 
         if (filePatterns == null && additionalPatterns == null)

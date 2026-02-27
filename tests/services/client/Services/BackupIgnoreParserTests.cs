@@ -99,8 +99,8 @@ node_modules/**
     public void ReadIgnoreFile_TrimsWhitespace()
     {
         // Arrange
-        var content = @"  *.tmp  
-   *.log   
+        var content = @"  *.tmp
+   *.log
 node_modules/**  ";
         File.WriteAllText(_testIgnoreFile, content);
 

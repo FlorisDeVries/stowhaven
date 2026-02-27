@@ -108,7 +108,6 @@ public static class DeviceIdGenerator
 
         try
         {
-            // Try to get MachineGuid from registry
             var key = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Cryptography");
             return key?.GetValue("MachineGuid")?.ToString();
         }

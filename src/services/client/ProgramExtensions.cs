@@ -22,23 +22,23 @@ public static class ProgramExtensions
         services.AddSingleton<ResiliencePipelineProvider>();
         services.AddSingleton<IFileSystemService, FileSystemService>();
         services.AddSingleton<IBackupStateService, BackupStateService>();
+        services.AddSingleton<BackupDeltaComputer>();
+        services.AddSingleton<IBackupScanner, BackupScanner>();
+        services.AddSingleton<IFileUploader, FileUploader>();
         services.AddTransient<IBackupService, BackupService>();
     }
 
     public static void AddApplicationConfigurations(this IServiceCollection services, IConfiguration configuration, IHostEnvironment environment)
     {
-        // Register BackupClient configuration
         services.AddOptions<BackupClientOptions>()
             .Bind(configuration.GetSection(BackupClientOptions.SectionName))
             .Validate(o => o.BackupTargets != null && o.BackupTargets.Count > 0, "BackupClient:BackupTargets must contain at least one target")
             .ValidateOnStart();
 
-        // Register Database configuration
         services.AddOptions<DatabaseOptions>()
             .Bind(configuration.GetSection(DatabaseOptions.SectionName))
             .ValidateOnStart();
 
-        // Register Azure AD configuration
         services.AddOptions<AzureAdOptions>()
             .Bind(configuration.GetSection(AzureAdOptions.SectionName))
             .Validate(o => !string.IsNullOrWhiteSpace(o.Instance), "AzureAd:Instance is required")
@@ -46,7 +46,6 @@ public static class ProgramExtensions
             .Validate(o => !string.IsNullOrWhiteSpace(o.ClientId), "AzureAd:ClientId is required")
             .ValidateOnStart();
 
-        // Register TokenCredential for Azure authentication
         services.AddSingleton<TokenCredential>(provider =>
         {
             if (environment.IsDevelopment())

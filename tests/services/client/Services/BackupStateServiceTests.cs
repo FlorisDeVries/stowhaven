@@ -15,6 +15,7 @@ public class BackupStateServiceTests : IDisposable
 {
     private readonly string _testDatabasePath;
     private readonly BackupStateService _sut;
+    private readonly BackupDeltaComputer _deltaComputer;
 
     public BackupStateServiceTests()
     {
@@ -23,6 +24,9 @@ public class BackupStateServiceTests : IDisposable
         
         var options = Options.Create(new DatabaseOptions { FilePath = _testDatabasePath });
         _sut = new BackupStateService(options, NullLogger<BackupStateService>.Instance);
+        
+        // Create delta computer that depends on the state service
+        _deltaComputer = new BackupDeltaComputer(_sut, NullLogger<BackupDeltaComputer>.Instance);
     }
 
     public void Dispose()
@@ -103,7 +107,7 @@ public class BackupStateServiceTests : IDisposable
         var currentFiles = CreateTestFileMetadata(5);
 
         // Act
-        var delta = await _sut.ComputeDeltaAsync(currentFiles);
+        var delta = await _deltaComputer.ComputeDeltaAsync(currentFiles);
 
         // Assert
         delta.NewFiles.Should().HaveCount(5);
@@ -121,7 +125,7 @@ public class BackupStateServiceTests : IDisposable
         await SaveBackupState(files);
 
         // Act
-        var delta = await _sut.ComputeDeltaAsync(files);
+        var delta = await _deltaComputer.ComputeDeltaAsync(files);
 
         // Assert
         delta.NewFiles.Should().BeEmpty();
@@ -142,7 +146,7 @@ public class BackupStateServiceTests : IDisposable
         var currentFiles = originalFiles.Concat(newFiles).ToList();
 
         // Act
-        var delta = await _sut.ComputeDeltaAsync(currentFiles);
+        var delta = await _deltaComputer.ComputeDeltaAsync(currentFiles);
 
         // Assert
         delta.NewFiles.Should().HaveCount(2);
@@ -165,7 +169,7 @@ public class BackupStateServiceTests : IDisposable
         modifiedFiles[1] = modifiedFiles[1] with { Hash = "modified-hash-xyz" };
 
         // Act
-        var delta = await _sut.ComputeDeltaAsync(modifiedFiles);
+        var delta = await _deltaComputer.ComputeDeltaAsync(modifiedFiles);
 
         // Assert
         delta.NewFiles.Should().BeEmpty();
@@ -187,7 +191,7 @@ public class BackupStateServiceTests : IDisposable
         modifiedFiles[0] = modifiedFiles[0] with { SizeBytes = 999999 };
 
         // Act
-        var delta = await _sut.ComputeDeltaAsync(modifiedFiles);
+        var delta = await _deltaComputer.ComputeDeltaAsync(modifiedFiles);
 
         // Assert
         delta.NewFiles.Should().BeEmpty();
@@ -208,7 +212,7 @@ public class BackupStateServiceTests : IDisposable
         var remainingFiles = originalFiles.Take(3).ToList();
 
         // Act
-        var delta = await _sut.ComputeDeltaAsync(remainingFiles);
+        var delta = await _deltaComputer.ComputeDeltaAsync(remainingFiles);
 
         // Assert
         delta.NewFiles.Should().BeEmpty();
@@ -237,7 +241,7 @@ public class BackupStateServiceTests : IDisposable
         };
 
         // Act
-        var delta = await _sut.ComputeDeltaAsync(currentFiles);
+        var delta = await _deltaComputer.ComputeDeltaAsync(currentFiles);
 
         // Assert
         delta.NewFiles.Should().HaveCount(2);
@@ -263,7 +267,7 @@ public class BackupStateServiceTests : IDisposable
         };
 
         // Act
-        var delta = await _sut.ComputeDeltaAsync(currentFiles);
+        var delta = await _deltaComputer.ComputeDeltaAsync(currentFiles);
 
         // Assert
         delta.NewFiles.Should().BeEmpty();

@@ -39,7 +39,6 @@ public class TelemetryProvider : IDisposable
         ActivitySource = new ActivitySource(SourceName, SourceVersion);
         _meter = new Meter(SourceName, SourceVersion);
         
-        // Initialize counters
         CountFiles = _meter.CreateCounter<int>(
             "florisdev.backup.files.count", 
             unit: "files",
@@ -50,7 +49,6 @@ public class TelemetryProvider : IDisposable
             unit: "failures",
             description: "Number of failed backup operations");
         
-        // Initialize histograms
         BackupDuration = _meter.CreateHistogram<long>(
             "florisdev.backup.duration", 
             unit: "ms",

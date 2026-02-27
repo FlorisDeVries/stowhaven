@@ -36,14 +36,12 @@ public sealed class MsalTokenCredential : TokenCredential
     {
         var authorityUri = $"{authority.TrimEnd('/')}/{tenantId}";
 
-        // Build the public client application
         var app = PublicClientApplicationBuilder
             .Create(clientId)
             .WithAuthority(authorityUri)
             .WithDefaultRedirectUri() // Uses http://localhost for desktop apps
             .Build();
 
-        // Configure cross-platform token cache
         // This persists tokens securely on Windows (DPAPI), macOS (Keychain), Linux (libsecret)
         var storageProperties = new StorageCreationPropertiesBuilder(
                 "backup-client.cache",
