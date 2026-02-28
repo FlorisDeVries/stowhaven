@@ -19,10 +19,8 @@ public static class DeviceIdGenerator
     {
         try
         {
-            var components = new List<string>();
-
             // 1. Machine Name (most stable across OS reinstalls if hostname is preserved)
-            components.Add($"Machine:{Environment.MachineName}");
+            var components = new List<string> { $"Machine:{Environment.MachineName}" };
 
             // 2. MAC Address of first network adapter (stable physical hardware)
             var macAddress = GetFirstMacAddress();
@@ -65,11 +63,11 @@ public static class DeviceIdGenerator
             {
                 var combined = string.Join("|", components);
                 var hash = SHA256.HashData(Encoding.UTF8.GetBytes(combined));
-                
+
                 // Use first 16 bytes of hash to create a deterministic GUID
                 var guidBytes = new byte[16];
                 Array.Copy(hash, guidBytes, 16);
-                
+
                 return new Guid(guidBytes);
             }
 
@@ -88,7 +86,7 @@ public static class DeviceIdGenerator
         try
         {
             var nic = NetworkInterface.GetAllNetworkInterfaces()
-                .FirstOrDefault(n => 
+                .FirstOrDefault(n =>
                     n.OperationalStatus == OperationalStatus.Up &&
                     n.NetworkInterfaceType != NetworkInterfaceType.Loopback &&
                     n.GetPhysicalAddress().ToString().Length > 0);
@@ -129,7 +127,7 @@ public static class DeviceIdGenerator
             {
                 return File.ReadAllText("/etc/machine-id").Trim();
             }
-            
+
             // Fallback for older systems
             if (File.Exists("/var/lib/dbus/machine-id"))
             {

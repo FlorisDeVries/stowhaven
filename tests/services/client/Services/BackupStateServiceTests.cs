@@ -21,10 +21,10 @@ public class BackupStateServiceTests : IDisposable
     {
         // Create unique temp database for each test
         _testDatabasePath = Path.Combine(Path.GetTempPath(), $"backup-test-{Guid.NewGuid()}.db");
-        
+
         var options = Options.Create(new DatabaseOptions { FilePath = _testDatabasePath });
         _sut = new BackupStateService(options, NullLogger<BackupStateService>.Instance);
-        
+
         // Create delta computer that depends on the state service
         _deltaComputer = new BackupDeltaComputer(_sut, NullLogger<BackupDeltaComputer>.Instance);
     }
@@ -33,7 +33,7 @@ public class BackupStateServiceTests : IDisposable
     {
         // Clean up database
         _sut.Dispose();
-        
+
         if (File.Exists(_testDatabasePath))
         {
             File.Delete(_testDatabasePath);
@@ -353,16 +353,15 @@ public class BackupStateServiceTests : IDisposable
         // Arrange
         var runId = Guid.NewGuid();
         var commitId = "empty-commit";
-        var emptyFiles = new List<FileMetadata>();
 
         // Act
-        await _sut.SaveBackupSuccessAsync(runId, commitId, emptyFiles);
+        await _sut.SaveBackupSuccessAsync(runId, commitId, new List<FileMetadata>());
 
         // Assert
         var deviceState = await _sut.GetOrCreateDeviceStateAsync();
         deviceState.LastRunId.Should().Be(runId);
         deviceState.LastCommitId.Should().Be(commitId);
-        
+
         var allFiles = await _sut.GetAllFileStatesAsync();
         allFiles.Should().BeEmpty();
     }
@@ -538,7 +537,7 @@ public class BackupStateServiceTests : IDisposable
 
         // Assert
         await act.Should().NotThrowAsync();
-        
+
         var remainingFiles = await _sut.GetAllFileStatesAsync();
         remainingFiles.Should().HaveCount(2);
     }

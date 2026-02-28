@@ -13,14 +13,12 @@ namespace FlorisDeV.BackupClient.Services;
 /// </summary>
 public class ResiliencePipelineProvider
 {
-    private readonly ResiliencePipeline _blobUploadPipeline;
-
     public ResiliencePipelineProvider(IOptions<BackupClientOptions> options, ILogger<ResiliencePipelineProvider> logger)
     {
         var config = options.Value;
 
         // Build resilience pipeline for blob uploads
-        _blobUploadPipeline = new ResiliencePipelineBuilder()
+        BlobUploadPipeline = new ResiliencePipelineBuilder()
             .AddRetry(new RetryStrategyOptions
             {
                 MaxRetryAttempts = config.MaxRetryAttempts,
@@ -28,7 +26,7 @@ public class ResiliencePipelineProvider
                 BackoffType = DelayBackoffType.Exponential,
                 MaxDelay = TimeSpan.FromMilliseconds(config.MaxRetryDelayMs),
                 UseJitter = true, // Add jitter to avoid thundering herd
-                ShouldHandle = new PredicateBuilder().Handle<Exception>(ex => IsTransientError(ex)),
+                ShouldHandle = new PredicateBuilder().Handle<Exception>(IsTransientError),
                 OnRetry = args =>
                 {
                     logger.LogWarning(
@@ -49,7 +47,7 @@ public class ResiliencePipelineProvider
     /// <summary>
     /// Gets the resilience pipeline for blob upload operations.
     /// </summary>
-    public ResiliencePipeline BlobUploadPipeline => _blobUploadPipeline;
+    public ResiliencePipeline BlobUploadPipeline { get; }
 
     /// <summary>
     /// Determines if an exception represents a transient error that should be retried.
@@ -63,7 +61,7 @@ public class ResiliencePipelineProvider
 
             // Network-related errors
             HttpRequestException => true,
-            TaskCanceledException tce when !tce.CancellationToken.IsCancellationRequested => true, // Timeout
+            TaskCanceledException { CancellationToken.IsCancellationRequested: false } => true, // Timeout
             TimeoutException => true,
             IOException => true,
 

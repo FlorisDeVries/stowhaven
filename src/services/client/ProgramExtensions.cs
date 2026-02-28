@@ -32,7 +32,7 @@ public static class ProgramExtensions
     {
         services.AddOptions<BackupClientOptions>()
             .Bind(configuration.GetSection(BackupClientOptions.SectionName))
-            .Validate(o => o.BackupTargets != null && o.BackupTargets.Count > 0, "BackupClient:BackupTargets must contain at least one target")
+            .Validate(o => o.BackupTargets.Count > 0, "BackupClient:BackupTargets must contain at least one target")
             .ValidateOnStart();
 
         services.AddOptions<DatabaseOptions>()

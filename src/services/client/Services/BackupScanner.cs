@@ -10,25 +10,12 @@ namespace FlorisDeV.BackupClient.Services;
 /// Handles file scanning and smart hashing for backup operations.
 /// Optimizes I/O by only computing hashes when necessary.
 /// </summary>
-public partial class BackupScanner : IBackupScanner
+public partial class BackupScanner(
+    IFileSystemService fileSystemService,
+    IBackupStateService backupStateService,
+    ILogger<BackupScanner> logger)
+    : IBackupScanner
 {
-    private readonly IFileSystemService _fileSystemService;
-    private readonly IBackupStateService _backupStateService;
-    private readonly BackupClientOptions _options;
-    private readonly ILogger<BackupScanner> _logger;
-
-    public BackupScanner(
-        IFileSystemService fileSystemService,
-        IBackupStateService backupStateService,
-        IOptions<BackupClientOptions> options,
-        ILogger<BackupScanner> logger)
-    {
-        _fileSystemService = fileSystemService;
-        _backupStateService = backupStateService;
-        _options = options.Value;
-        _logger = logger;
-    }
-
     /// <summary>
     /// Scans all configured backup targets and yields files with their target metadata.
     /// </summary>
@@ -43,10 +30,10 @@ public partial class BackupScanner : IBackupScanner
 
             var targetIgnorePath = Path.Combine(targetDirectory, ".backupignore");
             var targetExcludePatterns = File.Exists(targetIgnorePath)
-                ? BackupIgnoreParser.GetCombinedPatterns(targetIgnorePath, excludePatterns)
+                ? BackupIgnoreParser.GetCombinedPatterns(targetIgnorePath)
                 : excludePatterns;
 
-            await foreach (var file in _fileSystemService.ScanDirectoryStreamAsync(
+            await foreach (var file in fileSystemService.ScanDirectoryStreamAsync(
                 targetDirectory,
                 targetExcludePatterns,
                 cancellationToken))
@@ -65,12 +52,12 @@ public partial class BackupScanner : IBackupScanner
         CancellationToken cancellationToken)
     {
         var storagePath = taggedFile.GetStoragePath();
-        var previousState = await _backupStateService.GetFileStateAsync(storagePath, cancellationToken);
+        var previousState = await backupStateService.GetFileStateAsync(storagePath, cancellationToken);
 
         if (previousState == null)
         {
             // New file - needs hash and backup
-            var hash = await _fileSystemService.ComputeFileHashAsync(taggedFile.Metadata.FilePath, cancellationToken);
+            var hash = await fileSystemService.ComputeFileHashAsync(taggedFile.Metadata.FilePath, cancellationToken);
             var fileWithHash = taggedFile with { Metadata = taggedFile.Metadata with { Hash = hash } };
             return (fileWithHash, true, FileChangeType.New);
         }
@@ -79,20 +66,17 @@ public partial class BackupScanner : IBackupScanner
             previousState.LastModifiedUtc != taggedFile.Metadata.LastModified)
         {
             // Potentially modified - compute hash to verify
-            var hash = await _fileSystemService.ComputeFileHashAsync(taggedFile.Metadata.FilePath, cancellationToken);
+            var hash = await fileSystemService.ComputeFileHashAsync(taggedFile.Metadata.FilePath, cancellationToken);
             var fileWithHash = taggedFile with { Metadata = taggedFile.Metadata with { Hash = hash } };
 
-            if (hash != previousState.Sha256Hash)
-            {
+            return hash != previousState.Sha256Hash ?
                 // Content actually changed
-                return (fileWithHash, true, FileChangeType.Modified);
-            }
-
-            // Size/timestamp changed but content didn't (rare edge case - touch, copy with different timestamp)
-            return (fileWithHash, false, FileChangeType.Unchanged);
+                (fileWithHash, true, FileChangeType.Modified) :
+                // Size/timestamp changed but content didn't (rare edge case - touch, copy with different timestamp)
+                (fileWithHash, false, FileChangeType.Unchanged);
         }
 
-        // Unchanged - reuse existing hash (no I/O!)
+        // Unchanged - reuse existing hash
         var fileWithCachedHash = taggedFile with { Metadata = taggedFile.Metadata with { Hash = previousState.Sha256Hash } };
         return (fileWithCachedHash, false, FileChangeType.Unchanged);
     }
@@ -105,7 +89,7 @@ public partial class BackupScanner : IBackupScanner
         CancellationToken cancellationToken)
     {
         var deletedFiles = new List<string>();
-        var previousFiles = await _backupStateService.GetAllFileStatesAsync(cancellationToken);
+        var previousFiles = await backupStateService.GetAllFileStatesAsync(cancellationToken);
 
         foreach (var previousFile in previousFiles)
         {

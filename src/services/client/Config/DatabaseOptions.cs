@@ -14,7 +14,7 @@ public class DatabaseOptions
     /// Full path to the SQLite database file.
     /// If not specified, defaults to user's LocalApplicationData folder.
     /// </summary>
-    public string? FilePath { get; set; }
+    public string? FilePath { get; init; }
 
     /// <summary>
     /// Gets the database path, using default location if not configured.

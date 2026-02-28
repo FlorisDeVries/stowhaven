@@ -131,7 +131,7 @@ public class BackupServiceTests : IDisposable
             .ReturnsAsync(Array.Empty<string>());
 
         _mockStateService.Setup(x => x.UpsertFileStateBatchAsync(
-                It.IsAny<IReadOnlyList<(string, FileMetadata)>>(),
+                It.IsAny<IReadOnlyList<TaggedFile>>(),
                 It.IsAny<Guid>(),
                 It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
@@ -178,7 +178,7 @@ public class BackupServiceTests : IDisposable
             It.Is<IReadOnlyList<TaggedFile>>(files => files.Count == 1),
             It.IsAny<CancellationToken>()), Times.Once);
         _mockStateService.Verify(x => x.UpsertFileStateBatchAsync(
-            It.IsAny<IReadOnlyList<(string, FileMetadata)>>(),
+            It.IsAny<IReadOnlyList<TaggedFile>>(),
             It.Is<Guid>(id => id == runId),
             It.IsAny<CancellationToken>()), Times.Once);
         _mockStateService.Verify(x => x.SaveBackupSuccessAsync(
@@ -286,7 +286,7 @@ public class BackupServiceTests : IDisposable
             .ReturnsAsync(Array.Empty<string>());
 
         _mockStateService.Setup(x => x.UpsertFileStateBatchAsync(
-                It.IsAny<IReadOnlyList<(string, FileMetadata)>>(),
+                It.IsAny<IReadOnlyList<TaggedFile>>(),
                 It.IsAny<Guid>(),
                 It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
@@ -454,7 +454,7 @@ public class BackupServiceTests : IDisposable
             .ReturnsAsync(Array.Empty<string>());
 
         _mockStateService.Setup(x => x.UpsertFileStateBatchAsync(
-                It.IsAny<IReadOnlyList<(string, FileMetadata)>>(),
+                It.IsAny<IReadOnlyList<TaggedFile>>(),
                 It.IsAny<Guid>(),
                 It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
@@ -493,7 +493,7 @@ public class BackupServiceTests : IDisposable
         // Assert
         result.Should().BeTrue();
         _mockStateService.Verify(x => x.UpsertFileStateBatchAsync(
-            It.Is<IReadOnlyList<(string, FileMetadata)>>(f => f.Count == 10),
+            It.Is<IReadOnlyList<TaggedFile>>(f => f.Count == 10),
             It.Is<Guid>(id => id == runId),
             It.IsAny<CancellationToken>()), Times.Once);
     }
@@ -531,7 +531,7 @@ public class BackupServiceTests : IDisposable
             .ReturnsAsync(Array.Empty<string>());
 
         _mockStateService.Setup(x => x.UpsertFileStateBatchAsync(
-                It.IsAny<IReadOnlyList<(string, FileMetadata)>>(),
+                It.IsAny<IReadOnlyList<TaggedFile>>(),
                 It.IsAny<Guid>(),
                 It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
@@ -647,7 +647,7 @@ public class BackupServiceTests : IDisposable
                 .ReturnsAsync(Array.Empty<string>());
 
             _mockStateService.Setup(x => x.UpsertFileStateBatchAsync(
-                    It.IsAny<IReadOnlyList<(string, FileMetadata)>>(),
+                    It.IsAny<IReadOnlyList<TaggedFile>>(),
                     It.IsAny<Guid>(),
                     It.IsAny<CancellationToken>()))
                 .Returns(Task.CompletedTask);
@@ -738,7 +738,7 @@ public class BackupServiceTests : IDisposable
             .ReturnsAsync(Array.Empty<string>());
 
         _mockStateService.Setup(x => x.UpsertFileStateBatchAsync(
-                It.IsAny<IReadOnlyList<(string, FileMetadata)>>(),
+                It.IsAny<IReadOnlyList<TaggedFile>>(),
                 It.IsAny<Guid>(),
                 It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
@@ -811,7 +811,7 @@ public class BackupServiceTests : IDisposable
             .ReturnsAsync(Array.Empty<string>());
 
         _mockStateService.Setup(x => x.UpsertFileStateBatchAsync(
-                It.IsAny<IReadOnlyList<(string, FileMetadata)>>(),
+                It.IsAny<IReadOnlyList<TaggedFile>>(),
                 It.IsAny<Guid>(),
                 It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);

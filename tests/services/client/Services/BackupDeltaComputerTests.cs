@@ -29,7 +29,7 @@ public class BackupDeltaComputerTests
     {
         // Arrange
         var currentFiles = Array.Empty<FileMetadata>();
-        
+
         _mockStateService.Setup(x => x.GetAllFileStatesAsync(It.IsAny<CancellationToken>()))
             .ReturnsAsync(new List<BackupFileState>());
 
@@ -215,13 +215,13 @@ public class BackupDeltaComputerTests
         // Assert
         result.NewFiles.Should().HaveCount(1);
         result.NewFiles[0].FilePath.Should().Be("/path/new-file.txt");
-        
+
         result.ModifiedFiles.Should().HaveCount(1);
         result.ModifiedFiles[0].FilePath.Should().Be("/path/modified-file.txt");
-        
+
         result.DeletedFiles.Should().HaveCount(1);
         result.DeletedFiles[0].Should().Be("/path/deleted-file.txt");
-        
+
         result.TotalBytes.Should().Be(400); // 150 (new) + 250 (modified)
     }
 
@@ -287,10 +287,10 @@ public class BackupDeltaComputerTests
         // Arrange - Create 1000 files
         var currentFiles = Enumerable.Range(1, 1000)
             .Select(i => new FileMetadata(
-                $"/path/file{i}.txt", 
-                i * 100, 
-                DateTimeOffset.UtcNow, 
-                DateTimeOffset.UtcNow.AddDays(-1), 
+                $"/path/file{i}.txt",
+                i * 100,
+                DateTimeOffset.UtcNow,
+                DateTimeOffset.UtcNow.AddDays(-1),
                 $"hash{i}"))
             .ToList();
 
@@ -304,7 +304,7 @@ public class BackupDeltaComputerTests
         result.NewFiles.Should().HaveCount(1000);
         result.ModifiedFiles.Should().BeEmpty();
         result.DeletedFiles.Should().BeEmpty();
-        
+
         // Total bytes: sum of 100 + 200 + ... + 100000 = 100 * (1 + 2 + ... + 1000) = 100 * 500500
         var expectedBytes = Enumerable.Range(1, 1000).Sum(i => i * 100L);
         result.TotalBytes.Should().Be(expectedBytes);

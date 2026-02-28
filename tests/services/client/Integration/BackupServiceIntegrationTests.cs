@@ -109,7 +109,6 @@ public class BackupServiceIntegrationTests : IDisposable
         var scanner = new BackupScanner(
             fileSystemService,
             stateService,
-            options,
             NullLogger<BackupScanner>.Instance);
 
         return new BackupService(
@@ -129,10 +128,10 @@ public class BackupServiceIntegrationTests : IDisposable
         // Arrange
         var targetDir = Path.Combine(_testRoot, "target1");
         Directory.CreateDirectory(targetDir);
-        
+
         await File.WriteAllTextAsync(Path.Combine(targetDir, "file1.txt"), "Content 1");
         await File.WriteAllTextAsync(Path.Combine(targetDir, "file2.txt"), "Content 2");
-        
+
         var subDir = Path.Combine(targetDir, "subdir");
         Directory.CreateDirectory(subDir);
         await File.WriteAllTextAsync(Path.Combine(subDir, "file3.txt"), "Content 3");
@@ -190,7 +189,7 @@ public class BackupServiceIntegrationTests : IDisposable
         // Assert
         result.Should().BeTrue();
         _testUploader.UploadedPaths.Should().BeEmpty("no files should be uploaded when nothing changed");
-        
+
         _mockApiClient.Verify(x => x.StartBackupRun(
             It.IsAny<StartBackupRunRequest>(),
             It.IsAny<CancellationToken>()), Times.Never);
@@ -302,7 +301,7 @@ public class BackupServiceIntegrationTests : IDisposable
         // Assert
         result.Should().BeTrue();
         _testUploader.UploadedPaths.Should().BeEmpty("deleted files should not be uploaded");
-        
+
         // Verify that cleanup was triggered (StartBackupRun and CommitBackupRun should be called)
         _mockApiClient.Verify(x => x.StartBackupRun(
             It.IsAny<StartBackupRunRequest>(),
@@ -346,14 +345,15 @@ public class BackupServiceIntegrationTests : IDisposable
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task Backup_WithExclusionPatterns_ShouldRespectGlobalIgnore()
+    public async Task Backup_WithBackupIgnoreFile_ShouldRespectExclusionPatterns()
     {
         // Arrange
         var targetDir = Path.Combine(_testRoot, "target6");
         Directory.CreateDirectory(targetDir);
-        
+
         await File.WriteAllTextAsync(Path.Combine(targetDir, "file1.txt"), "Content 1");
         await File.WriteAllTextAsync(Path.Combine(targetDir, "file2.tmp"), "Temp file");
+        await File.WriteAllTextAsync(Path.Combine(targetDir, ".backupignore"), "*.tmp");
 
         var backupTargets = new Dictionary<string, string>
         {
@@ -363,7 +363,6 @@ public class BackupServiceIntegrationTests : IDisposable
         var options = Options.Create(new BackupClientOptions
         {
             BackupTargets = backupTargets,
-            ExcludePatterns = new[] { "*.tmp" },
             MaxParallelUploads = 2,
             MaxFailurePercentage = 10,
             MaxRetryAttempts = 2,
@@ -376,7 +375,7 @@ public class BackupServiceIntegrationTests : IDisposable
         var dbOptions = Options.Create(new DatabaseOptions { FilePath = dbPath });
         var fileSystemService = new FileSystemService(NullLogger<FileSystemService>.Instance);
         var stateService = new BackupStateService(dbOptions, NullLogger<BackupStateService>.Instance);
-        var scanner = new BackupScanner(fileSystemService, stateService, options, NullLogger<BackupScanner>.Instance);
+        var scanner = new BackupScanner(fileSystemService, stateService, NullLogger<BackupScanner>.Instance);
 
         var backupService = new BackupService(
             NullLogger<BackupService>.Instance,
@@ -392,8 +391,9 @@ public class BackupServiceIntegrationTests : IDisposable
 
         // Assert
         result.Should().BeTrue();
-        _testUploader.UploadedPaths.Should().ContainSingle();
+        _testUploader.UploadedPaths.Should().HaveCount(2); // file1.txt and .backupignore itself
         _testUploader.UploadedPaths.Should().Contain(path => path.Contains("file1.txt"));
+        _testUploader.UploadedPaths.Should().Contain(path => path.Contains(".backupignore"));
         _testUploader.UploadedPaths.Should().NotContain(path => path.Contains("file2.tmp"));
     }
 
@@ -404,7 +404,7 @@ public class BackupServiceIntegrationTests : IDisposable
         // Arrange
         var targetDir = Path.Combine(_testRoot, "target7");
         Directory.CreateDirectory(targetDir);
-        
+
         await File.WriteAllTextAsync(Path.Combine(targetDir, "file1.txt"), "Content 1");
         await File.WriteAllTextAsync(Path.Combine(targetDir, "ignored.txt"), "Ignored content");
         await File.WriteAllTextAsync(Path.Combine(targetDir, ".backupignore"), "ignored.txt");
@@ -485,7 +485,7 @@ public class BackupServiceIntegrationTests : IDisposable
 
         // Act & Assert
         var act = async () => await backupService.Backup(cts.Token);
-        
+
         await act.Should().ThrowAsync<OperationCanceledException>();
     }
 

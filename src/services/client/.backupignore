@@ -2,6 +2,12 @@
 # Patterns use glob syntax (similar to .gitignore)
 # Lines starting with # are comments
 # Use ** to match any number of directories
+#
+# NOTE: This is a sensible default for developer workstations.
+# For servers/production systems:
+#   - Consider keeping log files (comment out **/*.log and /var/log/**)
+#   - Remove Windows/Program Files exclusions if needed
+#   - Customize based on your specific backup requirements
 
 # ===== System Files =====
 **/.DS_Store
@@ -39,6 +45,24 @@
 **/virtualenv/**
 **/.venv/**
 
+# ===== Language-Specific Caches =====
+# Python
+**/.pytest_cache/**
+**/.mypy_cache/**
+**/.ruff_cache/**
+# Node/JavaScript
+**/.npm/**
+**/.pnpm-store/**
+**/.yarn/cache/**
+# Java/Gradle
+**/.gradle/**
+**/.m2/repository/**
+# Rust
+**/.cargo/registry/**
+**/.cargo/git/**
+**/target/debug/**
+**/target/release/**
+
 # ===== Version Control =====
 **/.git/**
 **/.svn/**
@@ -52,11 +76,29 @@
 **/*.user
 **/.project
 **/.classpath
+**/.history/**
+**/.fleet/**
 
 # ===== Caches =====
 **/.cache/**
 **/Cache/**
 **/cache/**
+
+# ===== Container & Infrastructure as Code =====
+**/.docker/**
+**/docker-data/**
+**/.terraform/**
+**/.terraform.lock.hcl
+**/terraform.tfstate
+**/terraform.tfstate.backup
+**/.serverless/**
+**/.devcontainer/**
+
+# ===== Crash Dumps & Diagnostics =====
+**/*.dmp
+**/*.stackdump
+**/core
+**/hs_err_pid*.log
 
 # ===== Windows Specific =====
 # Windows system (if backing up entire drive)
@@ -93,7 +135,6 @@
 /var/log/**
 
 # Unix user caches
-**/.cache/**
 **/.local/share/Trash/**
 **/Library/Caches/**
 **/Library/Logs/**
@@ -104,10 +145,17 @@
 **/.config/google-chrome/*/Cache/**
 **/Library/Application Support/Google/Chrome/*/Cache/**
 
-# ===== Database Files (Local Dev) =====
-# Uncomment if you don't want to backup local dev databases
-# *.db
-# *.sqlite
+# ===== Cloud Sync Temporary Files =====
+**/*.icloud
+**/~$*
+**/.dropbox.cache/**
+**/OneDrive - */.849C9593-D756-4E56-8D6E-42412F2A707B/**
+
+# ===== Backup Tool Self-Exclusion =====
+# Don't backup the backup client itself to avoid recursion
+**/FlorisDeV.BackupApi/**
+**/backup-api/bin/**
+**/backup-api/obj/**
 
 # ===== Add Your Custom Patterns Below =====
 

@@ -40,14 +40,14 @@ public interface IBackupStateService
     Task RemoveDeletedFilesAsync(IReadOnlyList<string> relativePaths, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Upserts multiple file states with pre-computed storage paths in a single transaction.
-    /// Used by multi-target backup where paths include target name prefix.
+    /// Upserts multiple tagged file states in a single transaction.
+    /// Storage paths are computed from the tagged files (includes target name prefix).
     /// </summary>
-    /// <param name="filesWithPaths">Files with their pre-computed storage paths (e.g., "target-name/relative/path.txt").</param>
+    /// <param name="taggedFiles">Tagged files to upsert.</param>
     /// <param name="runId">The backup run ID for these files.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     Task UpsertFileStateBatchAsync(
-        IReadOnlyList<(string StoragePath, FileMetadata File)> filesWithPaths,
+        IReadOnlyList<TaggedFile> taggedFiles,
         Guid runId,
         CancellationToken cancellationToken = default);
 }

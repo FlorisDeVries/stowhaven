@@ -115,52 +115,13 @@ node_modules/**  ";
 
     [Fact]
     [Trait("Category", "Unit")]
-    public void GetCombinedPatterns_WithBothFileAndConfig_CombinesBoth()
-    {
-        // Arrange
-        File.WriteAllText(_testIgnoreFile, "*.tmp\n*.log");
-        var configPatterns = new[] { "*.bak", "bin/**" };
-
-        // Act
-        var combined = BackupIgnoreParser.GetCombinedPatterns(_testIgnoreFile, configPatterns);
-
-        // Assert
-        combined.Should().NotBeNull();
-        combined.Should().HaveCount(4);
-        combined.Should().Contain("*.tmp");
-        combined.Should().Contain("*.log");
-        combined.Should().Contain("*.bak");
-        combined.Should().Contain("bin/**");
-    }
-
-    [Fact]
-    [Trait("Category", "Unit")]
-    public void GetCombinedPatterns_WithDuplicates_RemovesDuplicates()
-    {
-        // Arrange
-        File.WriteAllText(_testIgnoreFile, "*.tmp\n*.log");
-        var configPatterns = new[] { "*.tmp", "*.bak" }; // *.tmp is duplicate
-
-        // Act
-        var combined = BackupIgnoreParser.GetCombinedPatterns(_testIgnoreFile, configPatterns);
-
-        // Assert
-        combined.Should().NotBeNull();
-        combined.Should().HaveCount(3);
-        combined.Should().Contain("*.tmp");
-        combined.Should().Contain("*.log");
-        combined.Should().Contain("*.bak");
-    }
-
-    [Fact]
-    [Trait("Category", "Unit")]
-    public void GetCombinedPatterns_WithOnlyFile_ReturnsFilePatterns()
+    public void GetCombinedPatterns_WithValidFile_ReturnsFilePatterns()
     {
         // Arrange
         File.WriteAllText(_testIgnoreFile, "*.tmp\n*.log");
 
         // Act
-        var combined = BackupIgnoreParser.GetCombinedPatterns(_testIgnoreFile, null);
+        var combined = BackupIgnoreParser.GetCombinedPatterns(_testIgnoreFile);
 
         // Assert
         combined.Should().NotBeNull();
@@ -171,27 +132,10 @@ node_modules/**  ";
 
     [Fact]
     [Trait("Category", "Unit")]
-    public void GetCombinedPatterns_WithOnlyConfig_ReturnsConfigPatterns()
-    {
-        // Arrange
-        var configPatterns = new[] { "*.bak", "bin/**" };
-
-        // Act
-        var combined = BackupIgnoreParser.GetCombinedPatterns(null, configPatterns);
-
-        // Assert
-        combined.Should().NotBeNull();
-        combined.Should().HaveCount(2);
-        combined.Should().Contain("*.bak");
-        combined.Should().Contain("bin/**");
-    }
-
-    [Fact]
-    [Trait("Category", "Unit")]
-    public void GetCombinedPatterns_WithNeither_ReturnsNull()
+    public void GetCombinedPatterns_WithNullPath_ReturnsNull()
     {
         // Act
-        var combined = BackupIgnoreParser.GetCombinedPatterns(null, null);
+        var combined = BackupIgnoreParser.GetCombinedPatterns(null);
 
         // Assert
         combined.Should().BeNull();
@@ -199,18 +143,12 @@ node_modules/**  ";
 
     [Fact]
     [Trait("Category", "Unit")]
-    public void GetCombinedPatterns_WhenFileDoesNotExist_UsesOnlyConfig()
+    public void GetCombinedPatterns_WhenFileDoesNotExist_ReturnsNull()
     {
-        // Arrange
-        var configPatterns = new[] { "*.bak", "bin/**" };
-
         // Act
-        var combined = BackupIgnoreParser.GetCombinedPatterns("/non/existent/file", configPatterns);
+        var combined = BackupIgnoreParser.GetCombinedPatterns("/non/existent/file");
 
         // Assert
-        combined.Should().NotBeNull();
-        combined.Should().HaveCount(2);
-        combined.Should().Contain("*.bak");
-        combined.Should().Contain("bin/**");
+        combined.Should().BeNull();
     }
 }

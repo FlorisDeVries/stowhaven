@@ -42,8 +42,7 @@ public partial class BackupService(
         var deviceState = await backupStateService.GetOrCreateDeviceStateAsync(cancellationToken);
         var deviceId = deviceState.DeviceId;
 
-        ConfigureTelemetry(activity, deviceId, targets);
-        LogBackupStarted(deviceId, string.Join(", ", targets.Select(t => $"{t.Key}={t.Value}")));
+        SetupTelemetryBackupStart(activity, deviceId, targets);
 
         var stopwatch = Stopwatch.StartNew();
         var metricTags = new TagList { { "operation.name", "Backup" } };
@@ -54,7 +53,7 @@ public partial class BackupService(
             var excludePatterns = ResolveExclusionPatterns();
 
             // Step 2: Scan, hash, batch, and upload files
-            var (stats, hasStartedBackupRun, runId, containerClient) = await ProcessFilesAsync(
+            var (stats, hasStartedBackupRun, runId) = await ProcessFilesAsync(
                 deviceState, deviceId, targets, excludePatterns, activity, metricTags, cancellationToken);
 
             // Step 3: Detect deleted files
@@ -81,12 +80,13 @@ public partial class BackupService(
             stopwatch.Stop();
             RecordSuccessMetrics(activity, runId, stats, metricTags, stopwatch);
 
-            LogBackupCompleted(stats.NewFilesCount + stats.ModifiedFilesCount, stats.TotalBytes, stopwatch.ElapsedMilliseconds);
+            LogBackupCompleted(stats.NewFilesCount + stats.ModifiedFilesCount, stats.TotalBytes,
+                stopwatch.ElapsedMilliseconds);
             return true;
         }
         catch (Exception ex)
         {
-            HandleBackupFailure(ex, activity, metricTags, stopwatch);
+            HandleBackupFailure(ex, activity, stopwatch);
             throw;
         }
     }
@@ -114,7 +114,7 @@ public partial class BackupService(
 
     private string[]? ResolveExclusionPatterns()
     {
-        var excludePatterns = BackupIgnoreParser.GetCombinedPatterns(_options.IgnoreFilePath, _options.ExcludePatterns);
+        var excludePatterns = BackupIgnoreParser.GetCombinedPatterns(_options.IgnoreFilePath);
 
         if (!string.IsNullOrWhiteSpace(_options.IgnoreFilePath))
         {
@@ -124,7 +124,7 @@ public partial class BackupService(
         return excludePatterns;
     }
 
-    private async Task<(BackupStats Stats, bool HasStartedBackupRun, Guid? RunId, BlobContainerClient? ContainerClient)>
+    private async Task<(BackupStats Stats, bool HasStartedBackupRun, Guid? RunId)>
         ProcessFilesAsync(
             DeviceState deviceState,
             Guid deviceId,
@@ -143,7 +143,7 @@ public partial class BackupService(
         var currentBatch = new List<TaggedFile>();
         long currentBatchBytes = 0;
 
-        var backupType = deviceState.LastSuccessfulBackup == null ? "full" : "incremental";
+        var backupType = deviceState.LastSuccessfulBackup == null ? BackupType.Full : BackupType.Incremental;
         var hasStartedBackupRun = false;
         Guid? runId = null;
         BlobContainerClient? containerClient = null;
@@ -185,7 +185,7 @@ public partial class BackupService(
 
             if (currentBatch.Count >= batchSize || currentBatchBytes >= batchSizeBytes)
             {
-                (hasStartedBackupRun, runId, containerClient) = await ProcessBatchAsync(
+                (hasStartedBackupRun, runId) = await ProcessBatchAsync(
                     hasStartedBackupRun, runId, containerClient, deviceId, backupType,
                     currentBatch, currentBatchBytes, stats, activity, metricTags, cancellationToken);
 
@@ -198,20 +198,20 @@ public partial class BackupService(
 
         if (currentBatch.Count > 0)
         {
-            (hasStartedBackupRun, runId, containerClient) = await ProcessBatchAsync(
+            (hasStartedBackupRun, runId) = await ProcessBatchAsync(
                 hasStartedBackupRun, runId, containerClient, deviceId, backupType,
                 currentBatch, currentBatchBytes, stats, activity, metricTags, cancellationToken);
         }
 
-        return (stats, hasStartedBackupRun, runId, containerClient);
+        return (stats, hasStartedBackupRun, runId);
     }
 
-    private async Task<(bool HasStartedBackupRun, Guid? RunId, BlobContainerClient? ContainerClient)> ProcessBatchAsync(
+    private async Task<(bool HasStartedBackupRun, Guid? RunId)> ProcessBatchAsync(
         bool hasStartedBackupRun,
         Guid? runId,
         BlobContainerClient? containerClient,
         Guid deviceId,
-        string backupType,
+        BackupType backupType,
         List<TaggedFile> currentBatch,
         long currentBatchBytes,
         BackupStats stats,
@@ -228,8 +228,9 @@ public partial class BackupService(
             containerClient = new BlobContainerClient(startResponse.SasUrlInfo.Url);
             hasStartedBackupRun = true;
 
-            activity?.SetTag(ActivityAttributes.BackupType, backupType);
-            metricTags.Add("backup.type", backupType);
+            var backupTypeString = backupType.ToString().ToLowerInvariant();
+            activity?.SetTag(ActivityAttributes.BackupType, backupTypeString);
+            metricTags.Add("backup.type", backupTypeString);
 
             LogBackupRunStarted(runId.Value, currentBatch.Count, currentBatchBytes);
         }
@@ -246,7 +247,7 @@ public partial class BackupService(
         // Save state for successfully uploaded files
         if (uploadedFiles.Count > 0)
         {
-            await backupStateService.UpsertTaggedFileStateBatchAsync(uploadedFiles, runId!.Value, cancellationToken);
+            await backupStateService.UpsertFileStateBatchAsync(uploadedFiles, runId!.Value, cancellationToken);
             LogBatchProcessed(uploadedFiles.Count, currentBatchBytes, stats.TotalScanned);
         }
 
@@ -255,7 +256,7 @@ public partial class BackupService(
             LogBatchPartialFailure(failedCount, currentBatch.Count);
         }
 
-        return (hasStartedBackupRun, runId, containerClient);
+        return (hasStartedBackupRun, runId);
     }
 
     private async Task<HashSet<string>> DetectDeletedFilesAsync(
@@ -263,18 +264,11 @@ public partial class BackupService(
         HashSet<string> scannedPaths,
         CancellationToken cancellationToken)
     {
-        var deletedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (deviceState.LastSuccessfulBackup == null)
+            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        if (deviceState.LastSuccessfulBackup != null)
-        {
-            var deletedFilesList = await scanner.DetectDeletedFilesAsync(scannedPaths, cancellationToken);
-            foreach (var file in deletedFilesList)
-            {
-                deletedFiles.Add(file);
-            }
-        }
-
-        return deletedFiles;
+        var deletedFilesList = await scanner.DetectDeletedFilesAsync(scannedPaths, cancellationToken);
+        return new HashSet<string>(deletedFilesList, StringComparer.OrdinalIgnoreCase);
     }
 
     private bool HandleNoChanges(Activity? activity, Stopwatch stopwatch)
@@ -334,14 +328,16 @@ public partial class BackupService(
         if (failurePercentage > _options.MaxFailurePercentage)
         {
             var errorMessage = $"Backup failed: {totalUploadFailures}/{totalUploadAttempts} files failed " +
-                             $"({failurePercentage:F1}%), exceeding {_options.MaxFailurePercentage}% threshold";
-            LogBackupFailureThresholdExceeded(totalUploadFailures, totalUploadAttempts, failurePercentage, _options.MaxFailurePercentage);
+                               $"({failurePercentage:F1}%), exceeding {_options.MaxFailurePercentage}% threshold";
+            LogBackupFailureThresholdExceeded(totalUploadFailures, totalUploadAttempts, failurePercentage,
+                _options.MaxFailurePercentage);
             throw new InvalidOperationException(errorMessage);
         }
 
         if (totalUploadFailures > 0)
         {
-            LogBackupCompletedWithFailures(totalUploadAttempts - totalUploadFailures, totalUploadFailures, failurePercentage);
+            LogBackupCompletedWithFailures(totalUploadAttempts - totalUploadFailures, totalUploadFailures,
+                failurePercentage);
         }
     }
 
@@ -360,8 +356,9 @@ public partial class BackupService(
         if (failurePercentage > _options.MaxFailurePercentage)
         {
             var errorMessage = $"Backup aborted: {totalUploadFailures}/{totalUploadAttempts} files failed " +
-                             $"({failurePercentage:F1}%), exceeding {_options.MaxFailurePercentage}% threshold";
-            LogBackupFailureThresholdExceeded(totalUploadFailures, totalUploadAttempts, failurePercentage, _options.MaxFailurePercentage);
+                               $"({failurePercentage:F1}%), exceeding {_options.MaxFailurePercentage}% threshold";
+            LogBackupFailureThresholdExceeded(totalUploadFailures, totalUploadAttempts, failurePercentage,
+                _options.MaxFailurePercentage);
             throw new InvalidOperationException(errorMessage);
         }
 
@@ -369,18 +366,25 @@ public partial class BackupService(
         var warningThreshold = _options.MaxFailurePercentage * 0.5;
         if (failurePercentage > warningThreshold && totalUploadAttempts >= 10)
         {
-            LogBackupFailureWarning(totalUploadFailures, totalUploadAttempts, failurePercentage, _options.MaxFailurePercentage);
+            LogBackupFailureWarning(totalUploadFailures, totalUploadAttempts, failurePercentage,
+                _options.MaxFailurePercentage);
         }
     }
 
-    private void ConfigureTelemetry(Activity? activity, Guid deviceId, IReadOnlyDictionary<string, string> targets)
+    private void SetupTelemetryBackupStart(Activity? activity, Guid deviceId, IReadOnlyDictionary<string, string> targets)
     {
         activity?.SetTag(ActivityAttributes.OperationName, "Backup");
         activity?.SetTag("device.id", deviceId);
         activity?.SetTag("backup.targets", string.Join(", ", targets.Keys));
+
+        if (logger.IsEnabled(LogLevel.Information))
+#pragma warning disable CA1873
+            LogBackupStarted(deviceId, string.Join(", ", targets.Select(t => $"{t.Key}={t.Value}")));
+#pragma warning restore CA1873
     }
 
-    private void RecordSuccessMetrics(Activity? activity, Guid? runId, BackupStats stats, TagList metricTags, Stopwatch stopwatch)
+    private void RecordSuccessMetrics(Activity? activity, Guid? runId, BackupStats stats, TagList metricTags,
+        Stopwatch stopwatch)
     {
         var totalChangedFiles = stats.NewFilesCount + stats.ModifiedFilesCount;
         telemetry.CountFiles.Add(totalChangedFiles, metricTags);
@@ -393,13 +397,14 @@ public partial class BackupService(
         {
             activity?.SetTag("backup.run_id", runId.Value);
         }
+
         activity?.SetTag("backup.files.new", stats.NewFilesCount);
         activity?.SetTag("backup.files.modified", stats.ModifiedFilesCount);
         activity?.SetTag("backup.files.deleted", 0); // Deleted files tracked separately
         activity?.SetTag("backup.files.unchanged", stats.UnchangedCount);
     }
 
-    private void HandleBackupFailure(Exception ex, Activity? activity, TagList metricTags, Stopwatch stopwatch)
+    private void HandleBackupFailure(Exception ex, Activity? activity, Stopwatch stopwatch)
     {
         stopwatch.Stop();
 

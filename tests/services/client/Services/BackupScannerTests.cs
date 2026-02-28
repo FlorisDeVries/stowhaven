@@ -37,7 +37,6 @@ public class BackupScannerTests
         _sut = new BackupScanner(
             _mockFileSystemService.Object,
             _mockStateService.Object,
-            _options,
             _mockLogger.Object);
     }
 
@@ -56,7 +55,7 @@ public class BackupScannerTests
     {
         // Arrange
         var targets = new Dictionary<string, string> { ["test"] = "/test/path" };
-        
+
         _mockFileSystemService.Setup(x => x.ScanDirectoryStreamAsync(
                 It.IsAny<string>(),
                 It.IsAny<string[]?>(),
@@ -205,7 +204,7 @@ public class BackupScannerTests
         needsBackup.Should().BeFalse();
         changeType.Should().Be(FileChangeType.Unchanged);
         resultFile.Metadata.Hash.Should().Be("cached-hash-123");
-        
+
         // Critical: Should NOT compute hash for unchanged files (smart hashing optimization)
         _mockFileSystemService.Verify(x => x.ComputeFileHashAsync(
             It.IsAny<string>(),
@@ -261,7 +260,7 @@ public class BackupScannerTests
         // Arrange
         var oldTimestamp = DateTimeOffset.UtcNow.AddDays(-2);
         var newTimestamp = DateTimeOffset.UtcNow.AddDays(-1);
-        
+
         var taggedFile = new TaggedFile(
             "test",
             "/test/path",
@@ -302,7 +301,7 @@ public class BackupScannerTests
         // Arrange - Edge case: timestamp changed but content is same
         var oldTimestamp = DateTimeOffset.UtcNow.AddDays(-2);
         var newTimestamp = DateTimeOffset.UtcNow.AddDays(-1);
-        
+
         var taggedFile = new TaggedFile(
             "test",
             "/test/path",
@@ -428,7 +427,7 @@ public class BackupScannerTests
             .ThrowsAsync(new InvalidOperationException("Database error"));
 
         // Act & Assert
-        await Assert.ThrowsAsync<InvalidOperationException>(() => 
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
             _sut.AnalyzeFileAsync(taggedFile, CancellationToken.None));
     }
 
@@ -453,7 +452,7 @@ public class BackupScannerTests
             .ThrowsAsync(new IOException("File locked"));
 
         // Act & Assert
-        await Assert.ThrowsAsync<IOException>(() => 
+        await Assert.ThrowsAsync<IOException>(() =>
             _sut.AnalyzeFileAsync(taggedFile, CancellationToken.None));
     }
 }

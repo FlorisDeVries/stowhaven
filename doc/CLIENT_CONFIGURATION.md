@@ -1,152 +1,233 @@
 # Backup Client Configuration Guide
 
-## Recommended Setup
+Quick start guide and essential configuration for the Azure Backup Client.
 
-### 1. **What to Backup**
+---
 
-The backup client is designed to backup **your personal data**, not system files or programs.
+## 📚 Documentation Index
 
-#### ✅ **Recommended Directories:**
+- **This guide**: Quick start + essential configuration
+- **[.backupignore Reference](BACKUPIGNORE.md)**: File exclusion patterns and customization
+- **[Advanced Configuration](ADVANCED_CONFIGURATION.md)**: Performance tuning, resilience, and complex scenarios
+- **[Testing Guide](TESTING.md)**: How to test the backup client
+- **[Monitoring Guide](MONITORING.md)**: Observability and diagnostics
+
+---
+
+## Quick Start
+
+### 1. Edit Configuration
+
+Edit `appsettings.json` in your backup client directory:
 
 **Windows:**
 ```json
 {
   "BackupClient": {
     "BackupTargets": {
-      "user-profile": "C:\\Users\\YourUsername"
+      "my-files": "C:\\Users\\YourName"
     }
   }
 }
 ```
 
-**Linux:**
+**Linux/macOS:**
 ```json
 {
   "BackupClient": {
     "BackupTargets": {
-      "user-profile": "/home/yourusername"
+      "my-files": "/home/yourname"
     }
   }
 }
 ```
 
-**macOS:**
-```json
-{
-  "BackupClient": {
-    "BackupTargets": {
-      "user-profile": "/Users/yourusername"
-    }
-  }
-}
+### 2. Run First Backup
+
+```bash
+cd src/services/client
+dotnet run
 ```
 
-#### ⚠️ **Not Recommended:**
-- Entire system drives (`C:\`, `/`)
-- System directories (`C:\Windows`, `/usr`, `/bin`)
-- Program installation directories
+### 3. Verify
 
-**Why?** These contain:
-- 100-500GB of OS files that are better reinstalled
-- Locked files that can't be read during backup
-- Files that change constantly (temp, logs, cache)
-- Non-portable data that won't work on different machines
+Check the logs for:
+- ✅ "Scanning directories: 1 targets"
+- ✅ "Backup completed successfully"
+- ⚠️ Any warnings about excluded files or system directories
+
+### 4. Check Azure Storage
+
+Verify files were uploaded:
+```
+Azure Blob Storage > backups container > device-{guid}/ > my-files/
+```
+
+**That's it!** The backup client uses smart defaults that work for most users.
 
 ---
 
-## 2. **Exclusion Patterns (.backupignore)**
+## What Gets Backed Up?
 
-The `.backupignore` file uses glob patterns to exclude files:
+### ✅ Included (Default)
 
-### Default Exclusions (Already Included)
+- Documents, Pictures, Downloads, Desktop
+- Source code and projects
+- Configuration files
+- Personal data
 
-The client ships with sensible defaults that exclude:
-- Temporary files (`**/*.tmp`, `**/.tmp`)
-- Logs (`**/*.log`)
-- Caches (`**/.cache/**`, `**/Cache/**`)
-- Build outputs (`**/bin/**`, `**/obj/**`, `**/target/**`)
-- Dependencies (`**/node_modules/**`, `**/__pycache__/**`)
-- Version control (`.git`, `.svn`)
-- System files (`Thumbs.db`, `.DS_Store`)
+### ❌ Excluded (Default)
 
-### Custom Exclusions
+The client automatically excludes:
+- **Build outputs**: `bin/`, `obj/`, `target/`, `dist/`
+- **Dependencies**: `node_modules/`, `venv/`, `__pycache__/`
+- **Caches**: `.cache/`, `.npm/`, `.gradle/`
+- **Logs**: `*.log`, `logs/`
+- **Temp files**: `*.tmp`, `.tmp/`
+- **Version control**: `.git/`, `.svn/`
+- **System files**: `Thumbs.db`, `.DS_Store`
 
-Add project-specific exclusions:
+📄 [See full list of exclusions](BACKUPIGNORE.md#default-exclusions)
+
+---
+
+## Common Configurations
+
+### Backup Multiple Folders
+
+```json
+{
+  "BackupClient": {
+    "BackupTargets": {
+      "documents": "C:\\Users\\YourName\\Documents",
+      "projects": "D:\\Projects",
+      "photos": "E:\\Photos"
+    }
+  }
+}
+```
+
+Each target is backed up separately and can have its own `.backupignore` file.
+
+---
+
+### Customize File Exclusions
+
+Create `.backupignore` in your backup target directory:
 
 ```plaintext
-# My custom exclusions
+# Add your custom exclusions
 **/my-large-dataset/**
 **/videos/raw-footage/**
 *.iso
-*.dmg
+*.vmdk
 ```
+
+📖 [Complete .backupignore guide](BACKUPIGNORE.md)
 
 ---
 
-## 3. **Configuration Options**
+### Adjust Upload Speed
 
-### Full Configuration Example
+**Fast internet (100+ Mbps):**
+```json
+{
+  "BackupClient": {
+    "MaxParallelUploads": 8
+  }
+}
+```
+
+**Slow internet (< 10 Mbps):**
+```json
+{
+  "BackupClient": {
+    "MaxParallelUploads": 2
+  }
+}
+```
+
+🔧 [Performance tuning guide](ADVANCED_CONFIGURATION.md#performance-tuning)
+
+---
+
+## Configuration Reference
+
+### Essential Properties
+
+| Property | Default | Description |
+|----------|---------|-------------|
+| `BackupTargets` | **(Required)** | Directories to backup. Key = name, Value = path |
+| `MaxParallelUploads` | `4` | Number of concurrent file uploads (1-20) |
+| `IgnoreFilePath` | `null` | Path to global `.backupignore` file |
+
+### Complete Example
 
 ```json
 {
   "BackupClient": {
     "BackupTargets": {
       "user-profile": "C:\\Users\\YourName",
-      "projects": "D:\\Projects",
-      "photos": "E:\\Photos"
+      "projects": "D:\\Projects"
     },
-    "IgnoreFilePath": null,  // Uses .backupignore in target directories
-    "MaxParallelUploads": 4,  // Concurrent file uploads (adjust for bandwidth)
-    "LargeFileThresholdBytes": 10485760,  // 10MB - progress tracking threshold
-    "ExcludePatterns": [
-      "**/*.iso",
-      "**/my-temp-project/**"
-    ]
-  },
-  "Database": {
-    "FilePath": null  // Defaults to %APPDATA% or ~/.local/share/backup-client
+    "MaxParallelUploads": 4,
+    "IgnoreFilePath": null
   }
 }
 ```
 
-### Configuration Properties
-
-| Property | Default | Description |
-|----------|---------|-------------|
-| `BackupTargets` | **(Required)** | Dictionary of named directories to backup. Keys are target names (used as storage prefixes), values are directory paths |
-| `IgnoreFilePath` | `null` | Path to custom .backupignore file. If null, looks for `.backupignore` in target directory |
-| `MaxParallelUploads` | `4` | Number of concurrent file uploads. Higher = faster but more bandwidth |
-| `LargeFileThresholdBytes` | `10485760` (10MB) | Files larger than this get progress tracking |
-| `ExcludePatterns` | `[]` | Additional exclusions (combined with .backupignore) |
-| `MaxRetryAttempts` | `3` | Maximum retry attempts for transient failures (network errors, timeouts). Set to 0 to disable |
-| `RetryDelayMs` | `1000` | Initial retry delay in milliseconds. Uses exponential backoff (doubles each retry) |
-| `MaxRetryDelayMs` | `30000` | Maximum delay between retries in milliseconds (30 seconds) |
-| `HttpTimeoutSeconds` | `300` | HTTP request timeout for API calls (5 minutes) |
-| `BlobUploadTimeoutSeconds` | `600` | Blob upload timeout per attempt (10 minutes). Large files may need longer |
-| `MaxFailurePercentage` | `5` | Maximum percentage of files allowed to fail (5%). Backup fails if exceeded |
+📋 [All configuration options](ADVANCED_CONFIGURATION.md#configuration-reference)
 
 ---
 
-## 4. **Common Scenarios**
+## Recommendations
 
-### Scenario A: Backup Home Directory (Recommended)
+### ✅ DO Backup
 
-**Windows:**
+**User directories:**
+- Windows: `C:\Users\YourName`
+- Linux: `/home/yourusername`
+- macOS: `/Users/yourusername`
+
+**Why?** Contains your documents, projects, and personal files.
+
+### ⚠️ DON'T Backup
+
+**System directories:**
+- `C:\Windows`, `/usr`, `/bin`
+- `C:\Program Files`
+- Entire drives (`C:\`, `/`)
+
+**Why?** 
+- 100-500GB of OS files better reinstalled
+- Locked files that can't be read
+- Non-portable data
+
+---
+
+## Common Scenarios
+
+### Home Directory Backup
+
+Most common and recommended:
+
 ```json
 {
   "BackupClient": {
     "BackupTargets": {
-      "user-profile": "C:\\Users\\John"
+      "home": "C:\\Users\\YourName"
     }
   }
 }
 ```
 
-**Result:** Backs up Documents, Downloads, Pictures, Desktop, etc. with smart exclusions.
+**Result**: Backs up your entire user profile with smart exclusions.
 
 ---
 
-### Scenario B: Backup Specific Project Folder
+### Project Folder Backup
+
+For developers backing up specific projects:
 
 ```json
 {
@@ -158,284 +239,202 @@ Add project-specific exclusions:
 }
 ```
 
-Add to `.backupignore`:
+Add `D:\MyProjects\.backupignore`:
 ```plaintext
 **/node_modules/**
 **/venv/**
 **/bin/**
 **/obj/**
+**/target/**
 ```
 
 ---
 
-### Scenario C: Backup Multiple Important Folders
+### Server Backup
 
-Backup multiple directories with a single configuration:
+**⚠️ Important**: Server backups need different exclusions!
 
 ```json
 {
   "BackupClient": {
     "BackupTargets": {
-      "documents": "D:\\ImportantData\\Documents",
-      "projects": "D:\\ImportantData\\Projects",
-      "photos": "E:\\Photos"
+      "app-data": "/var/www/myapp"
     }
   }
 }
 ```
 
-Each target gets its own storage prefix:
+Create `/var/www/myapp/.backupignore`:
+```plaintext
+# Keep logs for servers!
+# **/*.log        # Comment this out
+
+# Keep application binaries
+# **/bin/**       # Comment this out
+
+# Still exclude temp/cache
+**/*.tmp
+**/cache/**
 ```
-Storage:
-  documents/file.txt
-  projects/README.md
-  photos/vacation.jpg
-  ├── Documents\
-  ├── Projects\
-  └── Photos\
-```
+
+📖 [Server backup guide](BACKUPIGNORE.md#linux-windows-server-backups)
 
 ---
 
-### Scenario D: Advanced - Backup Entire Drive with Exclusions
+## Troubleshooting
 
-⚠️ **Warning:** This will generate warnings but is allowed.
+### Backup is slow
 
+**Check**:
+1. Network speed: `MaxParallelUploads` too high?
+2. Too many files: Review `.backupignore` patterns
+3. File size: Large files take longer
+
+**Solution**:
 ```json
 {
   "BackupClient": {
-    "BackupTargets": {
-      "system-drive": "C:\\"
-    }
-  }
-}
-```
-
-**Ensure comprehensive exclusions** in `.backupignore`:
-- System directories are already excluded by default
-- Add custom exclusions for large media libraries, games, etc.
-
-**Expected behavior:**
-- Warning logged: _"Backing up entire system drive is not recommended..."_
-- Backup proceeds with exclusions applied
-- First backup will be large and slow
-
----
-
-## 5. **Performance Tuning**
-
-### Fast Internet (100+ Mbps)
-```json
-{
-  "BackupClient": {
-    "MaxParallelUploads": 8
-  }
-}
-```
-
-### Slow Internet (< 10 Mbps)
-```json
-{
-  "BackupClient": {
-    "MaxParallelUploads": 2
-  }
-}
-```
-
-### Many Small Files
-```json
-{
-  "BackupClient": {
-    "MaxParallelUploads": 10,
-    "LargeFileThresholdBytes": 52428800  // 50MB - less logging for small files
-  }
-}
-```
-
-### Few Large Files (Video editing, etc.)
-```json
-{
-  "BackupClient": {
-    "MaxParallelUploads": 2,
-    "LargeFileThresholdBytes": 10485760  // 10MB - track progress
+    "MaxParallelUploads": 2  // Reduce for slow networks
   }
 }
 ```
 
 ---
 
-## 6. **Resilience & Error Handling**
+### Files not being backed up
 
-The backup client uses **Polly** (via Microsoft.Extensions.Http.Resilience) for automatic retry logic with exponential backoff.
+**Causes**:
+1. Excluded by `.backupignore`
+2. Permission denied
+3. File locked by another program
 
-### Default Retry Behavior
+**Check**:
+```bash
+# Look for exclusion patterns in default ignore file
+cat src/services/client/.backupignore
 
-- **Framework**: Polly v8 resilience pipelines for battle-tested retry logic
-- **Automatic Retries:** 3 attempts for network errors, timeouts, and throttling (HTTP 429, 5xx)
-- **Exponential Backoff:** 1s, 2s, 4s, 8s... up to 30s between retries
-- **Jitter**: Random delay variation to prevent thundering herd problems
-- **Partial Failures:** Backup continues if individual files fail
-- **Failure Threshold:** Backup fails if >5% of files fail to upload
-
-### Retry Configuration for Unreliable Networks
-
-```json
-{
-  "BackupClient": {
-    "MaxRetryAttempts": 5,
-    "RetryDelayMs": 2000,
-    "MaxRetryDelayMs": 60000,
-    "MaxFailurePercentage": 10
-  }
-}
-```
-
-### Timeout Configuration for Large Files or Slow Connections
-
-```json
-{
-  "BackupClient": {
-    "HttpTimeoutSeconds": 600,
-    "BlobUploadTimeoutSeconds": 1800,
-    "MaxRetryAttempts": 5
-  }
-}
-```
-
-### Understanding Failure Handling
-
-**Transient Errors (Auto-Retry):**
-- Network timeouts
-- HTTP 408 (Request Timeout), 429 (Too Many Requests), 5xx (Server Errors)
-- Temporary connection issues
-
-**Permanent Errors (No Retry):**
-- File access denied (UnauthorizedAccessException)
-- File not found (deleted during scan)
-- Invalid authentication
-
-**Partial Failure Example:**
-```
-[Warning] Batch upload partial failure: 2/100 files failed to upload
-[Info] Processed batch: 98 files, 150MB (200 total scanned)
-[Warning] Backup completed with partial failures: 198 succeeded, 2 failed (1.0%)
-```
-
-### Disable Retries (Not Recommended)
-
-```json
-{
-  "BackupClient": {
-    "MaxRetryAttempts": 0
-  }
-}
+# Look for access denied errors in logs
+grep "access denied" backup.log
 ```
 
 ---
 
-## 7. **Validation Warnings**
+### "Backup validation warning" in logs
 
-The client performs validation before backup:
+```
+[Warning] Backing up entire system drive (C:\) is not recommended
+```
 
-### Error: Directory Doesn't Exist
+**This is a warning, not an error.** Backup will still proceed.
+
+**Options**:
+1. Change target to user directory: `C:\Users\YourName`
+2. Add comprehensive exclusions to `.backupignore`
+3. Accept warning if you understand implications
+
+---
+
+### Database lock errors
+
+```
+[Error] Database is locked
+```
+
+**Cause**: Multiple backup instances running simultaneously
+
+**Solution**: Ensure only one backup client runs at a time
+
+---
+
+## Validation Checks
+
+The client validates configuration before starting:
+
+### ❌ Error: Directory doesn't exist
+
 ```
 Backup target directory does not exist: D:\NonExistent
 ```
-**Fix:** Create the directory or correct the path.
 
-### Error: Insufficient Permissions
-```
-Insufficient permissions to read backup target directory: C:\Windows\System32
-```
-**Fix:** Choose a directory you have read access to, or run with appropriate permissions.
+**Fix**: Create directory or correct path
 
-### Warning: Backing Up System Drive
+### ❌ Error: Insufficient permissions
+
 ```
-Backing up entire system drive (C:\) is not recommended. 
-Consider using: C:\Users\YourName or add comprehensive exclusions.
+Insufficient permissions to read: C:\Windows\System32
 ```
-**Action:** This is a warning, not an error. Backup will proceed. Consider:
-1. Using recommended user directory instead
-2. Ensuring `.backupignore` has comprehensive exclusions
-3. Accepting larger backup size and slower initial sync
+
+**Fix**: Choose directory you have read access to
+
+### ⚠️ Warning: System drive
+
+```
+Backing up entire system drive is not recommended
+```
+
+**Fix**: Change to user directory or add exclusions
 
 ---
 
-## 8. **Best Practices**
+## Best Practices
 
-✅ **DO:**
-- Backup your user profile directory (`C:\Users\YourName`, `/home/user`)
-- Use `.backupignore` to exclude temp files, caches, and build outputs
-- Test restore process periodically
-- Monitor first backup to ensure exclusions work correctly
+### ✅ Do
 
-❌ **DON'T:**
-- Backup entire system drives without careful exclusion planning
-- Backup program installation directories
-- Include large media that's easily re-downloadable (Steam games, etc.)
-- Backup without testing that you can restore
+- **Backup user directories** first
+- **Test restore** periodically
+- **Review exclusions** after first backup
+- **Monitor first backup** carefully
+- **Use `.backupignore`** for project-specific exclusions
 
----
+### ❌ Don't
 
-## 9. **Getting Started**
-
-1. **Edit `appsettings.json`:**
-   ```json
-   {
-     "BackupClient": {
-       "BackupTargets": {
-         "user-profile": "C:\\Users\\YourName"
-       }
-     }
-   }
-   ```
-
-2. **Review `.backupignore`:**
-   - Default exclusions are comprehensive
-   - Add project-specific patterns as needed
-
-3. **Run first backup:**
-   ```bash
-   dotnet run
-   ```
-
-4. **Monitor logs:**
-   - Check for warnings about system directories
-   - Verify files are being scanned correctly
-   - Confirm exclusions are working
-
-5. **Check backup in Azure:**
-   - Verify correct files were uploaded
-   - Check size is reasonable
+- Backup system drives without careful planning
+- Include easily re-downloadable files (Steam games, etc.)
+- Backup without testing restore
+- Run multiple instances simultaneously
 
 ---
 
-## 10. **Troubleshooting**
+## Next Steps
 
-### "Backup validation warning" in logs
-**Cause:** Backing up system or root directories.  
-**Solution:** Either accept the warning or change to recommended directory.
+### For Most Users
 
-### Backup is very slow
-**Cause:** Too many small files or low bandwidth.  
-**Solution:** 
-- Reduce `MaxParallelUploads`
-- Add more exclusions to `.backupignore`
-- Check network speed
+The defaults work great! Just:
+1. Configure `BackupTargets` with your user directory
+2. Run the backup
+3. Verify files in Azure Storage
 
-### Some files not backing up
-**Cause:** Excluded by `.backupignore` or permission denied.  
-**Solution:**
-- Review `.backupignore` patterns
-- Check file permissions
-- Look for "access denied" in logs
+### For Advanced Users
 
-### Database lock errors
-**Cause:** Multiple backup instances running simultaneously.  
-**Solution:** Ensure only one instance runs at a time.
+- **Customize exclusions**: [.backupignore guide](BACKUPIGNORE.md)
+- **Tune performance**: [Performance guide](ADVANCED_CONFIGURATION.md#performance-tuning)
+- **Configure resilience**: [Error handling guide](ADVANCED_CONFIGURATION.md#resilience--error-handling)
+- **Set up monitoring**: [Monitoring guide](MONITORING.md)
 
 ---
 
-## Questions?
+## Getting Help
 
-See the main README or check logs for detailed error messages.
+**Documentation**:
+- [.backupignore Reference](BACKUPIGNORE.md)
+- [Advanced Configuration](ADVANCED_CONFIGURATION.md)
+- [Technical Design](TECHNICAL_DESIGN.md)
+
+**Logs**: Check the console output and log files for detailed error messages
+
+**Issues**: Look for patterns in the logs:
+- `[Error]` - Failures that stopped backup
+- `[Warning]` - Issues that didn't stop backup
+- `[Info]` - Normal operation details
+
+**Common patterns**:
+```bash
+# Find errors
+grep "\[Error\]" backup.log
+
+# Find excluded files
+grep "excluded" backup.log
+
+# Check upload stats
+grep "Backup completed" backup.log
+```

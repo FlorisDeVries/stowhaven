@@ -92,7 +92,7 @@ public partial class BackupStateService : IBackupStateService, IDisposable
         CancellationToken cancellationToken = default)
     {
         await EnsureInitializedAsync(cancellationToken);
-        
+
         // Ensure device state exists before updating it
         await GetOrCreateDeviceStateAsync(cancellationToken);
 
@@ -258,15 +258,15 @@ public partial class BackupStateService : IBackupStateService, IDisposable
     }
 
     /// <summary>
-    /// Upserts file states with pre-computed storage paths in a single transaction.
-    /// Used by multi-target backup where paths include target prefix.
+    /// Upserts tagged file states in a single transaction.
+    /// Storage paths are computed from the tagged files (includes target name prefix).
     /// </summary>
     public async Task UpsertFileStateBatchAsync(
-        IReadOnlyList<(string StoragePath, FileMetadata File)> filesWithPaths,
+        IReadOnlyList<TaggedFile> taggedFiles,
         Guid runId,
         CancellationToken cancellationToken = default)
     {
-        if (filesWithPaths.Count == 0)
+        if (taggedFiles.Count == 0)
             return;
 
         await EnsureInitializedAsync(cancellationToken);
@@ -283,10 +283,13 @@ public partial class BackupStateService : IBackupStateService, IDisposable
             {
                 var backedUpAt = DateTimeOffset.UtcNow;
 
-                foreach (var (storagePath, file) in filesWithPaths)
+                foreach (var taggedFile in taggedFiles)
                 {
+                    var storagePath = taggedFile.GetStoragePath();
+                    var file = taggedFile.Metadata;
+
                     await using var command = new SqliteCommand(BackupStateSql.UpsertBackupFileQuery, connection, transaction);
-                    command.Parameters.AddWithValue("@RelativePath", storagePath); // Use storage path directly
+                    command.Parameters.AddWithValue("@RelativePath", storagePath);
                     command.Parameters.AddWithValue("@Sha256Hash", file.Hash ?? string.Empty);
                     command.Parameters.AddWithValue("@SizeBytes", file.SizeBytes);
                     command.Parameters.AddWithValue("@LastModifiedUtc", file.LastModified.ToString("O"));
@@ -299,7 +302,7 @@ public partial class BackupStateService : IBackupStateService, IDisposable
 
                 await transaction.CommitAsync(cancellationToken);
 
-                LogFileStatesBatchUpserted(filesWithPaths.Count, runId);
+                LogFileStatesBatchUpserted(taggedFiles.Count, runId);
             }
             catch
             {

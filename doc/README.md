@@ -92,7 +92,16 @@ Retired versions under `backups/devices/**/retired/` are deleted after the Archi
 
 ## 📖 Documentation
 
-See **[Technical Design](TECHNICAL_DESIGN.md)**
-for complete architecture, flows, diagrams, security model, and background reasoning.
+### Getting Started
+- **[Client Configuration Guide](CLIENT_CONFIGURATION.md)** - Quick start and essential configuration
+- **[.backupignore Reference](BACKUPIGNORE.md)** - File exclusion patterns for different scenarios
 
-Additional docs (client design, API reference, deployment steps) will be added under `/doc`.
+### Advanced Topics
+- **[Advanced Configuration](ADVANCED_CONFIGURATION.md)** - Performance tuning, resilience, and complex scenarios
+- **[Technical Design](TECHNICAL_DESIGN.md)** - Complete architecture, flows, and security model
+- **[Authentication](AUTHENTICATION.md)** - Authentication and authorization details
+- **[Monitoring](MONITORING.md)** - Observability, metrics, and diagnostics
+- **[Testing Guide](TESTING.md)** - How to test the backup client
+
+### Reference
+- **[Cost Analysis](costs/)** - Storage costs and optimization strategies

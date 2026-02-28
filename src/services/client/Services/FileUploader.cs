@@ -10,24 +10,14 @@ namespace FlorisDeV.BackupClient.Services;
 /// <summary>
 /// Handles parallel file uploads to Azure Blob Storage with retry logic and progress tracking.
 /// </summary>
-public partial class FileUploader : IFileUploader
+public partial class FileUploader(
+    IFileSystemService fileSystemService,
+    ResiliencePipelineProvider resiliencePipelines,
+    IOptions<BackupClientOptions> options,
+    ILogger<FileUploader> logger)
+    : IFileUploader
 {
-    private readonly IFileSystemService _fileSystemService;
-    private readonly ResiliencePipelineProvider _resiliencePipelines;
-    private readonly BackupClientOptions _options;
-    private readonly ILogger<FileUploader> _logger;
-
-    public FileUploader(
-        IFileSystemService fileSystemService,
-        ResiliencePipelineProvider resiliencePipelines,
-        IOptions<BackupClientOptions> options,
-        ILogger<FileUploader> logger)
-    {
-        _fileSystemService = fileSystemService;
-        _resiliencePipelines = resiliencePipelines;
-        _options = options.Value;
-        _logger = logger;
-    }
+    private readonly BackupClientOptions _options = options.Value;
 
     /// <summary>
     /// Uploads tagged files to blob storage using parallel uploads with retry logic.
@@ -39,7 +29,7 @@ public partial class FileUploader : IFileUploader
         CancellationToken cancellationToken)
     {
         if (files.Count == 0)
-            return Array.Empty<TaggedFile>();
+            return [];
 
         LogUploadingFiles(files.Count);
 
@@ -90,7 +80,6 @@ public partial class FileUploader : IFileUploader
             LogUploadComplete(files.Count);
         }
 
-        // SemaphoreSlim is disposed by using statement
         return uploadedFiles.ToList();
     }
 
@@ -110,24 +99,24 @@ public partial class FileUploader : IFileUploader
         const long assumedBytesPerSecond = 10 * 1024 * 1024; // 10 MB/s
         var estimatedSeconds = taggedFile.Metadata.SizeBytes / assumedBytesPerSecond;
         var timeoutThreshold = _options.BlobUploadTimeoutSeconds * 0.5;
-        
+
         if (estimatedSeconds > timeoutThreshold)
         {
             LogLargeFileTimeoutWarning(
-                taggedFile.Metadata.FilePath, 
-                taggedFile.Metadata.SizeBytes, 
-                estimatedSeconds, 
+                taggedFile.Metadata.FilePath,
+                taggedFile.Metadata.SizeBytes,
+                estimatedSeconds,
                 _options.BlobUploadTimeoutSeconds);
         }
 
-        await _resiliencePipelines.BlobUploadPipeline.ExecuteAsync(async ct =>
+        await resiliencePipelines.BlobUploadPipeline.ExecuteAsync(async ct =>
         {
             // Create timeout for this upload attempt
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeoutCts.CancelAfter(TimeSpan.FromSeconds(_options.BlobUploadTimeoutSeconds));
 
             // Get file stream
-            await using var fileStream = await _fileSystemService.GetFileStreamAsync(
+            await using var fileStream = await fileSystemService.GetFileStreamAsync(
                 taggedFile.Metadata.FilePath, timeoutCts.Token);
 
             if (taggedFile.Metadata.SizeBytes >= _options.LargeFileThresholdBytes)

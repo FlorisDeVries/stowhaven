@@ -1,4 +1,3 @@
-using FlorisDeV.BackupClient.Data;
 using FlorisDeV.BackupClient.Models;
 using Microsoft.Extensions.Logging;
 
@@ -8,19 +7,10 @@ namespace FlorisDeV.BackupClient.Services;
 /// Computes backup deltas by comparing current files against previously backed up files.
 /// Identifies new, modified, and deleted files for efficient incremental backups.
 /// </summary>
-public partial class BackupDeltaComputer
+public partial class BackupDeltaComputer(
+    IBackupStateService stateService,
+    ILogger<BackupDeltaComputer> logger)
 {
-    private readonly IBackupStateService _stateService;
-    private readonly ILogger<BackupDeltaComputer> _logger;
-
-    public BackupDeltaComputer(
-        IBackupStateService stateService,
-        ILogger<BackupDeltaComputer> logger)
-    {
-        _stateService = stateService;
-        _logger = logger;
-    }
-
     /// <summary>
     /// Computes the backup delta by comparing current files with previously backed up state.
     /// </summary>
@@ -34,9 +24,9 @@ public partial class BackupDeltaComputer
         LogComputingDelta(currentFiles.Count);
 
         var previousFiles = await LoadPreviousFileStatesAsync(cancellationToken);
-        
+
         var (newFiles, modifiedFiles, totalBytes) = IdentifyNewAndModifiedFiles(
-            currentFiles, 
+            currentFiles,
             previousFiles);
 
         var deletedFiles = IdentifyDeletedFiles(currentFiles, previousFiles);
@@ -50,9 +40,9 @@ public partial class BackupDeltaComputer
     private async Task<Dictionary<string, BackupFileState>> LoadPreviousFileStatesAsync(
         CancellationToken cancellationToken)
     {
-        var allStates = await _stateService.GetAllFileStatesAsync(cancellationToken);
+        var allStates = await stateService.GetAllFileStatesAsync(cancellationToken);
         var stateDict = new Dictionary<string, BackupFileState>(
-            allStates.Count, 
+            allStates.Count,
             StringComparer.OrdinalIgnoreCase);
 
         foreach (var state in allStates)
@@ -63,7 +53,7 @@ public partial class BackupDeltaComputer
         return stateDict;
     }
 
-    private (List<FileMetadata> NewFiles, List<FileMetadata> ModifiedFiles, long TotalBytes) 
+    private (List<FileMetadata> NewFiles, List<FileMetadata> ModifiedFiles, long TotalBytes)
         IdentifyNewAndModifiedFiles(
             IReadOnlyList<FileMetadata> currentFiles,
             Dictionary<string, BackupFileState> previousFiles)
