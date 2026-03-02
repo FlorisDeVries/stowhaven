@@ -60,7 +60,7 @@ public partial class BackupService(
             var deletedFiles = await DetectDeletedFilesAsync(deviceState, stats.ScannedPaths, cancellationToken);
 
             LogDeltaComputed(stats.NewFilesCount, stats.ModifiedFilesCount, deletedFiles.Count);
-            LogSmartHashingStats(stats.NewFilesCount, stats.ModifiedFilesCount, stats.UnchangedCount);
+            LogSmartHashingStats(stats.NewFilesCount, stats.ModifiedFilesCount, stats.UnchangedCount, stats.SkippedCount);
 
             // Step 4: Handle case of no changes
             if (!hasStartedBackupRun && deletedFiles.Count == 0)
@@ -166,6 +166,9 @@ public partial class BackupService(
                 case FileChangeType.Unchanged:
                     stats.UnchangedCount++;
                     break;
+                case FileChangeType.Skipped:
+                    stats.SkippedCount++;
+                    continue; // Skip this file entirely
             }
 
             if (needsBackup)
@@ -225,7 +228,14 @@ public partial class BackupService(
             var startRequest = new StartBackupRunRequest { DeviceId = deviceId };
             var startResponse = await backupApiClient.StartBackupRun(startRequest, cancellationToken);
             runId = startResponse.RunId;
-            containerClient = new BlobContainerClient(startResponse.SasUrlInfo.Url);
+            
+            // Translate Docker service names to localhost for local development
+            var sasUrl = TranslateStorageUrlForLocalDevelopment(startResponse.SasUrlInfo.Url);
+            containerClient = new BlobContainerClient(sasUrl);
+            
+            // Set the base path for uploaded blobs from the API response
+            uploader.SetBasePath(startResponse.SasUrlInfo.BasePath);
+            
             hasStartedBackupRun = true;
 
             var backupTypeString = backupType.ToString().ToLowerInvariant();
@@ -402,6 +412,7 @@ public partial class BackupService(
         activity?.SetTag("backup.files.modified", stats.ModifiedFilesCount);
         activity?.SetTag("backup.files.deleted", 0); // Deleted files tracked separately
         activity?.SetTag("backup.files.unchanged", stats.UnchangedCount);
+        activity?.SetTag("backup.files.skipped", stats.SkippedCount);
     }
 
     private void HandleBackupFailure(Exception ex, Activity? activity, Stopwatch stopwatch)
@@ -433,6 +444,23 @@ public partial class BackupService(
     }
 
     /// <summary>
+    /// Translates Docker service names to localhost for local development.
+    /// When the client runs on the host machine but connects to services in Docker,
+    /// URLs containing Docker service hostnames (e.g., 'azurite') need to be translated to 'localhost'.
+    /// </summary>
+    private static Uri TranslateStorageUrlForLocalDevelopment(Uri originalUrl)
+    {
+        var urlString = originalUrl.ToString();
+        
+        // Replace common Docker service names with localhost
+        // This allows the client running on the host to access services exposed from containers
+        urlString = urlString.Replace("http://azurite:", "http://127.0.0.1:", StringComparison.OrdinalIgnoreCase);
+        urlString = urlString.Replace("https://azurite:", "https://127.0.0.1:", StringComparison.OrdinalIgnoreCase);
+        
+        return new Uri(urlString);
+    }
+
+    /// <summary>
     /// Holds statistics for the backup operation.
     /// </summary>
     private class BackupStats
@@ -444,6 +472,7 @@ public partial class BackupService(
         public int NewFilesCount { get; set; }
         public int ModifiedFilesCount { get; set; }
         public int UnchangedCount { get; set; }
+        public int SkippedCount { get; set; }
         public int TotalUploadAttempts { get; set; }
         public int TotalUploadFailures { get; set; }
     }

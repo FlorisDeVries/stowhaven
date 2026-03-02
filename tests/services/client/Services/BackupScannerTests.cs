@@ -433,7 +433,129 @@ public class BackupScannerTests
 
     [Fact]
     [Trait("Category", "Unit")]
-    public async Task AnalyzeFileAsync_WhenHashComputationFails_ShouldPropagateException()
+    public async Task AnalyzeFileAsync_WhenNewFileNotFound_ShouldReturnSkipped()
+    {
+        // Arrange
+        var taggedFile = new TaggedFile(
+            "test",
+            "/test/path",
+            new FileMetadata("/test/path/missing.txt", 100, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddDays(-1), null!));
+
+        _mockStateService.Setup(x => x.GetFileStateAsync(
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((BackupFileState?)null);
+
+        _mockFileSystemService.Setup(x => x.ComputeFileHashAsync(
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new FileNotFoundException("File not found", "/test/path/missing.txt"));
+
+        // Act
+        var (resultFile, needsBackup, changeType) = await _sut.AnalyzeFileAsync(taggedFile, CancellationToken.None);
+
+        // Assert
+        needsBackup.Should().BeFalse();
+        changeType.Should().Be(FileChangeType.Skipped);
+        resultFile.Metadata.FilePath.Should().Be("/test/path/missing.txt");
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task AnalyzeFileAsync_WhenModifiedFileNotFound_ShouldReturnSkipped()
+    {
+        // Arrange
+        var taggedFile = new TaggedFile(
+            "test",
+            "/test/path",
+            new FileMetadata("/test/path/deleted.txt", 200, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, null!));
+
+        var previousState = new BackupFileState(
+            RelativePath: "test/deleted.txt",
+            Sha256Hash: "old-hash",
+            SizeBytes: 100,
+            LastModifiedUtc: DateTimeOffset.UtcNow.AddDays(-1),
+            BackedUpAt: DateTimeOffset.UtcNow.AddDays(-1),
+            BackupRunId: Guid.NewGuid(),
+            UniqueFileId: null);
+
+        _mockStateService.Setup(x => x.GetFileStateAsync(
+                "test/deleted.txt",
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(previousState);
+
+        _mockFileSystemService.Setup(x => x.ComputeFileHashAsync(
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new FileNotFoundException("File deleted", "/test/path/deleted.txt"));
+
+        // Act
+        var (resultFile, needsBackup, changeType) = await _sut.AnalyzeFileAsync(taggedFile, CancellationToken.None);
+
+        // Assert
+        needsBackup.Should().BeFalse();
+        changeType.Should().Be(FileChangeType.Skipped);
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task AnalyzeFileAsync_WhenUnauthorizedAccess_ShouldReturnSkipped()
+    {
+        // Arrange
+        var taggedFile = new TaggedFile(
+            "test",
+            "/test/path",
+            new FileMetadata("/test/path/protected.txt", 100, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddDays(-1), null!));
+
+        _mockStateService.Setup(x => x.GetFileStateAsync(
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((BackupFileState?)null);
+
+        _mockFileSystemService.Setup(x => x.ComputeFileHashAsync(
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new UnauthorizedAccessException("Access denied"));
+
+        // Act
+        var (resultFile, needsBackup, changeType) = await _sut.AnalyzeFileAsync(taggedFile, CancellationToken.None);
+
+        // Assert
+        needsBackup.Should().BeFalse();
+        changeType.Should().Be(FileChangeType.Skipped);
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task AnalyzeFileAsync_WhenIOException_ShouldReturnSkipped()
+    {
+        // Arrange
+        var taggedFile = new TaggedFile(
+            "test",
+            "/test/path",
+            new FileMetadata("/test/path/locked.txt", 100, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddDays(-1), null!));
+
+        _mockStateService.Setup(x => x.GetFileStateAsync(
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((BackupFileState?)null);
+
+        _mockFileSystemService.Setup(x => x.ComputeFileHashAsync(
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new IOException("File is locked by another process"));
+
+        // Act
+        var (resultFile, needsBackup, changeType) = await _sut.AnalyzeFileAsync(taggedFile, CancellationToken.None);
+
+        // Assert
+        needsBackup.Should().BeFalse();
+        changeType.Should().Be(FileChangeType.Skipped);
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task AnalyzeFileAsync_WhenUnexpectedException_ShouldPropagateException()
     {
         // Arrange
         var taggedFile = new TaggedFile(
@@ -449,10 +571,11 @@ public class BackupScannerTests
         _mockFileSystemService.Setup(x => x.ComputeFileHashAsync(
                 It.IsAny<string>(),
                 It.IsAny<CancellationToken>()))
-            .ThrowsAsync(new IOException("File locked"));
+            .ThrowsAsync(new InvalidOperationException("Unexpected error"));
 
         // Act & Assert
-        await Assert.ThrowsAsync<IOException>(() =>
+        // Other exceptions (not File/IO related) should still propagate
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
             _sut.AnalyzeFileAsync(taggedFile, CancellationToken.None));
     }
 }

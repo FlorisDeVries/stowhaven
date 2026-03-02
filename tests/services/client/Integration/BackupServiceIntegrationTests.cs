@@ -71,6 +71,11 @@ public class BackupServiceIntegrationTests : IDisposable
     {
         public List<string> UploadedPaths { get; } = new();
 
+        public void SetBasePath(string? basePath)
+        {
+
+        }
+
         public Task<IReadOnlyList<TaggedFile>> UploadFilesAsync(
             BlobContainerClient containerClient,
             IReadOnlyList<TaggedFile> files,

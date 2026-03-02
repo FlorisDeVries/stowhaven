@@ -82,8 +82,8 @@ public partial class BackupService
     [LoggerMessage(
         EventId = 18,
         Level = LogLevel.Information,
-        Message = "Smart hashing: {NewCount} new, {ModifiedCount} modified, {UnchangedCount} unchanged (skipped hashing)")]
-    partial void LogSmartHashingStats(int newCount, int modifiedCount, int unchangedCount);
+        Message = "Smart hashing: {NewCount} new, {ModifiedCount} modified, {UnchangedCount} unchanged (skipped hashing), {SkippedCount} skipped (inaccessible)")]
+    partial void LogSmartHashingStats(int newCount, int modifiedCount, int unchangedCount, int skippedCount);
 
     [LoggerMessage(
         EventId = 19,

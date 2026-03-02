@@ -47,7 +47,7 @@ public class BackupClientOptions
     /// Path to .backupignore file (supports .gitignore-style patterns).
     /// If not specified, looks for .backupignore in the backup target directory.
     /// </summary>
-    public string? IgnoreFilePath => null;
+    public string? IgnoreFilePath { get; init; }
 
     /// <summary>
     /// Maximum number of files to upload in parallel. Default is 4.

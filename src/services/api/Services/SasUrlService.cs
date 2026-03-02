@@ -89,7 +89,8 @@ public partial class SasUrlService(
             {
                 Url = new Uri($"{blobServiceClient.Uri}/{_dataContainer}/{path}?{sasToken}"),
                 ExpiresAt = expiresAt,
-                TtlMinutes = ttl
+                TtlMinutes = ttl,
+                BasePath = path
             };
 
             stopwatch.Stop();

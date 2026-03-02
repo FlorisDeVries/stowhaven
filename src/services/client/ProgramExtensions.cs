@@ -48,17 +48,16 @@ public static class ProgramExtensions
 
         services.AddSingleton<TokenCredential>(provider =>
         {
+            var logger = provider.GetRequiredService<ILogger<Program>>();
+            
             if (environment.IsDevelopment())
             {
-                // Development: Use Azure CLI, Visual Studio, etc. for local testing
-                // This allows developers to test without setting up client app registration
-                return new DefaultAzureCredential(new DefaultAzureCredentialOptions
-                {
-                    ExcludeInteractiveBrowserCredential = true,
-                    ExcludeSharedTokenCacheCredential = true
-                });
+                logger.LogInformation("Development mode: Using NoOpTokenCredential (authentication disabled)");
+                // Development: API disables authentication, so use no-op credential
+                return new NoOpTokenCredential();
             }
 
+            logger.LogInformation("Production mode: Using MsalTokenCredential (interactive authentication)");
             // Production: Use MSAL for interactive user authentication (distributed clients)
             var azureAdConfig = provider.GetRequiredService<IOptions<AzureAdOptions>>().Value;
             var apiConfig = provider.GetRequiredService<IOptions<BackupApiClientOptions>>().Value;

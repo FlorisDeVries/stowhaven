@@ -12,8 +12,6 @@ using Microsoft.Extensions.Logging;
 var host = Host.CreateDefaultBuilder(args)
     .ConfigureAppConfiguration((context, configuration) =>
     {
-        configuration.AddJsonFile("appsettings.Development.json", optional: true, reloadOnChange: true);
-        configuration.AddJsonFile("appsettings.json", false, true);
         configuration.AddUserSecrets(Assembly.GetExecutingAssembly());
     })
     .ConfigureServices((context, services) =>

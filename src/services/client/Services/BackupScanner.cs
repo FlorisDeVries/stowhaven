@@ -57,23 +57,39 @@ public partial class BackupScanner(
         if (previousState == null)
         {
             // New file - needs hash and backup
-            var hash = await fileSystemService.ComputeFileHashAsync(taggedFile.Metadata.FilePath, cancellationToken);
-            var fileWithHash = taggedFile with { Metadata = taggedFile.Metadata with { Hash = hash } };
-            return (fileWithHash, true, FileChangeType.New);
+            try
+            {
+                var hash = await fileSystemService.ComputeFileHashAsync(taggedFile.Metadata.FilePath, cancellationToken);
+                var fileWithHash = taggedFile with { Metadata = taggedFile.Metadata with { Hash = hash } };
+                return (fileWithHash, true, FileChangeType.New);
+            }
+            catch (Exception ex) when (ex is FileNotFoundException or UnauthorizedAccessException or IOException)
+            {
+                LogFileSkipped(taggedFile.Metadata.FilePath, ex.Message);
+                return (taggedFile, false, FileChangeType.Skipped);
+            }
         }
 
         if (previousState.SizeBytes != taggedFile.Metadata.SizeBytes ||
             previousState.LastModifiedUtc != taggedFile.Metadata.LastModified)
         {
             // Potentially modified - compute hash to verify
-            var hash = await fileSystemService.ComputeFileHashAsync(taggedFile.Metadata.FilePath, cancellationToken);
-            var fileWithHash = taggedFile with { Metadata = taggedFile.Metadata with { Hash = hash } };
+            try
+            {
+                var hash = await fileSystemService.ComputeFileHashAsync(taggedFile.Metadata.FilePath, cancellationToken);
+                var fileWithHash = taggedFile with { Metadata = taggedFile.Metadata with { Hash = hash } };
 
-            return hash != previousState.Sha256Hash ?
-                // Content actually changed
-                (fileWithHash, true, FileChangeType.Modified) :
-                // Size/timestamp changed but content didn't (rare edge case - touch, copy with different timestamp)
-                (fileWithHash, false, FileChangeType.Unchanged);
+                return hash != previousState.Sha256Hash ?
+                    // Content actually changed
+                    (fileWithHash, true, FileChangeType.Modified) :
+                    // Size/timestamp changed but content didn't (rare edge case - touch, copy with different timestamp)
+                    (fileWithHash, false, FileChangeType.Unchanged);
+            }
+            catch (Exception ex) when (ex is FileNotFoundException or UnauthorizedAccessException or IOException)
+            {
+                LogFileSkipped(taggedFile.Metadata.FilePath, ex.Message);
+                return (taggedFile, false, FileChangeType.Skipped);
+            }
         }
 
         // Unchanged - reuse existing hash
@@ -121,6 +137,12 @@ public partial class BackupScanner(
         Message = "Detected {Count} deleted files since last backup")]
     private partial void LogDeletedFilesDetected(int count);
 
+    [LoggerMessage(
+        EventId = 3,
+        Level = LogLevel.Warning,
+        Message = "Skipping inaccessible file '{FilePath}': {Reason}")]
+    private partial void LogFileSkipped(string filePath, string reason);
+
     #endregion
 }
 
@@ -131,5 +153,6 @@ public enum FileChangeType
 {
     New,
     Modified,
-    Unchanged
+    Unchanged,
+    Skipped
 }

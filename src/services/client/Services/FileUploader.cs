@@ -18,6 +18,15 @@ public partial class FileUploader(
     : IFileUploader
 {
     private readonly BackupClientOptions _options = options.Value;
+    private string? _basePath; // Base path for uploaded blobs (e.g., "staging/device/run/")
+
+    /// <summary>
+    /// Sets the base path prefix for uploaded blobs. Must be called before uploading files.
+    /// </summary>
+    public void SetBasePath(string? basePath)
+    {
+        _basePath = basePath?.TrimEnd('/');
+    }
 
     /// <summary>
     /// Uploads tagged files to blob storage using parallel uploads with retry logic.
@@ -92,7 +101,15 @@ public partial class FileUploader(
         CancellationToken cancellationToken)
     {
         var storagePath = taggedFile.GetStoragePath();
-        var blobClient = containerClient.GetBlobClient(storagePath);
+        
+        // Prepend base path to create full blob path within container
+        // Base path is provided by API (e.g., "staging/device-id/run-id/")
+        // This maintains directory structure: {basePath}/{relativePath}
+        var blobPath = string.IsNullOrEmpty(_basePath) 
+            ? storagePath 
+            : $"{_basePath}/{storagePath}";
+            
+        var blobClient = containerClient.GetBlobClient(blobPath);
 
         // Warn about potentially long-running uploads based on file size
         // Assume ~10 MB/s as reasonable upload speed; warn if estimated time > 50% of timeout

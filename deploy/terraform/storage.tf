@@ -8,6 +8,10 @@ resource "azurerm_storage_account" "data" {
   account_kind             = "StorageV2"
   access_tier              = "Cool"
   
+  # Note: HNS (Hierarchical Namespace) not currently used
+  # Enable for future migration to Data Lake SDK with directory-level SAS
+  # is_hns_enabled = true
+  
   allow_nested_items_to_be_public = false
   min_tls_version                 = "TLS1_2"
 
