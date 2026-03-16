@@ -171,6 +171,14 @@ public partial class BackupService(
                     continue; // Skip this file entirely
             }
 
+            if (stats.TotalScanned % 1000 == 0)
+            {
+                LogScanProgress(stats.TotalScanned,
+                    stats.NewFilesCount + stats.ModifiedFilesCount,
+                    stats.UnchangedCount,
+                    stats.SkippedCount);
+            }
+
             if (needsBackup)
             {
                 currentBatch.Add(fileWithHash);

@@ -126,4 +126,10 @@ public partial class BackupService
         Level = LogLevel.Warning,
         Message = "High memory usage detected: {FileCount} files queued for backup ({TotalBytes} bytes). Consider adding exclusion patterns if backup is too large.")]
     partial void LogBackpressureWarning(int fileCount, long totalBytes);
+
+    [LoggerMessage(
+        EventId = 31,
+        Level = LogLevel.Debug,
+        Message = "Scan progress: {Scanned} files processed ({NeedsBackup} to upload, {Unchanged} unchanged, {Skipped} skipped)")]
+    partial void LogScanProgress(int scanned, int needsBackup, int unchanged, int skipped);
 }

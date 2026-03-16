@@ -36,33 +36,33 @@ public async Task MyIntegrationTest() { }
 
 ### Run All Tests
 ```bash
-dotnet test
+dotnet test FlorisDeV.BackupApi.sln
 ```
 
 ### Run Only Unit Tests
 ```bash
-dotnet test --filter "Category=Unit"
+dotnet test FlorisDeV.BackupApi.sln --filter "Category=Unit"
 ```
 
 ### Run Only Integration Tests
 ```bash
-dotnet test --filter "Category=Integration"
+dotnet test FlorisDeV.BackupApi.sln --filter "Category=Integration"
 ```
 
 ### Run Tests in Specific Project
 ```bash
 # Client tests
-dotnet test tests/services/client
+dotnet test FlorisDeV.BackupApi.sln tests/services/client
 
 # API tests
-dotnet test tests/services/api
+dotnet test FlorisDeV.BackupApi.sln tests/services/api
 ```
 
 ### Run Tests with Additional Filters
 ```bash
 # Run specific test class
-dotnet test --filter "FullyQualifiedName~FileSystemServiceTests"
+dotnet test FlorisDeV.BackupApi.sln --filter "FullyQualifiedName~FileSystemServiceTests"
 
 # Combine filters
-dotnet test --filter "Category=Unit&FullyQualifiedName~ManifestManager"
+dotnet test FlorisDeV.BackupApi.sln --filter "Category=Unit&FullyQualifiedName~ManifestManager"
 ```
