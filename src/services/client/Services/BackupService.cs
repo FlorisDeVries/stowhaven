@@ -196,7 +196,7 @@ public partial class BackupService(
 
             if (currentBatch.Count >= batchSize || currentBatchBytes >= batchSizeBytes)
             {
-                (hasStartedBackupRun, runId) = await ProcessBatchAsync(
+                (hasStartedBackupRun, runId, containerClient) = await ProcessBatchAsync(
                     hasStartedBackupRun, runId, containerClient, deviceId, backupType,
                     currentBatch, currentBatchBytes, stats, activity, metricTags, cancellationToken);
 
@@ -209,7 +209,7 @@ public partial class BackupService(
 
         if (currentBatch.Count > 0)
         {
-            (hasStartedBackupRun, runId) = await ProcessBatchAsync(
+            (hasStartedBackupRun, runId, containerClient) = await ProcessBatchAsync(
                 hasStartedBackupRun, runId, containerClient, deviceId, backupType,
                 currentBatch, currentBatchBytes, stats, activity, metricTags, cancellationToken);
         }
@@ -217,7 +217,7 @@ public partial class BackupService(
         return (stats, hasStartedBackupRun, runId);
     }
 
-    private async Task<(bool HasStartedBackupRun, Guid? RunId)> ProcessBatchAsync(
+    private async Task<(bool HasStartedBackupRun, Guid? RunId, BlobContainerClient? ContainerClient)> ProcessBatchAsync(
         bool hasStartedBackupRun,
         Guid? runId,
         BlobContainerClient? containerClient,
@@ -274,7 +274,7 @@ public partial class BackupService(
             LogBatchPartialFailure(failedCount, currentBatch.Count);
         }
 
-        return (hasStartedBackupRun, runId);
+        return (hasStartedBackupRun, runId, containerClient);
     }
 
     private async Task<HashSet<string>> DetectDeletedFilesAsync(

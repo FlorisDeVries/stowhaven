@@ -2,145 +2,118 @@ using Azure.Storage;
 using Azure.Storage.Blobs;
 using Azure.Storage.Sas;
 
-Console.WriteLine("=== Azurite SAS URL Test ===\n");
+// ─────────────────────────────────────────────────────────────────────────────
+// Azurite SAS URL diagnostic – mirrors exactly what SasUrlService + FileUploader
+// do in production so failures here map 1-to-1 to production failures.
+// ─────────────────────────────────────────────────────────────────────────────
 
-// Azurite connection details (well-known credentials)
-const string azuriteConnectionString = "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;";
-const string containerName = "backups";
+// Well-known Azurite defaults
 const string accountName = "devstoreaccount1";
-const string accountKey = "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==";
+const string accountKey  = "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==";
+const string blobEndpoint = "http://127.0.0.1:10000/devstoreaccount1";
+const string containerName = "backups";
 
-// Create blob service client
-var blobServiceClient = new BlobServiceClient(azuriteConnectionString);
-var containerClient = blobServiceClient.GetBlobContainerClient(containerName);
+// Replica of the test file (≈ /home/fdev/.bash_logout)
+const string testFilePath = "home/fdev/.bash_logout";
+const string testFileContent = "# ~/.bash_logout: executed by bash(1) when login shell exits.";
 
-// Ensure container exists
-await containerClient.CreateIfNotExistsAsync();
-Console.WriteLine($"✓ Container '{containerName}' ready\n");
+// ─── Step 1: ensure container exists (using account key, no SAS) ────────────
+Console.WriteLine("=== Azurite SAS URL diagnostic ===\n");
+var credential          = new StorageSharedKeyCredential(accountName, accountKey);
+var serviceClient       = new BlobServiceClient(new Uri(blobEndpoint), credential);
+var adminContainer      = serviceClient.GetBlobContainerClient(containerName);
+await adminContainer.CreateIfNotExistsAsync();
+Console.WriteLine($"[setup] Container '{containerName}' ready");
 
-// Test scenarios
-await TestContainerLevelSas();
-await TestDirectoryLevelSas();
-await TestPathRestrictions();
+// ─── Simulated values that would come from the API ──────────────────────────
+var deviceId = Guid.NewGuid();
+var runId    = Guid.NewGuid();
+var dirPath  = $"staging/{deviceId}/{runId}";   // same pattern as BackupRunService
 
-async Task TestContainerLevelSas()
+// ─── Step 2: build the SAS URL exactly as SasUrlService does ────────────────
+Console.WriteLine($"[api]   Building container SAS (Resource=c) for basePath: {dirPath}");
+
+var expiresAt  = DateTimeOffset.UtcNow.AddHours(1);
+var sasBuilder = new BlobSasBuilder
 {
-    Console.WriteLine("--- Test 1: Container-Level SAS ---");
-    
-    var sasBuilder = new BlobSasBuilder
-    {
-        BlobContainerName = containerName,
-        Resource = "c", // Container
-        StartsOn = DateTimeOffset.UtcNow.AddMinutes(-10),
-        ExpiresOn = DateTimeOffset.UtcNow.AddHours(4),
-        Protocol = SasProtocol.HttpsAndHttp
-    };
-    sasBuilder.SetPermissions(BlobContainerSasPermissions.Read | BlobContainerSasPermissions.Add | BlobContainerSasPermissions.Create | BlobContainerSasPermissions.Write);
-    
-    var credential = new StorageSharedKeyCredential(accountName, accountKey);
-    var sasToken = sasBuilder.ToSasQueryParameters(credential).ToString();
-    var sasUrl = $"http://127.0.0.1:10000/devstoreaccount1/{containerName}?{sasToken}";
-    
-    Console.WriteLine($"SAS URL: {sasUrl}\n");
-    
-    // Try uploading to different paths
-    await TryUpload(sasUrl, "test-container-level.txt", "Container level test");
-    await TryUpload(sasUrl, "staging/device1/run1/file1.txt", "Container level with path");
-    await TryUpload(sasUrl, "staging/device2/run1/file2.txt", "Container level different device");
-    
-    Console.WriteLine();
-}
+    BlobContainerName = containerName,
+    Resource          = "c",  // Container-level; "d" requires ADLS Gen2 HNS
+    StartsOn          = DateTimeOffset.UtcNow.AddMinutes(-5),
+    ExpiresOn         = expiresAt,
+    Protocol          = SasProtocol.HttpsAndHttp
+};
+sasBuilder.SetPermissions(BlobContainerSasPermissions.Create | BlobContainerSasPermissions.Write);
 
-async Task TestDirectoryLevelSas()
+var sasToken = sasBuilder.ToSasQueryParameters(credential).ToString();
+
+// Container-level SAS URL (no directory path embedded in URL — path lives in BasePath)
+var sasUrl = new Uri($"{blobEndpoint}/{containerName}?{sasToken}");
+Console.WriteLine($"[api]   SAS URL  : {sasUrl}");
+Console.WriteLine($"[api]   BasePath : {dirPath}\n");
+
+// ─── Step 3: translate Docker hostname → 127.0.0.1 (TranslateStorageUrlForLocalDevelopment)
+var translatedUrl = new Uri(
+    sasUrl.ToString()
+          .Replace("http://azurite:", "http://127.0.0.1:", StringComparison.OrdinalIgnoreCase));
+Console.WriteLine($"[client] Translated URL: {translatedUrl}");
+
+// ─── Step 4: construct BlobContainerClient exactly as BackupService does ────
+var containerClient = new BlobContainerClient(translatedUrl);
+Console.WriteLine($"[client] BlobContainerClient.Name : {containerClient.Name}");
+Console.WriteLine($"[client] BlobContainerClient.Uri  : {containerClient.Uri}");
+
+// ─── Step 5: build blobPath as FileUploader does ────────────────────────────
+//   storagePath = relative path stripped of leading slash
+//   blobPath    = basePath + "/" + storagePath
+var storagePath = testFilePath.TrimStart('/');
+var blobPath    = $"{dirPath}/{storagePath}";
+Console.WriteLine($"[uploader] blobPath: {blobPath}");
+
+var blobClient  = containerClient.GetBlobClient(blobPath);
+Console.WriteLine($"[uploader] BlobClient.Uri: {blobClient.Uri}\n");
+
+// ─── Step 6: upload ─────────────────────────────────────────────────────────
+Console.WriteLine("--- Approach A: directory-SAS via BlobContainerClient.GetBlobClient (production path) ---");
+await TryUploadToClient(blobClient, "approach-A");
+
+// ─── Step 7: container-level SAS as a known-good baseline ───────────────────
+Console.WriteLine("\n--- Approach B: container-SAS via BlobContainerClient (known-good baseline) ---");
+var containerSasBuilder = new BlobSasBuilder
 {
-    Console.WriteLine("--- Test 2: Directory-Level SAS ---");
-    
-    var sasBuilder = new BlobSasBuilder
-    {
-        BlobContainerName = containerName,
-        BlobName = "staging/device1/run1/", // Directory path
-        Resource = "d", // Directory
-        StartsOn = DateTimeOffset.UtcNow.AddMinutes(-5),
-        ExpiresOn = DateTimeOffset.UtcNow.AddHours(1),
-        Protocol = SasProtocol.HttpsAndHttp
-    };
-    sasBuilder.SetPermissions(BlobSasPermissions.Read | BlobSasPermissions.Create | BlobSasPermissions.Write);
-    
-    var credential = new StorageSharedKeyCredential(accountName, accountKey);
-    var sasToken = sasBuilder.ToSasQueryParameters(credential).ToString();
-    var sasUrl = $"http://127.0.0.1:10000/devstoreaccount1/{containerName}/staging/device1/run1/?{sasToken}";
-    
-    Console.WriteLine($"SAS URL: {sasUrl}\n");
-    
-    // Try uploading within allowed path
-    await TryUpload(sasUrl, "file1.txt", "Directory level - within path");
-    await TryUpload(sasUrl, "subdir/file2.txt", "Directory level - subdir within path");
-    
-    // Try uploading outside allowed path (should fail with proper SAS)
-    await TryUpload(sasUrl, "../run2/file3.txt", "Directory level - parent escape attempt");
-    await TryUpload(sasUrl, "../../device2/run1/file4.txt", "Directory level - different device attempt");
-    
-    Console.WriteLine();
-}
+    BlobContainerName = containerName,
+    Resource          = "c",
+    StartsOn          = DateTimeOffset.UtcNow.AddMinutes(-5),
+    ExpiresOn         = DateTimeOffset.UtcNow.AddHours(1),
+    Protocol          = SasProtocol.HttpsAndHttp
+};
+containerSasBuilder.SetPermissions(BlobContainerSasPermissions.Create | BlobContainerSasPermissions.Write);
+var containerSasToken = containerSasBuilder.ToSasQueryParameters(credential).ToString();
+var containerSasUrl   = new Uri($"{blobEndpoint}/{containerName}?{containerSasToken}");
+var containerSasClient = new BlobContainerClient(containerSasUrl);
+await TryUploadToClient(containerSasClient.GetBlobClient(blobPath), "approach-B");
 
-async Task TestPathRestrictions()
-{
-    Console.WriteLine("--- Test 3: Path Restriction Enforcement ---");
-    
-    // Create a directory-level SAS for device1/run1
-    var sasBuilder = new BlobSasBuilder
-    {
-        BlobContainerName = containerName,
-        BlobName = "staging/device1/run1/",
-        Resource = "d",
-        StartsOn = DateTimeOffset.UtcNow.AddMinutes(-5),
-        ExpiresOn = DateTimeOffset.UtcNow.AddHours(1),
-        Protocol = SasProtocol.HttpsAndHttp
-    };
-    sasBuilder.SetPermissions(BlobSasPermissions.Read | BlobSasPermissions.Create | BlobSasPermissions.Write);
-    
-    var credential = new StorageSharedKeyCredential(accountName, accountKey);
-    var sasToken = sasBuilder.ToSasQueryParameters(credential).ToString();
-    
-    // Try to use SAS token on different path
-    var unauthorizedUrl = $"http://127.0.0.1:10000/devstoreaccount1/{containerName}/staging/device2/run1/?{sasToken}";
-    Console.WriteLine("Attempting to use device1 SAS token on device2 path...");
-    await TryUpload(unauthorizedUrl, "hack.txt", "Cross-device access attempt");
-    
-    Console.WriteLine();
-}
+// ─── Step 8: direct BlobClient (no BlobContainerClient indirection) ─────────
+Console.WriteLine("\n--- Approach C: directory-SAS via direct BlobClient (no container wrapper) ---");
+var directBlobUrl    = new Uri($"{blobEndpoint}/{containerName}/{blobPath}?{sasToken}");
+var directBlobClient = new BlobClient(directBlobUrl);
+Console.WriteLine($"[approach-C] BlobClient.Uri: {directBlobClient.Uri}");
+await TryUploadToClient(directBlobClient, "approach-C");
 
-async Task TryUpload(string sasUrl, string blobPath, string description)
+Console.WriteLine("\n=== Diagnostic complete ===");
+
+// ─── Helper ─────────────────────────────────────────────────────────────────
+async Task TryUploadToClient(BlobClient client, string label)
 {
     try
     {
-        Console.WriteLine($"  [{description}]");
-        Console.WriteLine($"  Blob: {blobPath}");
-        
-        // Parse URL to get base path - IMPORTANT: preserve port!
-        var uri = new Uri(sasUrl);
-        Console.WriteLine($"  Original URI: {uri}");
-        Console.WriteLine($"  Host: {uri.Host}, Port: {uri.Port}");
-        
-        var baseUrl = $"{uri.Scheme}://{uri.Host}:{uri.Port}{uri.AbsolutePath}";
-        var sasToken = uri.Query;
-        
-        // Create blob URL
-        var blobUrl = $"{baseUrl.TrimEnd('/')}/{blobPath}{sasToken}";
-        Console.WriteLine($"  Target URL: {blobUrl}");
-        
-        var blobClient = new BlobClient(new Uri(blobUrl));
-        Console.WriteLine($"  BlobClient URI: {blobClient.Uri}");
-        
-        using var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes($"Test content: {description}"));
-        await blobClient.UploadAsync(stream, overwrite: true);
-        
-        Console.WriteLine($"  ✓ SUCCESS\n");
+        using var stream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(testFileContent));
+        await client.UploadAsync(stream, overwrite: true);
+        Console.WriteLine($"  [{label}] ✓ SUCCESS");
     }
     catch (Exception ex)
     {
-        Console.WriteLine($"  ✗ FAILED: {ex.Message}\n");
+        Console.WriteLine($"  [{label}] ✗ FAILED: {ex.Message}");
+        if (ex is Azure.RequestFailedException rfe)
+            Console.WriteLine($"           Status={rfe.Status}  ErrorCode={rfe.ErrorCode}");
     }
 }
-
-Console.WriteLine("=== Test Complete ===");

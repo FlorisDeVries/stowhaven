@@ -157,5 +157,45 @@
 **/backup-api/bin/**
 **/backup-api/obj/**
 
+# ===== Gaming =====
+# Steam
+**/.steam/**
+**/.local/share/Steam/steamapps/common/**
+**/.local/share/Steam/ubuntu12_32/**
+**/.local/share/Steam/ubuntu12_64/**
+**/.local/share/Steam/Steam.log
+**/AppData/Local/Steam/**
+**/steamapps/common/**
+**/Steam/logs/**
+**/Steam/dumps/**
+# Shader & pipeline caches
+**/.local/share/Steam/steamapps/shadercache/**
+**/AppData/Local/D3DSCache/**
+**/AppData/Local/NvidiaCoreDumps/**
+**/AppData/LocalLow/NVIDIA/PerDriverVersion/**
+# Epic Games
+**/.config/Epic/**
+**/AppData/Local/EpicGamesLauncher/Saved/Logs/**
+**/AppData/Local/EpicGamesLauncher/Saved/webcache/**
+**/Epic Games/**
+# GOG Galaxy
+**/AppData/Local/GOG.com/Galaxy/webcache/**
+**/GOG Games/**
+# EA / Origin
+**/.local/share/EA/**
+**/AppData/Roaming/Origin/Logs/**
+**/AppData/Local/Origin/Webcache/**
+# Ubisoft Connect
+**/AppData/Local/Ubisoft Game Launcher/Logs/**
+**/AppData/Local/Ubisoft Game Launcher/cache/**
+# Battle.net
+**/AppData/Roaming/Battle.net/Logs/**
+**/AppData/Local/Battle.net/**
+# Lutris (Linux)
+**/.local/share/lutris/runtime/**
+# Heroic Games Launcher (Linux)
+**/.config/heroic/GamesConfig/**
+**/.var/app/com.heroicgameslauncher.hgl/**
+
 # ===== Add Your Custom Patterns Below =====
 

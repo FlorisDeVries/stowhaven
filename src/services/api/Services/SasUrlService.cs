@@ -52,45 +52,66 @@ public partial class SasUrlService(
             var blobServiceClient = await GetBlobServiceClientAsync(cancellationToken);
             activity?.SetTag(ActivityAttributes.StorageAccount, _dataStorageAccount);
 
-            var sasBuilder = new BlobSasBuilder
-            {
-                BlobContainerName = _dataContainer,
-                BlobName = path,
-                Resource = "d", // directory
-                ExpiresOn = expiresAt,
-                StartsOn = DateTimeOffset.UtcNow.AddMinutes(-5), // Allow 5 minutes clock skew
-                Protocol = SasProtocol.Https
-            };
-
-            sasBuilder.SetPermissions(BlobSasPermissions.Create | BlobSasPermissions.Write);
+            var isAzurite = await UsingAzurite(cancellationToken);
 
             string sasToken;
-            if (await UsingAzurite(cancellationToken))
+            Uri sasUrl;
+
+            if (isAzurite)
             {
-                // Use Account Key for Azurite (local development)
+                // LOCAL DEVELOPMENT (Azurite): directory SAS (Resource="d") requires ADLS Gen2
+                // hierarchical namespace, which Azurite does not support — the SDK silently
+                // downgrades to Resource="b" (blob), binding the signature to the exact path,
+                // which then breaks when the client appends file names.
+                // Fall back to a container-level SAS (Resource="c") for local dev only.
+                // This is intentionally broader than production.
+                var containerSasBuilder = new BlobSasBuilder
+                {
+                    BlobContainerName = _dataContainer,
+                    Resource          = "c",
+                    ExpiresOn         = expiresAt,
+                    StartsOn          = DateTimeOffset.UtcNow.AddMinutes(-5),
+                    Protocol          = SasProtocol.HttpsAndHttp // Azurite serves HTTP only
+                };
+                containerSasBuilder.SetPermissions(BlobContainerSasPermissions.Create | BlobContainerSasPermissions.Write);
+
                 var accountKey = await secretService.GetRequiredSecretAsync("DATA_STORAGE_ACCOUNT_KEY");
                 var credential = new StorageSharedKeyCredential(_dataStorageAccount, accountKey);
+                sasToken = containerSasBuilder.ToSasQueryParameters(credential).ToString();
 
-                sasToken = sasBuilder.ToSasQueryParameters(
-                    credential
-                ).ToString();
+                // Container-level URL — path is NOT embedded; the client uses BasePath separately
+                sasUrl = new Uri($"{blobServiceClient.Uri}/{_dataContainer}?{sasToken}");
             }
             else
             {
+                // PRODUCTION (Azure Storage with HNS / ADLS Gen2): use a directory-scoped SAS
+                // (Resource="d") so the token is cryptographically bound to the staging path and
+                // cannot be used to read or overwrite blobs outside of it.
+                var dirSasBuilder = new BlobSasBuilder
+                {
+                    BlobContainerName = _dataContainer,
+                    BlobName          = path,
+                    Resource          = "d",
+                    ExpiresOn         = expiresAt,
+                    StartsOn          = DateTimeOffset.UtcNow.AddMinutes(-5),
+                    Protocol          = SasProtocol.Https
+                };
+                dirSasBuilder.SetPermissions(BlobSasPermissions.Create | BlobSasPermissions.Write);
+
                 // Use User Delegation Key for enhanced security (no account key exposure)
                 var key = await GetDelegationKeyAsync(blobServiceClient, expiresAt, cancellationToken);
-                sasToken = sasBuilder.ToSasQueryParameters(
-                    key,
-                    _dataStorageAccount
-                ).ToString();
+                sasToken = dirSasBuilder.ToSasQueryParameters(key, _dataStorageAccount).ToString();
+
+                // Directory-level URL — path IS embedded so BlobContainerClient resolves correctly
+                sasUrl = new Uri($"{blobServiceClient.Uri}/{_dataContainer}/{path}?{sasToken}");
             }
 
             var result = new SasUrlInfo
             {
-                Url = new Uri($"{blobServiceClient.Uri}/{_dataContainer}/{path}?{sasToken}"),
-                ExpiresAt = expiresAt,
+                Url        = sasUrl,
+                ExpiresAt  = expiresAt,
                 TtlMinutes = ttl,
-                BasePath = path
+                BasePath   = path
             };
 
             stopwatch.Stop();
