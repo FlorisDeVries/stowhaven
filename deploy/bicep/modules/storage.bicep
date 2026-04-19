@@ -24,10 +24,11 @@ resource dataStorageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' = {
     name: 'Standard_LRS'
   }
   properties: {
-    accessTier: 'Cool'
+    accessTier: 'Cool'  // Account default; blobs can be set to Cold tier individually
     allowBlobPublicAccess: false
     minimumTlsVersion: 'TLS1_2'
     supportsHttpsTrafficOnly: true
+    isHnsEnabled: true  // Enable hierarchical namespace for ADLS Gen2 (directory-scoped SAS & rename)
   }
   tags: tags
 }
@@ -52,18 +53,82 @@ resource lifecyclePolicy 'Microsoft.Storage/storageAccounts/managementPolicies@2
     policy: {
       rules: [
         {
-          name: 'to-archive-after-days'
+          name: 'devices-to-cold'
           enabled: true
           type: 'Lifecycle'
           definition: {
             filters: {
-              prefixMatch: ['backups/']
+              prefixMatch: ['devices/']
+              blobTypes: ['blockBlob']
+            }
+            actions: {
+              baseBlob: {
+                tierToCold: {
+                  daysAfterCreationGreaterThan: 0  // Move to Cold tier immediately if not already
+                }
+              }
+            }
+          }
+        }
+        {
+          name: 'backup-tier-promotion'
+          enabled: true
+          type: 'Lifecycle'
+          definition: {
+            filters: {
+              prefixMatch: ['devices/']
               blobTypes: ['blockBlob']
             }
             actions: {
               baseBlob: {
                 tierToArchive: {
-                  daysAfterModificationGreaterThan: lifecycleArchiveAfterDays
+                  daysAfterCreationGreaterThan: lifecycleArchiveAfterDays
+                }
+                delete: {
+                  daysAfterCreationGreaterThan: 210  // 180 (archive min) + 30 (grace)
+                }
+              }
+            }
+          }
+        }
+        {
+          name: 'retired-cleanup'
+          enabled: true
+          type: 'Lifecycle'
+          definition: {
+            filters: {
+              prefixMatch: ['devices/']
+              blobIndexMatch: [
+                {
+                  name: 'state'
+                  op: '=='
+                  value: 'retired'
+                }
+              ]
+              blobTypes: ['blockBlob']
+            }
+            actions: {
+              baseBlob: {
+                delete: {
+                  daysAfterCreationGreaterThan: 210
+                }
+              }
+            }
+          }
+        }
+        {
+          name: 'staging-cleanup'
+          enabled: true
+          type: 'Lifecycle'
+          definition: {
+            filters: {
+              prefixMatch: ['staging/']
+              blobTypes: ['blockBlob']
+            }
+            actions: {
+              baseBlob: {
+                delete: {
+                  daysAfterCreationGreaterThan: 7  // Clean up stale uploads after 7 days
                 }
               }
             }

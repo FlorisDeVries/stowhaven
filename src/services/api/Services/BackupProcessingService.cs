@@ -315,7 +315,14 @@ public partial class BackupProcessingService(
         var sourceBlobName = $"devices/{deviceId:N}/files/{uniqueFileId}";
         var destinationBlobName = $"devices/{deviceId:N}/retired/{uniqueFileId}";
 
-        await MoveBlobAsync(containerClient, sourceBlobName, destinationBlobName, cancellationToken);
+        // Tag retired blobs for lifecycle policy targeting
+        var tags = new Dictionary<string, string>
+        {
+            { "state", "retired" },
+            { "deviceId", deviceId.ToString("N") }
+        };
+
+        await MoveBlobAsync(containerClient, sourceBlobName, destinationBlobName, cancellationToken, tags);
 
         // Update FileVersion state to Retired
         var retiredVersion = fileVersion with 
@@ -332,7 +339,8 @@ public partial class BackupProcessingService(
         BlobContainerClient containerClient,
         string sourceBlobName,
         string destinationBlobName,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Dictionary<string, string>? tags = null)
     {
         var sourceBlobClient = containerClient.GetBlobClient(sourceBlobName);
         var destinationBlobClient = containerClient.GetBlobClient(destinationBlobName);
@@ -358,6 +366,15 @@ public partial class BackupProcessingService(
                 var sourceFileClient = fileSystemClient.GetFileClient(sourceBlobName);
                 
                 await sourceFileClient.RenameAsync(destinationBlobName, cancellationToken: cancellationToken);
+                
+                // Set blob index tags if provided (after rename)
+                if (tags != null && tags.Count > 0)
+                {
+                    var destFileClient = fileSystemClient.GetFileClient(destinationBlobName);
+                    var destBlobClient = containerClient.GetBlobClient(destinationBlobName);
+                    await destBlobClient.SetTagsAsync(tags, cancellationToken: cancellationToken);
+                }
+                
                 LogBlobMoved(logger, sourceBlobName, destinationBlobName);
                 return;
             }
@@ -376,6 +393,12 @@ public partial class BackupProcessingService(
         await copyOperation.WaitForCompletionAsync(cancellationToken);
 
         await sourceBlobClient.DeleteIfExistsAsync(cancellationToken: cancellationToken);
+
+        // Set blob index tags if provided
+        if (tags != null && tags.Count > 0)
+        {
+            await destinationBlobClient.SetTagsAsync(tags, cancellationToken: cancellationToken);
+        }
 
         LogBlobMoved(logger, sourceBlobName, destinationBlobName);
     }
