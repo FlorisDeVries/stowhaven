@@ -1,9 +1,6 @@
 using System.Diagnostics;
 using System.Security;
-using Azure.Identity;
-using Azure.Storage;
 using Azure.Storage.Blobs;
-using Azure.Storage.Blobs.Models;
 using Azure.Storage.Sas;
 using FlorisDeV.BackupApi.Models.Infrastructure;
 using FlorisDeV.BackupApi.Telemetry;
@@ -19,15 +16,10 @@ public interface ISasUrlService
 
 public partial class SasUrlService(
     ILogger<SasUrlService> logger,
-    ISecretService secretService,
+    IBlobStorageService blobStorageService,
     TelemetryProvider telemetry
 ) : ISasUrlService
 {
-    private BlobServiceClient? _blobServiceClient;
-    private string _dataStorageAccount = null!;
-    private string _dataContainer = null!;
-    private UserDelegationKey? _cachedKey;
-    private DateTimeOffset _keyExpiresAt;
 
     public async Task<SasUrlInfo> GenerateUploadSasUrlAsync(string path, int? ttlMinutes = null,
         CancellationToken cancellationToken = default)
@@ -49,10 +41,12 @@ public partial class SasUrlService(
 
         try
         {
-            var blobServiceClient = await GetBlobServiceClientAsync(cancellationToken);
-            activity?.SetTag(ActivityAttributes.StorageAccount, _dataStorageAccount);
+            var blobServiceClient = await blobStorageService.GetBlobServiceClientAsync(cancellationToken);
+            var storageAccount = await blobStorageService.GetStorageAccountNameAsync(cancellationToken);
+            var containerName = await blobStorageService.GetContainerNameAsync(cancellationToken);
+            var isAzurite = await blobStorageService.IsUsingAzuriteAsync(cancellationToken);
 
-            var isAzurite = await UsingAzurite(cancellationToken);
+            activity?.SetTag(ActivityAttributes.StorageAccount, storageAccount);
 
             string sasToken;
             Uri sasUrl;
@@ -67,7 +61,7 @@ public partial class SasUrlService(
                 // This is intentionally broader than production.
                 var containerSasBuilder = new BlobSasBuilder
                 {
-                    BlobContainerName = _dataContainer,
+                    BlobContainerName = containerName,
                     Resource          = "c",
                     ExpiresOn         = expiresAt,
                     StartsOn          = DateTimeOffset.UtcNow.AddMinutes(-5),
@@ -75,12 +69,12 @@ public partial class SasUrlService(
                 };
                 containerSasBuilder.SetPermissions(BlobContainerSasPermissions.Create | BlobContainerSasPermissions.Write);
 
-                var accountKey = await secretService.GetRequiredSecretAsync("DATA_STORAGE_ACCOUNT_KEY");
-                var credential = new StorageSharedKeyCredential(_dataStorageAccount, accountKey);
-                sasToken = containerSasBuilder.ToSasQueryParameters(credential).ToString();
+                // Use the blob container client which already has credentials
+                var containerClient = blobServiceClient.GetBlobContainerClient(containerName);
+                sasToken = containerClient.GenerateSasUri(containerSasBuilder).Query;
 
                 // Container-level URL — path is NOT embedded; the client uses BasePath separately
-                sasUrl = new Uri($"{blobServiceClient.Uri}/{_dataContainer}?{sasToken}");
+                sasUrl = new Uri($"{blobServiceClient.Uri}/{containerName}?{sasToken}");
             }
             else
             {
@@ -89,7 +83,7 @@ public partial class SasUrlService(
                 // cannot be used to read or overwrite blobs outside of it.
                 var dirSasBuilder = new BlobSasBuilder
                 {
-                    BlobContainerName = _dataContainer,
+                    BlobContainerName = containerName,
                     BlobName          = path,
                     Resource          = "d",
                     ExpiresOn         = expiresAt,
@@ -99,11 +93,11 @@ public partial class SasUrlService(
                 dirSasBuilder.SetPermissions(BlobSasPermissions.Create | BlobSasPermissions.Write);
 
                 // Use User Delegation Key for enhanced security (no account key exposure)
-                var key = await GetDelegationKeyAsync(blobServiceClient, expiresAt, cancellationToken);
-                sasToken = dirSasBuilder.ToSasQueryParameters(key, _dataStorageAccount).ToString();
+                var key = await blobStorageService.GetUserDelegationKeyAsync(expiresAt, cancellationToken);
+                sasToken = dirSasBuilder.ToSasQueryParameters(key, storageAccount).ToString();
 
                 // Directory-level URL — path IS embedded so BlobContainerClient resolves correctly
-                sasUrl = new Uri($"{blobServiceClient.Uri}/{_dataContainer}/{path}?{sasToken}");
+                sasUrl = new Uri($"{blobServiceClient.Uri}/{containerName}/{path}?{sasToken}");
             }
 
             var result = new SasUrlInfo
@@ -154,72 +148,14 @@ public partial class SasUrlService(
         if (path.Contains("..", StringComparison.Ordinal))
             throw new SecurityException("Invalid path traversal");
 
-        if (!path.StartsWith("staging/", StringComparison.Ordinal))
-            throw new SecurityException("Upload SAS may only target staging/");
+        if (!path.StartsWith("staging/", StringComparison.Ordinal) && 
+            !path.StartsWith("runs/", StringComparison.Ordinal))
+            throw new SecurityException("Upload SAS may only target staging/ or runs/");
 
         if (path.Contains('.', StringComparison.Ordinal))
             throw new SecurityException("Upload SAS must target a directory, not a blob");
 
         return path;
-    }
-
-    private async Task<BlobServiceClient> GetBlobServiceClientAsync(CancellationToken cancellationToken = default)
-    {
-        if (_blobServiceClient != null)
-        {
-            return _blobServiceClient;
-        }
-
-        // Get storage configuration from DAPR secrets
-        _dataStorageAccount = await secretService.GetRequiredSecretAsync("DATA_STORAGE_ACCOUNT")
-                              ?? throw new InvalidOperationException(
-                                  "DATA_STORAGE_ACCOUNT not found in secrets or environment");
-
-        _dataContainer = await secretService.GetRequiredSecretAsync("DATA_CONTAINER")
-                         ?? throw new InvalidOperationException(
-                             "DATA_CONTAINER not found in secrets or environment");
-
-        if (await UsingAzurite(cancellationToken))
-        {
-            // LOCAL DEVELOPMENT: Account-key auth
-            var accountKey = await secretService.GetRequiredSecretAsync("DATA_STORAGE_ACCOUNT_KEY");
-            var credential = new StorageSharedKeyCredential(_dataStorageAccount, accountKey);
-            var blobEndpoint = await secretService.GetRequiredSecretAsync("DATA_STORAGE_BLOB_ENDPOINT");
-
-            _blobServiceClient = new BlobServiceClient(new Uri(blobEndpoint!), credential);
-        }
-        else
-        {
-            // Azure
-            var credential = new DefaultAzureCredential();
-            var blobServiceUri = new Uri($"https://{_dataStorageAccount}.blob.core.windows.net");
-            _blobServiceClient = new BlobServiceClient(blobServiceUri, credential);
-        }
-
-        return _blobServiceClient;
-    }
-
-    private async Task<UserDelegationKey> GetDelegationKeyAsync(
-        BlobServiceClient client,
-        DateTimeOffset expiresAt,
-        CancellationToken cancellationToken = default)
-    {
-        if (_cachedKey != null && _keyExpiresAt > expiresAt.AddMinutes(5))
-            return _cachedKey;
-
-        var keyExpiry = DateTimeOffset.UtcNow.AddHours(2);
-        _cachedKey = await client.GetUserDelegationKeyAsync(
-            DateTimeOffset.UtcNow.AddMinutes(-5),
-            keyExpiry, cancellationToken);
-
-        _keyExpiresAt = keyExpiry;
-        return _cachedKey;
-    }
-
-    private async Task<bool> UsingAzurite(CancellationToken cancellationToken = default)
-    {
-        var useAzurite = await secretService.GetRequiredSecretAsync("USE_AZURITE");
-        return bool.TryParse(useAzurite, out var result) && result;
     }
 
     #region Logging

@@ -55,13 +55,13 @@ public partial class BackupController(
     }
 
     [HttpPost("commit-run")]
-    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(CommitBackupRunResponse), StatusCodes.Status202Accepted)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status422UnprocessableEntity)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status500InternalServerError)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
-    public async Task<ActionResult> CommitBackupRun(
+    public async Task<ActionResult<CommitBackupRunResponse>> CommitBackupRun(
         [FromBody] CommitBackupRunRequest request,
         CancellationToken cancellationToken)
     {
@@ -79,12 +79,65 @@ public partial class BackupController(
 
         LogStartCommitBackupRun(logger, request.RunId, request.DeviceId);
 
-        // Commit backup-run - let exceptions bubble up to GlobalExceptionFilter
-        await backupRunService.CommitBackupRunAsync(request.DeviceId, request.RunId, cancellationToken);
+        // Create commit job for async processing - let exceptions bubble up to GlobalExceptionFilter
+        var commitJob = await backupRunService.CommitBackupRunAsync(
+            request.DeviceId, 
+            request.RunId, 
+            request.ManifestBlobPath,
+            cancellationToken);
 
-        LogCommitBackupRunSuccess(logger, request.RunId, request.DeviceId);
+        var response = new CommitBackupRunResponse
+        {
+            CommitId = commitJob.CommitId,
+            DeviceId = commitJob.DeviceId,
+            RunId = commitJob.RunId,
+            Status = commitJob.Status,
+            CreatedAt = commitJob.CreatedAt
+        };
 
-        return Ok();
+        LogCommitBackupRunAccepted(logger, commitJob.CommitId, request.RunId, request.DeviceId);
+
+        return AcceptedAtAction(
+            nameof(GetCommitStatus),
+            new { commitId = commitJob.CommitId },
+            response);
+    }
+
+    [HttpGet("commit-status/{commitId}")]
+    [ProducesResponseType(typeof(CommitStatusResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status500InternalServerError)]
+    public async Task<ActionResult<CommitStatusResponse>> GetCommitStatus(
+        Guid commitId,
+        CancellationToken cancellationToken)
+    {
+        using var scope = logger.BeginScope(new Dictionary<string, object>
+        {
+            ["CommitId"] = commitId,
+            ["Operation"] = "GetCommitStatus"
+        });
+
+        LogGetCommitStatus(logger, commitId);
+
+        // Get commit job status - let exceptions bubble up to GlobalExceptionFilter
+        var commitJob = await backupRunService.GetCommitStatusAsync(commitId, cancellationToken);
+
+        var response = new CommitStatusResponse
+        {
+            CommitId = commitJob.CommitId,
+            DeviceId = commitJob.DeviceId,
+            RunId = commitJob.RunId,
+            Status = commitJob.Status,
+            Error = commitJob.Error,
+            CreatedAt = commitJob.CreatedAt,
+            UpdatedAt = commitJob.UpdatedAt,
+            CompletedAt = commitJob.CompletedAt,
+            FilesProcessed = commitJob.Status == CommitJobStatus.Succeeded ? commitJob.FilesProcessed : null
+        };
+
+        LogCommitStatusRetrieved(logger, commitId, commitJob.Status);
+
+        return Ok(response);
     }
 
     #region Logging
@@ -99,8 +152,14 @@ public partial class BackupController(
     [LoggerMessage(LogLevel.Information, "Committing backup run {runId} for device {deviceId}")]
     static partial void LogStartCommitBackupRun(ILogger<BackupController> logger, Guid runId, Guid deviceId);
 
-    [LoggerMessage(LogLevel.Information, "Backup run {runId} committed successfully for device {deviceId}")]
-    static partial void LogCommitBackupRunSuccess(ILogger<BackupController> logger, Guid runId, Guid deviceId);
+    [LoggerMessage(LogLevel.Information, "Backup run {runId} for device {deviceId} accepted for commit. CommitId: {commitId}")]
+    static partial void LogCommitBackupRunAccepted(ILogger<BackupController> logger, Guid commitId, Guid runId, Guid deviceId);
+
+    [LoggerMessage(LogLevel.Information, "Retrieving commit status for commit {commitId}")]
+    static partial void LogGetCommitStatus(ILogger<BackupController> logger, Guid commitId);
+
+    [LoggerMessage(LogLevel.Information, "Commit {commitId} status: {status}")]
+    static partial void LogCommitStatusRetrieved(ILogger<BackupController> logger, Guid commitId, CommitJobStatus status);
 
     #endregion
 }

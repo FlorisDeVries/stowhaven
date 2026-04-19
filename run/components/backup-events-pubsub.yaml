@@ -1,0 +1,32 @@
+# Dapr Pub/Sub component for local development using Azure Storage Queues
+# Works with Azurite - no additional infrastructure needed!
+#
+# For production, this component will automatically use the real Azure Storage Queue
+# when AZURE_STORAGE_CONNECTION_STRING points to an Azure Storage Account.
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+    name: backup-events-pubsub
+spec:
+    type: pubsub.azure.storagequeues
+    version: v1
+    metadata:
+        - name: connectionString
+          secretKeyRef:
+              name: AZURE_STORAGE_CONNECTION_STRING
+        - name: queueName
+          value: backup-events
+        # Visibility timeout: how long a message is invisible after being picked up
+        # Set to a value longer than your expected processing time
+        # Default: 30s, Max: 7 days
+        - name: visibilityTimeout
+          value: "5m"
+        # Polling interval for checking new messages
+        - name: pollingInterval
+          value: "10s"
+        # Max retries before moving to poison queue
+        - name: maxDequeueCount
+          value: "3"
+auth:
+    secretStore: secret-store
+

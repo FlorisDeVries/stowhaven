@@ -21,7 +21,10 @@ public class TelemetryProvider : IDisposable
     // Counters
     public Counter<long> BackupRunsStarted { get; }
     public Counter<long> BackupRunsCommitted { get; }
+    public Counter<long> BackupRunsProcessed { get; }
     public Counter<long> BackupRunsFailed { get; }
+    public Counter<long> BackupEventsPublished { get; }
+    public Counter<long> BackupEventsFailed { get; }
     public Counter<long> SasUrlsGenerated { get; }
     public Counter<long> StateOperations { get; }
     public Counter<long> SecretRetrievals { get; }
@@ -46,10 +49,25 @@ public class TelemetryProvider : IDisposable
             unit: "runs",
             description: "Number of backup runs successfully committed");
         
+        BackupRunsProcessed = _meter.CreateCounter<long>(
+            "florisdev.backup.runs.processed", 
+            unit: "runs",
+            description: "Number of backup runs successfully processed");
+        
         BackupRunsFailed = _meter.CreateCounter<long>(
             "florisdev.backup.runs.failed", 
             unit: "runs",
             description: "Number of backup runs that failed");
+        
+        BackupEventsPublished = _meter.CreateCounter<long>(
+            "florisdev.backup.events.published", 
+            unit: "events",
+            description: "Number of backup events successfully published");
+        
+        BackupEventsFailed = _meter.CreateCounter<long>(
+            "florisdev.backup.events.failed", 
+            unit: "events",
+            description: "Number of backup events that failed to publish");
         
         SasUrlsGenerated = _meter.CreateCounter<long>(
             "florisdev.backup.sas_urls.generated", 

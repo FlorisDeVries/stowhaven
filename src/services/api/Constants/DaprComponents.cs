@@ -4,4 +4,5 @@ public class DaprComponents
 {
     public const string ManifestStateStore = "manifest-state-store";
     public const string SecretStore = "secret-store";
+    public const string BackupEventsPubSub = "backup-events-pubsub";
 }

@@ -25,6 +25,9 @@ param containerName string
 @description('Key Vault name for Dapr secret-store component')
 param keyVaultName string
 
+@description('Service Bus namespace name for Dapr pub/sub component')
+param serviceBusNamespaceName string
+
 @description('API key secret value (stored as a Container App secret)')
 @secure()
 param apiKey string
@@ -69,6 +72,64 @@ resource daprSecretStore 'Microsoft.App/managedEnvironments/daprComponents@2023-
       {
         name: 'vaultName'
         value: keyVaultName
+      }
+    ]
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Dapr component: state-store (Azure Table Storage via managed identity)
+// ---------------------------------------------------------------------------
+
+resource daprStateStore 'Microsoft.App/managedEnvironments/daprComponents@2023-05-01' = {
+  parent: containerAppEnv
+  name: 'manifest-state-store'
+  properties: {
+    componentType: 'state.azure.tablestorage'
+    version: 'v1'
+    metadata: [
+      {
+        name: 'accountName'
+        value: dataStorageAccountName
+      }
+      {
+        name: 'tableName'
+        value: 'manifeststate'
+      }
+    ]
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Dapr component: pub/sub (Azure Service Bus via managed identity)
+// ---------------------------------------------------------------------------
+
+resource daprPubSub 'Microsoft.App/managedEnvironments/daprComponents@2023-05-01' = {
+  parent: containerAppEnv
+  name: 'backup-events-pubsub'
+  properties: {
+    componentType: 'pubsub.azure.servicebus.topics'
+    version: 'v1'
+    metadata: [
+      {
+        name: 'namespaceName'
+        value: '${serviceBusNamespaceName}.servicebus.windows.net'
+      }
+      {
+        name: 'consumerID'
+        value: 'backup-api'
+      }
+      {
+        name: 'maxConcurrentHandlers'
+        value: '8'
+      }
+      {
+        name: 'timeoutInSec'
+        value: '300'
+      }
+      {
+        name: 'maxRetryCount'
+        value: '3'
       }
     ]
   }

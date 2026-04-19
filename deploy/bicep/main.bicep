@@ -53,6 +53,8 @@ var keyVaultName = 'kv-${nameSuffix}'
 // Role definition IDs (built-in)
 var roleStorageBlobDataContributor = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
 var roleStorageBlobDelegator       = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'db58b8e5-c6ad-4a2a-8342-4190687cbf4a')
+var roleStorageTableDataContributor = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3')
+var roleServiceBusDataSender       = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '69a216fc-b8fb-44d8-bc22-1f3c2cd27a39')
 var roleAcrPull                    = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')
 var roleKeyVaultSecretsUser        = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e0')
 
@@ -115,6 +117,7 @@ module compute 'modules/compute.bicep' = {
     dataStorageAccountName: storage.outputs.dataStorageAccountName
     containerName: storage.outputs.containerName
     keyVaultName: daprInfra.outputs.keyVaultName
+    serviceBusNamespaceName: daprInfra.outputs.serviceBusNamespaceName
     apiKey: apiKey
     imageTag: imageTag
     tags: commonTags
@@ -165,7 +168,29 @@ resource roleAssignKeyVaultSecretsUser 'Microsoft.Authorization/roleAssignments@
     roleDefinitionId: roleKeyVaultSecretsUser
     principalId: compute.outputs.principalId
     principalType: 'ServicePrincipal'
-    description: 'Container App – Key Vault Secrets User'
+    description: 'Container App - Key Vault Secrets User'
+  }
+}
+
+resource roleAssignStorageTableContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(resourceGroup().id, 'stabackup${nameSuffixStr}', 'ca-${nameSuffix}', 'table-contributor')
+  scope: resourceGroup()
+  properties: {
+    roleDefinitionId: roleStorageTableDataContributor
+    principalId: compute.outputs.principalId
+    principalType: 'ServicePrincipal'
+    description: 'Container App - Storage Table Data Contributor for Dapr state store'
+  }
+}
+
+resource roleAssignServiceBusDataSender 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(resourceGroup().id, 'sb-${nameSuffix}', 'ca-${nameSuffix}', 'sb-sender')
+  scope: resourceGroup()
+  properties: {
+    roleDefinitionId: roleServiceBusDataSender
+    principalId: compute.outputs.principalId
+    principalType: 'ServicePrincipal'
+    description: 'Container App - Service Bus Data Sender for Dapr pub/sub'
   }
 }
 
