@@ -10,7 +10,7 @@ namespace FlorisDeV.BackupApi.Services;
 
 public interface ISasUrlService
 {
-    Task<SasUrlInfo> GenerateUploadSasUrlAsync(string path, int? ttlMinutes = null,
+    Task<SasUrlInfo> GenerateUploadSasUrlAsync(string path, string? clientIp = null, int? ttlMinutes = null,
         CancellationToken cancellationToken = default);
 }
 
@@ -21,7 +21,7 @@ public partial class SasUrlService(
 ) : ISasUrlService
 {
 
-    public async Task<SasUrlInfo> GenerateUploadSasUrlAsync(string path, int? ttlMinutes = null,
+    public async Task<SasUrlInfo> GenerateUploadSasUrlAsync(string path, string? clientIp = null, int? ttlMinutes = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
@@ -32,6 +32,11 @@ public partial class SasUrlService(
         // Validate path
         path = ValidatePath(path);
         activity?.SetTag(ActivityAttributes.SasUrlPath, path);
+        
+        if (!string.IsNullOrEmpty(clientIp))
+        {
+            activity?.SetTag("sas.client_ip", clientIp);
+        }
 
         var ttl = ttlMinutes ?? 60;
         var expiresAt = DateTimeOffset.UtcNow.AddMinutes(ttl);
@@ -68,6 +73,13 @@ public partial class SasUrlService(
                     Protocol          = SasProtocol.HttpsAndHttp // Azurite serves HTTP only
                 };
                 containerSasBuilder.SetPermissions(BlobContainerSasPermissions.Create | BlobContainerSasPermissions.Write);
+                
+                // Add IP restriction if client IP is provided
+                if (!string.IsNullOrEmpty(clientIp))
+                {
+                    containerSasBuilder.IPRange = new SasIPRange(System.Net.IPAddress.Parse(clientIp));
+                    LogSasWithIpRestriction(logger, clientIp);
+                }
 
                 // Use the blob container client which already has credentials
                 var containerClient = blobServiceClient.GetBlobContainerClient(containerName);
@@ -91,6 +103,13 @@ public partial class SasUrlService(
                     Protocol          = SasProtocol.Https
                 };
                 dirSasBuilder.SetPermissions(BlobSasPermissions.Create | BlobSasPermissions.Write);
+                
+                // Add IP restriction if client IP is provided
+                if (!string.IsNullOrEmpty(clientIp))
+                {
+                    dirSasBuilder.IPRange = new SasIPRange(System.Net.IPAddress.Parse(clientIp));
+                    LogSasWithIpRestriction(logger, clientIp);
+                }
 
                 // Use User Delegation Key for enhanced security (no account key exposure)
                 var key = await blobStorageService.GetUserDelegationKeyAsync(expiresAt, cancellationToken);
@@ -162,6 +181,9 @@ public partial class SasUrlService(
 
     [LoggerMessage(LogLevel.Error, "Error generating upload SAS URL for path: {path}")]
     static partial void LogErrorGeneratingSasUrl(ILogger logger, string path, Exception ex);
+
+    [LoggerMessage(LogLevel.Information, "Generated SAS URL with IP restriction: {clientIp}")]
+    static partial void LogSasWithIpRestriction(ILogger logger, string clientIp);
 
     #endregion
 }

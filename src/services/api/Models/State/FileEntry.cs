@@ -9,7 +9,7 @@ public sealed record FileEntry
     /// <summary>
     /// Device identifier.
     /// </summary>
-    public required string DeviceId { get; init; }
+    public required Guid DeviceId { get; init; }
 
     /// <summary>
     /// Relative path of the file on the device.
@@ -56,7 +56,7 @@ public sealed record FileVersion
     /// <summary>
     /// Device identifier.
     /// </summary>
-    public required string DeviceId { get; init; }
+    public required Guid DeviceId { get; init; }
 
     /// <summary>
     /// Unique file identifier: {sha256}_{timestamp}_{random}

@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Azure.Identity;
 using Azure.Storage;
 using Azure.Storage.Blobs;
+using Azure.Storage.Blobs.Models;
 using Azure.Storage.Files.DataLake;
 using Azure.Storage.Sas;
 using FlorisDeV.BackupApi.Telemetry;
@@ -76,10 +77,10 @@ public partial class BlobStorageService(
         try
         {
             // Get storage configuration from secrets
-            _storageAccountName = await secretService.GetRequiredSecretAsync("DATA_STORAGE_ACCOUNT", cancellationToken)
+            _storageAccountName = await secretService.GetRequiredSecretAsync("DATA_STORAGE_ACCOUNT")
                                   ?? throw new InvalidOperationException("DATA_STORAGE_ACCOUNT not found in secrets or environment");
 
-            _containerName = await secretService.GetRequiredSecretAsync("DATA_CONTAINER", cancellationToken)
+            _containerName = await secretService.GetRequiredSecretAsync("DATA_CONTAINER")
                              ?? throw new InvalidOperationException("DATA_CONTAINER not found in secrets or environment");
 
             _isUsingAzurite = await IsUsingAzuriteAsync(cancellationToken);
@@ -89,10 +90,10 @@ public partial class BlobStorageService(
                 // LOCAL DEVELOPMENT: Use connection string with account key
                 LogInitializingAzurite(logger, _storageAccountName);
 
-                var accountKey = await secretService.GetRequiredSecretAsync("DATA_STORAGE_ACCOUNT_KEY", cancellationToken)
+                var accountKey = await secretService.GetRequiredSecretAsync("DATA_STORAGE_ACCOUNT_KEY")
                                  ?? throw new InvalidOperationException("DATA_STORAGE_ACCOUNT_KEY not found for Azurite");
 
-                var blobEndpoint = await secretService.GetRequiredSecretAsync("DATA_STORAGE_BLOB_ENDPOINT", cancellationToken)
+                var blobEndpoint = await secretService.GetRequiredSecretAsync("DATA_STORAGE_BLOB_ENDPOINT")
                                    ?? throw new InvalidOperationException("DATA_STORAGE_BLOB_ENDPOINT not found for Azurite");
 
                 var credential = new StorageSharedKeyCredential(_storageAccountName, accountKey);
@@ -139,7 +140,7 @@ public partial class BlobStorageService(
     public async Task<DataLakeServiceClient> GetDataLakeServiceClientAsync(CancellationToken cancellationToken = default)
     {
         using var activity = telemetry.ActivitySource.StartActivity("GetDataLakeServiceClient");
-        
+
         var storageAccountName = await GetStorageAccountNameAsync(cancellationToken);
         var isAzurite = await IsUsingAzuriteAsync(cancellationToken);
 
@@ -150,7 +151,7 @@ public partial class BlobStorageService(
 
         var credential = new DefaultAzureCredential();
         var dataLakeServiceUri = new Uri($"https://{storageAccountName}.dfs.core.windows.net");
-        
+
         return new DataLakeServiceClient(dataLakeServiceUri, credential);
     }
 
@@ -224,7 +225,7 @@ public partial class BlobStorageService(
             return _isUsingAzurite.Value;
         }
 
-        var useAzurite = await secretService.GetRequiredSecretAsync("USE_AZURITE", cancellationToken);
+        var useAzurite = await secretService.GetRequiredSecretAsync("USE_AZURITE");
         _isUsingAzurite = bool.TryParse(useAzurite, out var result) && result;
         return _isUsingAzurite.Value;
     }

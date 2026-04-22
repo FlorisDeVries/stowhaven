@@ -16,29 +16,31 @@ namespace FlorisDeV.BackupApi.Tests;
 public class SasUrlServiceTests
 {
     private readonly Mock<ILogger<SasUrlService>> _loggerMock;
-    private readonly Mock<ISecretService> _secretServiceMock;
     private readonly Mock<TelemetryProvider> _telemetryMock;
     private readonly SasUrlService _sut;
+
+    private readonly Mock<IBlobStorageService> _blobStorageServiceMock;
 
     public SasUrlServiceTests()
     {
         _loggerMock = new Mock<ILogger<SasUrlService>>();
-        _secretServiceMock = new Mock<ISecretService>();
+        _blobStorageServiceMock = new Mock<IBlobStorageService>();
         _telemetryMock = new Mock<TelemetryProvider>();
 
-        _sut = new SasUrlService(_loggerMock.Object, _secretServiceMock.Object, _telemetryMock.Object);
+        _sut = new SasUrlService(_loggerMock.Object, _blobStorageServiceMock.Object, _telemetryMock.Object);
 
-        // Setup default secret values for Azurite (local dev)
-        _secretServiceMock.Setup(x => x.GetRequiredSecretAsync("DATA_STORAGE_ACCOUNT"))
+        // Setup default blob storage service for Azurite (local dev)
+        var mockContainerClient = new Mock<BlobContainerClient>();
+        var mockBlobClient = new Mock<BlobClient>();
+        
+        _blobStorageServiceMock.Setup(x => x.GetStorageAccountNameAsync(It.IsAny<CancellationToken>()))
             .ReturnsAsync("devstorageaccount1");
-        _secretServiceMock.Setup(x => x.GetRequiredSecretAsync("DATA_CONTAINER"))
+        _blobStorageServiceMock.Setup(x => x.GetContainerNameAsync(It.IsAny<CancellationToken>()))
             .ReturnsAsync("backups");
-        _secretServiceMock.Setup(x => x.GetRequiredSecretAsync("USE_AZURITE"))
-            .ReturnsAsync("true");
-        _secretServiceMock.Setup(x => x.GetRequiredSecretAsync("DATA_STORAGE_ACCOUNT_KEY"))
-            .ReturnsAsync("Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==");
-        _secretServiceMock.Setup(x => x.GetRequiredSecretAsync("DATA_STORAGE_BLOB_ENDPOINT"))
-            .ReturnsAsync("http://127.0.0.1:10000/devstorageaccount1");
+        _blobStorageServiceMock.Setup(x => x.IsUsingAzuriteAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(true);
+        _blobStorageServiceMock.Setup(x => x.GetBlobServiceClientAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new BlobServiceClient("UseDevelopmentStorage=true"));
     }
 
     #region Path Validation Tests
@@ -111,7 +113,7 @@ public class SasUrlServiceTests
         var ttl = 120;
 
         // Act
-        var result = await _sut.GenerateUploadSasUrlAsync(path, ttl);
+        var result = await _sut.GenerateUploadSasUrlAsync(path, ttlMinutes: ttl);
 
         // Assert
         result.TtlMinutes.Should().Be(ttl);
@@ -231,7 +233,7 @@ public class SasUrlServiceTests
         var path = "staging/device123/run456";
 
         // Act
-        var result = await _sut.GenerateUploadSasUrlAsync(path, ttl);
+        var result = await _sut.GenerateUploadSasUrlAsync(path, ttlMinutes: ttl);
 
         // Assert
         result.TtlMinutes.Should().Be(ttl);

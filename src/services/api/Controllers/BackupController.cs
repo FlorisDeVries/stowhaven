@@ -1,5 +1,6 @@
 ﻿using FlorisDeV.BackupApi.Models.Api.Requests;
 using FlorisDeV.BackupApi.Models.Api.Responses;
+using FlorisDeV.BackupApi.Models.State;
 using FlorisDeV.BackupApi.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -37,8 +38,11 @@ public partial class BackupController(
 
         LogStartingBackupRun(logger, request.DeviceId);
 
+        // Get client IP for SAS URL restriction
+        var clientIp = HttpContext.Connection.RemoteIpAddress?.ToString();
+
         // Start backup-run - let exceptions bubble up to GlobalExceptionFilter
-        var result = await backupRunService.StartBackupRunAsync(request.DeviceId, cancellationToken);
+        var result = await backupRunService.StartBackupRunAsync(request.DeviceId, clientIp, cancellationToken);
 
         var response = new StartBackupRunResponse
         {
@@ -81,8 +85,8 @@ public partial class BackupController(
 
         // Create commit job for async processing - let exceptions bubble up to GlobalExceptionFilter
         var commitJob = await backupRunService.CommitBackupRunAsync(
-            request.DeviceId, 
-            request.RunId, 
+            request.DeviceId,
+            request.RunId,
             request.ManifestBlobPath,
             cancellationToken);
 

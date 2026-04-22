@@ -17,15 +17,19 @@ public class BackupRunServiceTests
     private readonly Mock<TelemetryProvider> _telemetryMock;
     private readonly BackupRunService _sut;
 
+    private readonly Mock<IBackupEventPublisher> _eventPublisherMock;
+
     public BackupRunServiceTests()
     {
         _manifestManagerMock = new Mock<IManifestManager>();
         _sasUrlServiceMock = new Mock<ISasUrlService>();
+        _eventPublisherMock = new Mock<IBackupEventPublisher>();
         _telemetryMock = new Mock<TelemetryProvider>();
 
         _sut = new BackupRunService(
             _manifestManagerMock.Object,
             _sasUrlServiceMock.Object,
+            _eventPublisherMock.Object,
             _telemetryMock.Object);
     }
 
@@ -59,6 +63,7 @@ public class BackupRunServiceTests
         _sasUrlServiceMock
             .Setup(x => x.GenerateUploadSasUrlAsync(
                 It.IsAny<string>(),
+                It.IsAny<string?>(),
                 60,
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(new Models.Infrastructure.SasUrlInfo
@@ -103,9 +108,10 @@ public class BackupRunServiceTests
         _sasUrlServiceMock
             .Setup(x => x.GenerateUploadSasUrlAsync(
                 It.IsAny<string>(),
+                It.IsAny<string?>(),
                 It.IsAny<int?>(),
                 It.IsAny<CancellationToken>()))
-            .Callback<string, int?, CancellationToken>((path, ttl, ct) => capturedPath = path)
+            .Callback<string, string?, int?, CancellationToken>((path, ip, ttl, ct) => capturedPath = path)
             .ReturnsAsync(new Models.Infrastructure.SasUrlInfo
             {
                 Url = new Uri("https://storage.blob.core.windows.net/backups/staging/device/run?sig=token"),
@@ -142,6 +148,7 @@ public class BackupRunServiceTests
         _sasUrlServiceMock
             .Setup(x => x.GenerateUploadSasUrlAsync(
                 It.IsAny<string>(),
+                It.IsAny<string?>(),
                 60,
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(new Models.Infrastructure.SasUrlInfo
@@ -158,6 +165,7 @@ public class BackupRunServiceTests
         _sasUrlServiceMock.Verify(
             x => x.GenerateUploadSasUrlAsync(
                 It.IsAny<string>(),
+                It.IsAny<string?>(),
                 60,
                 It.IsAny<CancellationToken>()),
             Times.Once);
@@ -185,7 +193,7 @@ public class BackupRunServiceTests
             });
 
         _sasUrlServiceMock
-            .Setup(x => x.GenerateUploadSasUrlAsync(It.IsAny<string>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()))
+            .Setup(x => x.GenerateUploadSasUrlAsync(It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new Models.Infrastructure.SasUrlInfo
             {
                 Url = new Uri("https://storage.blob.core.windows.net/backups/staging/device/run?sig=token"),
@@ -227,7 +235,7 @@ public class BackupRunServiceTests
 
         // Should not call SAS service if manifest creation fails
         _sasUrlServiceMock.Verify(
-            x => x.GenerateUploadSasUrlAsync(It.IsAny<string>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()),
+            x => x.GenerateUploadSasUrlAsync(It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()),
             Times.Never);
     }
 
@@ -250,7 +258,7 @@ public class BackupRunServiceTests
 
         var expectedException = new InvalidOperationException("Storage account unavailable");
         _sasUrlServiceMock
-            .Setup(x => x.GenerateUploadSasUrlAsync(It.IsAny<string>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()))
+            .Setup(x => x.GenerateUploadSasUrlAsync(It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(expectedException);
 
         // Act
@@ -286,6 +294,7 @@ public class BackupRunServiceTests
         _sasUrlServiceMock
             .Setup(x => x.GenerateUploadSasUrlAsync(
                 It.IsAny<string>(),
+                It.IsAny<string?>(),
                 It.IsAny<int?>(),
                 cts.Token))
             .ReturnsAsync(new Models.Infrastructure.SasUrlInfo
@@ -296,14 +305,14 @@ public class BackupRunServiceTests
             });
 
         // Act
-        await _sut.StartBackupRunAsync(deviceId, cts.Token);
+        await _sut.StartBackupRunAsync(deviceId, null, cts.Token);
 
         // Assert
         _manifestManagerMock.Verify(
             x => x.CreateBackupRunAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<DateTimeOffset>(), cts.Token),
             Times.Once);
         _sasUrlServiceMock.Verify(
-            x => x.GenerateUploadSasUrlAsync(It.IsAny<string>(), It.IsAny<int?>(), cts.Token),
+            x => x.GenerateUploadSasUrlAsync(It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<int?>(), cts.Token),
             Times.Once);
     }
 
@@ -318,19 +327,36 @@ public class BackupRunServiceTests
         // Arrange
         var deviceId = Guid.NewGuid();
         var runId = Guid.NewGuid();
+        var commitId = Guid.NewGuid();
 
-        var committedRun = new BackupRun
+        var commitJob = new CommitJob
+        {
+            CommitId = commitId,
+            DeviceId = deviceId,
+            RunId = runId,
+            Status = CommitJobStatus.Queued,
+            CreatedAt = DateTimeOffset.UtcNow
+        };
+
+        var backupRun = new BackupRun
         {
             DeviceId = deviceId,
             RunId = runId,
             StartedAt = DateTimeOffset.UtcNow.AddMinutes(-10),
-            CompletedAt = DateTimeOffset.UtcNow,
-            Status = BackupRunStatus.Succeeded
+            Status = BackupRunStatus.Queued
         };
 
         _manifestManagerMock
-            .Setup(x => x.CommitBackupRunAsync(deviceId, runId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(committedRun);
+            .Setup(x => x.GetBackupRunAsync(deviceId, runId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(backupRun);
+
+        _manifestManagerMock
+            .Setup(x => x.CreateCommitJobAsync(deviceId, runId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(commitJob);
+
+        _eventPublisherMock
+            .Setup(x => x.PublishBackupRunCommittedAsync(It.IsAny<CommitJob>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
 
         // Act
         var result = await _sut.CommitBackupRunAsync(deviceId, runId);
@@ -339,8 +365,8 @@ public class BackupRunServiceTests
         result.Should().NotBeNull();
         result.DeviceId.Should().Be(deviceId);
         result.RunId.Should().Be(runId);
-        result.Status.Should().Be(BackupRunStatus.Succeeded);
-        result.CompletedAt.Should().NotBeNull();
+        result.Status.Should().Be(CommitJobStatus.Queued);
+        result.CommitId.Should().Be(commitId);
     }
 
     [Fact]
@@ -351,23 +377,39 @@ public class BackupRunServiceTests
         var deviceId = Guid.NewGuid();
         var runId = Guid.NewGuid();
 
+        var backupRun = new BackupRun
+        {
+            DeviceId = deviceId,
+            RunId = runId,
+            StartedAt = DateTimeOffset.UtcNow.AddMinutes(-10),
+            Status = BackupRunStatus.Queued
+        };
+
         _manifestManagerMock
-            .Setup(x => x.CommitBackupRunAsync(deviceId, runId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new BackupRun
+            .Setup(x => x.GetBackupRunAsync(deviceId, runId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(backupRun);
+
+        _manifestManagerMock
+            .Setup(x => x.CreateCommitJobAsync(deviceId, runId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CommitJob
             {
+                CommitId = Guid.NewGuid(),
                 DeviceId = deviceId,
                 RunId = runId,
-                StartedAt = DateTimeOffset.UtcNow.AddMinutes(-10),
-                CompletedAt = DateTimeOffset.UtcNow,
-                Status = BackupRunStatus.Succeeded
+                Status = CommitJobStatus.Queued,
+                CreatedAt = DateTimeOffset.UtcNow
             });
+
+        _eventPublisherMock
+            .Setup(x => x.PublishBackupRunCommittedAsync(It.IsAny<CommitJob>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
 
         // Act
         await _sut.CommitBackupRunAsync(deviceId, runId);
 
         // Assert
         _manifestManagerMock.Verify(
-            x => x.CommitBackupRunAsync(deviceId, runId, It.IsAny<CancellationToken>()),
+            x => x.CreateCommitJobAsync(deviceId, runId, It.IsAny<CancellationToken>()),
             Times.Once);
     }
 
@@ -381,7 +423,7 @@ public class BackupRunServiceTests
         var expectedException = new InvalidOperationException("Commit failed");
 
         _manifestManagerMock
-            .Setup(x => x.CommitBackupRunAsync(deviceId, runId, It.IsAny<CancellationToken>()))
+            .Setup(x => x.GetBackupRunAsync(deviceId, runId, It.IsAny<CancellationToken>()))
             .ThrowsAsync(expectedException);
 
         // Act
@@ -401,52 +443,86 @@ public class BackupRunServiceTests
         var runId = Guid.NewGuid();
         var cts = new CancellationTokenSource();
 
+        var backupRun = new BackupRun
+        {
+            DeviceId = deviceId,
+            RunId = runId,
+            StartedAt = DateTimeOffset.UtcNow.AddMinutes(-10),
+            Status = BackupRunStatus.Queued
+        };
+
         _manifestManagerMock
-            .Setup(x => x.CommitBackupRunAsync(deviceId, runId, cts.Token))
-            .ReturnsAsync(new BackupRun
+            .Setup(x => x.GetBackupRunAsync(deviceId, runId, cts.Token))
+            .ReturnsAsync(backupRun);
+
+        _manifestManagerMock
+            .Setup(x => x.CreateCommitJobAsync(deviceId, runId, cts.Token))
+            .ReturnsAsync(new CommitJob
             {
+                CommitId = Guid.NewGuid(),
                 DeviceId = deviceId,
                 RunId = runId,
-                StartedAt = DateTimeOffset.UtcNow.AddMinutes(-10),
-                CompletedAt = DateTimeOffset.UtcNow,
-                Status = BackupRunStatus.Succeeded
+                Status = CommitJobStatus.Queued,
+                CreatedAt = DateTimeOffset.UtcNow
             });
 
+        _eventPublisherMock
+            .Setup(x => x.PublishBackupRunCommittedAsync(It.IsAny<CommitJob>(), It.IsAny<string>(), cts.Token))
+            .Returns(Task.CompletedTask);
+
         // Act
-        await _sut.CommitBackupRunAsync(deviceId, runId, cts.Token);
+        await _sut.CommitBackupRunAsync(deviceId, runId, null, cts.Token);
 
         // Assert
         _manifestManagerMock.Verify(
-            x => x.CommitBackupRunAsync(deviceId, runId, cts.Token),
+            x => x.CreateCommitJobAsync(deviceId, runId, cts.Token),
             Times.Once);
     }
 
     [Fact]
     [Trait("Category", "Unit")]
-    public async Task CommitBackupRunAsync_ReturnsCompletedRunWithTimestamp()
+    public async Task CommitBackupRunAsync_CreatesCommitJobWithTimestamp()
     {
         // Arrange
         var deviceId = Guid.NewGuid();
         var runId = Guid.NewGuid();
-        var completedAt = DateTimeOffset.UtcNow;
+        var createdAt = DateTimeOffset.UtcNow;
+
+        var backupRun = new BackupRun
+        {
+            DeviceId = deviceId,
+            RunId = runId,
+            StartedAt = DateTimeOffset.UtcNow.AddMinutes(-10),
+            Status = BackupRunStatus.Queued
+        };
+
+        var commitJob = new CommitJob
+        {
+            CommitId = Guid.NewGuid(),
+            DeviceId = deviceId,
+            RunId = runId,
+            Status = CommitJobStatus.Queued,
+            CreatedAt = createdAt
+        };
 
         _manifestManagerMock
-            .Setup(x => x.CommitBackupRunAsync(deviceId, runId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new BackupRun
-            {
-                DeviceId = deviceId,
-                RunId = runId,
-                StartedAt = DateTimeOffset.UtcNow.AddMinutes(-10),
-                CompletedAt = completedAt,
-                Status = BackupRunStatus.Succeeded
-            });
+            .Setup(x => x.GetBackupRunAsync(deviceId, runId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(backupRun);
+
+        _manifestManagerMock
+            .Setup(x => x.CreateCommitJobAsync(deviceId, runId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(commitJob);
+
+        _eventPublisherMock
+            .Setup(x => x.PublishBackupRunCommittedAsync(It.IsAny<CommitJob>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
 
         // Act
         var result = await _sut.CommitBackupRunAsync(deviceId, runId);
 
         // Assert
-        result.CompletedAt.Should().NotBeNull();
-        result.CompletedAt.Should().BeCloseTo(completedAt, TimeSpan.FromSeconds(1));
+        result.CreatedAt.Should().BeCloseTo(createdAt, TimeSpan.FromSeconds(1));
+        result.Status.Should().Be(CommitJobStatus.Queued);
     }
 
     #endregion

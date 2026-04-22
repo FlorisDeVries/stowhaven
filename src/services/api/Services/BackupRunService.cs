@@ -7,7 +7,7 @@ namespace FlorisDeV.BackupApi.Services;
 
 public interface IBackupRunService
 {
-    Task<BackupRunStartResult> StartBackupRunAsync(Guid deviceId, CancellationToken cancellationToken = default);
+    Task<BackupRunStartResult> StartBackupRunAsync(Guid deviceId, string? clientIp = null, CancellationToken cancellationToken = default);
     Task<CommitJob> CommitBackupRunAsync(Guid deviceId, Guid runId, string? manifestPath = null, CancellationToken cancellationToken = default);
     Task<CommitJob> GetCommitStatusAsync(Guid commitId, CancellationToken cancellationToken = default);
 }
@@ -19,7 +19,7 @@ public class BackupRunService(
     TelemetryProvider telemetry
 ) : IBackupRunService
 {
-    public async Task<BackupRunStartResult> StartBackupRunAsync(Guid deviceId, CancellationToken cancellationToken = default)
+    public async Task<BackupRunStartResult> StartBackupRunAsync(Guid deviceId, string? clientIp = null, CancellationToken cancellationToken = default)
     {
         using var activity = telemetry.ActivitySource.StartActivity("StartBackupRun");
         activity?.SetTag(ActivityAttributes.OperationName, "StartBackupRun");
@@ -37,9 +37,9 @@ public class BackupRunService(
 
             var run = await manifestManager.CreateBackupRunAsync(deviceId, runId, startedAt, cancellationToken);
 
-            // Create SaS URLs for upload
+            // Create SaS URLs for upload with optional IP restriction
             var devicePath = $"staging/{deviceId:N}/{runId:N}/";
-            var uploadSas = await sasUrlService.GenerateUploadSasUrlAsync(devicePath, ttlMinutes: 60, cancellationToken);
+            var uploadSas = await sasUrlService.GenerateUploadSasUrlAsync(devicePath, clientIp, ttlMinutes: 60, cancellationToken);
 
             var runStartDto = new BackupRunStartResult
             {

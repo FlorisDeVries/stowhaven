@@ -40,7 +40,7 @@ public partial class BackupProcessingService(
 
             // Load the CommitJob and update status to Processing
             var commitJob = await manifestManager.GetCommitJobAsync(backupEvent.CommitId, cancellationToken);
-            
+
             // IDEMPOTENCY CHECK: Verify the commit job hasn't already been processed
             if (commitJob.Status == CommitJobStatus.Succeeded)
             {
@@ -67,15 +67,15 @@ public partial class BackupProcessingService(
             var run = await manifestManager.GetBackupRunAsync(backupEvent.DeviceId, backupEvent.RunId, cancellationToken);
             run.Status = BackupRunStatus.Processing;
             await manifestManager.UpdateBackupRunAsync(
-                backupEvent.DeviceId, 
-                backupEvent.RunId, 
-                run, 
+                backupEvent.DeviceId,
+                backupEvent.RunId,
+                run,
                 cancellationToken);
 
             // Download and parse run-manifest.json
             var manifestPath = backupEvent.ManifestPath ?? $"runs/{backupEvent.DeviceId:N}/{backupEvent.RunId:N}/run-manifest.json";
             var manifest = await DownloadManifestAsync(manifestPath, cancellationToken);
-            
+
             if (manifest == null)
             {
                 throw new InvalidOperationException($"Run manifest not found at {manifestPath}");
@@ -90,10 +90,10 @@ public partial class BackupProcessingService(
             foreach (var fileEntry in manifest.Files)
             {
                 await ProcessFileEntryAsync(
-                    backupEvent.DeviceId, 
-                    backupEvent.RunId, 
-                    fileEntry, 
-                    containerClient, 
+                    backupEvent.DeviceId,
+                    backupEvent.RunId,
+                    fileEntry,
+                    containerClient,
                     cancellationToken);
                 processedCount++;
             }
@@ -102,10 +102,10 @@ public partial class BackupProcessingService(
             foreach (var deletedPath in manifest.Deleted)
             {
                 await ProcessFileDeletionAsync(
-                    backupEvent.DeviceId, 
-                    backupEvent.RunId, 
-                    deletedPath, 
-                    containerClient, 
+                    backupEvent.DeviceId,
+                    backupEvent.RunId,
+                    deletedPath,
+                    containerClient,
                     cancellationToken);
                 processedCount++;
             }
@@ -114,8 +114,8 @@ public partial class BackupProcessingService(
 
             // Update run status in manifest
             await UpdateBackupRunStatusAsync(
-                backupEvent.DeviceId, 
-                backupEvent.RunId, 
+                backupEvent.DeviceId,
+                backupEvent.RunId,
                 BackupRunStatus.Succeeded,
                 manifest.Files.Count,
                 cancellationToken);
@@ -162,7 +162,7 @@ public partial class BackupProcessingService(
                     BackupRunStatus.Failed,
                     0,
                     cancellationToken);
-                
+
                 // Update CommitJob status to Failed
                 var commitJob = await manifestManager.GetCommitJobAsync(backupEvent.CommitId, cancellationToken);
                 commitJob.Status = CommitJobStatus.Failed;
@@ -188,7 +188,7 @@ public partial class BackupProcessingService(
         {
             var downloadResponse = await blobClient.DownloadContentAsync(cancellationToken);
             var content = downloadResponse.Value.Content.ToString();
-            
+
             var manifest = JsonSerializer.Deserialize<RunManifest>(content, new JsonSerializerOptions
             {
                 PropertyNameCaseInsensitive = true
@@ -223,7 +223,7 @@ public partial class BackupProcessingService(
         // Create new FileVersion (Active)
         var newVersion = new FileVersion
         {
-            DeviceId = deviceId.ToString("N"),
+            DeviceId = deviceId,
             UniqueFileId = fileEntry.UniqueFileId,
             RelativePath = fileEntry.RelativePath,
             Sha256 = fileEntry.Sha256,
@@ -237,16 +237,16 @@ public partial class BackupProcessingService(
         if (existingFile != null && !existingFile.IsDeleted)
         {
             await RetireFileVersionAsync(
-                deviceId, 
-                existingFile.CurrentVersionId, 
-                containerClient, 
+                deviceId,
+                existingFile.CurrentVersionId,
+                containerClient,
                 cancellationToken);
         }
 
         // Update/create FileEntry
         var fileEntryRecord = new FileEntry
         {
-            DeviceId = deviceId.ToString("N"),
+            DeviceId = deviceId,
             RelativePath = fileEntry.RelativePath,
             CurrentVersionId = fileEntry.UniqueFileId,
             Size = fileEntry.Size,
@@ -271,7 +271,7 @@ public partial class BackupProcessingService(
 
         // Load existing FileEntry
         var existingFile = await manifestManager.GetFileEntryAsync(deviceId, relativePath, cancellationToken);
-        
+
         if (existingFile == null || existingFile.IsDeleted)
         {
             LogFileAlreadyDeleted(logger, relativePath);
@@ -298,7 +298,7 @@ public partial class BackupProcessingService(
 
         // Load the FileVersion
         var fileVersion = await manifestManager.GetFileVersionAsync(deviceId, uniqueFileId, cancellationToken);
-        
+
         if (fileVersion == null)
         {
             LogFileVersionNotFound(logger, uniqueFileId);
@@ -325,8 +325,8 @@ public partial class BackupProcessingService(
         await MoveBlobAsync(containerClient, sourceBlobName, destinationBlobName, cancellationToken, tags);
 
         // Update FileVersion state to Retired
-        var retiredVersion = fileVersion with 
-        { 
+        var retiredVersion = fileVersion with
+        {
             State = FileVersionState.Retired,
             RetiredAt = DateTimeOffset.UtcNow
         };
@@ -355,7 +355,7 @@ public partial class BackupProcessingService(
         // For ADLS Gen2 (HNS ON), we can use rename operation (no early deletion fees)
         // For standard storage, we use copy + delete
         var isAzurite = await blobStorageService.IsUsingAzuriteAsync(cancellationToken);
-        
+
         if (!isAzurite)
         {
             // Try ADLS Gen2 rename API (DataLakeFileClient)
@@ -364,9 +364,9 @@ public partial class BackupProcessingService(
                 var dataLakeServiceClient = await blobStorageService.GetDataLakeServiceClientAsync(cancellationToken);
                 var fileSystemClient = dataLakeServiceClient.GetFileSystemClient(await blobStorageService.GetContainerNameAsync(cancellationToken));
                 var sourceFileClient = fileSystemClient.GetFileClient(sourceBlobName);
-                
+
                 await sourceFileClient.RenameAsync(destinationBlobName, cancellationToken: cancellationToken);
-                
+
                 // Set blob index tags if provided (after rename)
                 if (tags != null && tags.Count > 0)
                 {
@@ -374,7 +374,7 @@ public partial class BackupProcessingService(
                     var destBlobClient = containerClient.GetBlobClient(destinationBlobName);
                     await destBlobClient.SetTagsAsync(tags, cancellationToken: cancellationToken);
                 }
-                
+
                 LogBlobMoved(logger, sourceBlobName, destinationBlobName);
                 return;
             }
@@ -411,7 +411,7 @@ public partial class BackupProcessingService(
         CancellationToken cancellationToken)
     {
         var run = await manifestManager.GetBackupRunAsync(deviceId, runId, cancellationToken);
-        
+
         if (run == null)
         {
             throw new InvalidOperationException($"Backup run {runId} for device {deviceId} not found");
@@ -465,7 +465,7 @@ public partial class BackupProcessingService(
     [LoggerMessage(LogLevel.Information, "Blob moved from {sourceBlobName} to {destinationBlobName}")]
     static partial void LogBlobMoved(ILogger logger, string sourceBlobName, string destinationBlobName);
 
-    [LoggerMessage(LogLevel.Warning, "Falling back to copy+delete for blob {sourceBlobName}: {exception}")]
+    [LoggerMessage(LogLevel.Warning, "Falling back to copy+delete for blob {sourceBlobName}")]
     static partial void LogFallingBackToCopyDelete(ILogger logger, string sourceBlobName, Exception exception);
 
     [LoggerMessage(LogLevel.Information, "Completed processing backup run {runId} for device {deviceId}. Processed {processedCount} items")]
