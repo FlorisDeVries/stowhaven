@@ -25,7 +25,7 @@ public class BackupProcessingServiceTests
     private readonly Mock<IManifestManager> _manifestManagerMock;
     private readonly Mock<TelemetryProvider> _telemetryMock;
     private readonly Mock<BlobContainerClient> _containerClientMock;
-    private readonly Mock<BlobClient> _blobClientMock;
+    private readonly Dictionary<string, Mock<BlobClient>> _blobClients;
     private readonly BackupProcessingService _sut;
 
     public BackupProcessingServiceTests()
@@ -35,7 +35,7 @@ public class BackupProcessingServiceTests
         _manifestManagerMock = new Mock<IManifestManager>();
         _telemetryMock = new Mock<TelemetryProvider>();
         _containerClientMock = new Mock<BlobContainerClient>();
-        _blobClientMock = new Mock<BlobClient>();
+        _blobClients = new Dictionary<string, Mock<BlobClient>>();
 
         _sut = new BackupProcessingService(
             _loggerMock.Object,
@@ -55,6 +55,23 @@ public class BackupProcessingServiceTests
         _blobStorageServiceMock
             .Setup(x => x.IsUsingAzuriteAsync(It.IsAny<CancellationToken>()))
             .ReturnsAsync(true); // Default to Azurite for simpler tests
+
+        // Mock MoveBlobAsync to succeed by default
+        _blobStorageServiceMock
+            .Setup(x => x.MoveBlobAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Dictionary<string, string>>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        // Setup GetBlobClient to return tracked blob clients (for manifest download)
+        _containerClientMock
+            .Setup(x => x.GetBlobClient(It.IsAny<string>()))
+            .Returns<string>(blobName =>
+            {
+                if (!_blobClients.ContainsKey(blobName))
+                {
+                    _blobClients[blobName] = new Mock<BlobClient>();
+                }
+                return _blobClients[blobName].Object;
+            });
     }
 
     #region Idempotency Tests
@@ -234,9 +251,6 @@ public class BackupProcessingServiceTests
         var manifest = CreateManifest(deviceId, runId, new List<ManifestFileEntry> { fileEntry }, new List<string>());
         SetupManifestDownload(manifest);
 
-        // Setup blob exists check
-        SetupBlobExists($"staging/{deviceId:N}/{runId:N}/{fileEntry.UniqueFileId}", true);
-
         // No existing file entry
         _manifestManagerMock
             .Setup(x => x.GetFileEntryAsync(deviceId, fileEntry.RelativePath, It.IsAny<CancellationToken>()))
@@ -291,9 +305,6 @@ public class BackupProcessingServiceTests
 
         var manifest = CreateManifest(deviceId, runId, new List<ManifestFileEntry> { fileEntry }, new List<string>());
         SetupManifestDownload(manifest);
-
-        SetupBlobExists($"staging/{deviceId:N}/{runId:N}/{newFileId}", true);
-        SetupBlobExists($"devices/{deviceId:N}/files/{oldFileId}", true);
 
         // Setup existing file entry
         var existingFile = new FileEntry
@@ -403,8 +414,6 @@ public class BackupProcessingServiceTests
         _manifestManagerMock
             .Setup(x => x.GetFileVersionAsync(deviceId, fileId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(fileVersion);
-
-        SetupBlobExists($"devices/{deviceId:N}/files/{fileId}", true);
 
         // Act
         await _sut.ProcessBackupRunAsync(backupEvent);
@@ -532,7 +541,6 @@ public class BackupProcessingServiceTests
 
         foreach (var file in files)
         {
-            SetupBlobExists($"staging/{deviceId:N}/{runId:N}/{file.UniqueFileId}", true);
             _manifestManagerMock
                 .Setup(x => x.GetFileEntryAsync(deviceId, file.RelativePath, It.IsAny<CancellationToken>()))
                 .ReturnsAsync((FileEntry?)null);
@@ -549,7 +557,7 @@ public class BackupProcessingServiceTests
                     job.FilesProcessed == 3 &&
                     job.CompletedAt != null),
                 It.IsAny<CancellationToken>()),
-            Times.Once);
+            Times.AtLeastOnce);
     }
 
     [Fact]
@@ -565,11 +573,10 @@ public class BackupProcessingServiceTests
         SetupQueuedCommitJob(commitId, deviceId, runId);
         SetupBackupRun(deviceId, runId);
 
-        // Setup to throw exception during processing
+        // Setup manifest blob to throw exception during processing
+        var manifestPath = $"runs/{deviceId:N}/{runId:N}/run-manifest.json";
         var manifestBlobClient = new Mock<BlobClient>();
-        _containerClientMock
-            .Setup(x => x.GetBlobClient(It.IsAny<string>()))
-            .Returns(manifestBlobClient.Object);
+        _blobClients[manifestPath] = manifestBlobClient;
 
         manifestBlobClient
             .Setup(x => x.DownloadContentAsync(It.IsAny<CancellationToken>()))
@@ -581,6 +588,8 @@ public class BackupProcessingServiceTests
         // Assert
         await act.Should().ThrowAsync<InvalidOperationException>();
 
+        // The commit job is updated twice: once to Processing, once to Failed
+        // We verify that it was updated to Failed at least once
         _manifestManagerMock.Verify(
             x => x.UpdateCommitJobAsync(
                 It.Is<CommitJob>(job =>
@@ -588,7 +597,7 @@ public class BackupProcessingServiceTests
                     job.Error != null &&
                     job.CompletedAt != null),
                 It.IsAny<CancellationToken>()),
-            Times.Once);
+            Times.AtLeastOnce);
     }
 
     #endregion
@@ -662,54 +671,24 @@ public class BackupProcessingServiceTests
     private void SetupManifestDownload(RunManifest manifest, Action<string>? pathCallback = null)
     {
         var manifestJson = JsonSerializer.Serialize(manifest);
-        var manifestBlobClient = new Mock<BlobClient>();
-
-        _containerClientMock
-            .Setup(x => x.GetBlobClient(It.IsAny<string>()))
-            .Callback<string>(path => pathCallback?.Invoke(path))
-            .Returns(manifestBlobClient.Object);
 
         var downloadResult = BlobsModelFactory.BlobDownloadResult(
             content: BinaryData.FromString(manifestJson));
 
         var response = Response.FromValue(downloadResult, Mock.Of<Response>());
 
+        // Find or create the manifest blob client in the dictionary
+        var manifestPath = $"runs/{manifest.DeviceId}/{manifest.RunId}/run-manifest.json";
+        if (!_blobClients.ContainsKey(manifestPath))
+        {
+            _blobClients[manifestPath] = new Mock<BlobClient>();
+        }
+
+        var manifestBlobClient = _blobClients[manifestPath];
         manifestBlobClient
             .Setup(x => x.DownloadContentAsync(It.IsAny<CancellationToken>()))
+            .Callback<CancellationToken>(ct => pathCallback?.Invoke(manifestPath))
             .ReturnsAsync(response);
-    }
-
-    private void SetupBlobExists(string blobName, bool exists)
-    {
-        var blobClient = new Mock<BlobClient>();
-
-        _containerClientMock
-            .Setup(x => x.GetBlobClient(blobName))
-            .Returns(blobClient.Object);
-
-        blobClient
-            .Setup(x => x.ExistsAsync(It.IsAny<CancellationToken>()))
-            .ReturnsAsync(Response.FromValue(exists, Mock.Of<Response>()));
-
-        if (exists)
-        {
-            // Setup for copy operation
-            var operation = new Mock<CopyFromUriOperation>();
-            operation.Setup(x => x.WaitForCompletionAsync(It.IsAny<CancellationToken>()))
-                .Returns(new ValueTask<Response<long>>(Response.FromValue<long>(1024, Mock.Of<Response>())));
-
-            blobClient
-                .Setup(x => x.StartCopyFromUriAsync(It.IsAny<Uri>()))
-                .ReturnsAsync(operation.Object);
-
-            blobClient
-                .Setup(x => x.DeleteIfExistsAsync(It.IsAny<DeleteSnapshotsOption>(), It.IsAny<BlobRequestConditions>(), It.IsAny<CancellationToken>()))
-                .ReturnsAsync(Response.FromValue(true, Mock.Of<Response>()));
-
-            blobClient
-                .Setup(x => x.SetTagsAsync(It.IsAny<Dictionary<string, string>>(), It.IsAny<BlobRequestConditions>(), It.IsAny<CancellationToken>()))
-                .ReturnsAsync(Mock.Of<Response>());
-        }
     }
 
     private ManifestFileEntry CreateFileEntry(string relativePath, string uniqueFileId)

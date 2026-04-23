@@ -218,7 +218,7 @@ public partial class BackupProcessingService(
         var sourceBlobName = $"staging/{deviceId:N}/{runId:N}/{fileEntry.UniqueFileId}";
         var destinationBlobName = $"devices/{deviceId:N}/files/{fileEntry.UniqueFileId}";
 
-        await MoveBlobAsync(containerClient, sourceBlobName, destinationBlobName, cancellationToken);
+        await blobStorageService.MoveBlobAsync(sourceBlobName, destinationBlobName, null, cancellationToken);
 
         // Create new FileVersion (Active)
         var newVersion = new FileVersion
@@ -322,7 +322,7 @@ public partial class BackupProcessingService(
             { "deviceId", deviceId.ToString("N") }
         };
 
-        await MoveBlobAsync(containerClient, sourceBlobName, destinationBlobName, cancellationToken, tags);
+        await blobStorageService.MoveBlobAsync(sourceBlobName, destinationBlobName, tags, cancellationToken);
 
         // Update FileVersion state to Retired
         var retiredVersion = fileVersion with
@@ -333,74 +333,6 @@ public partial class BackupProcessingService(
         await manifestManager.SaveFileVersionAsync(retiredVersion, cancellationToken);
 
         LogFileVersionRetired(logger, uniqueFileId);
-    }
-
-    private async Task MoveBlobAsync(
-        BlobContainerClient containerClient,
-        string sourceBlobName,
-        string destinationBlobName,
-        CancellationToken cancellationToken,
-        Dictionary<string, string>? tags = null)
-    {
-        var sourceBlobClient = containerClient.GetBlobClient(sourceBlobName);
-        var destinationBlobClient = containerClient.GetBlobClient(destinationBlobName);
-
-        // Check if source exists
-        if (!await sourceBlobClient.ExistsAsync(cancellationToken))
-        {
-            LogSourceBlobNotFound(logger, sourceBlobName);
-            throw new InvalidOperationException($"Source blob not found: {sourceBlobName}");
-        }
-
-        // For ADLS Gen2 (HNS ON), we can use rename operation (no early deletion fees)
-        // For standard storage, we use copy + delete
-        var isAzurite = await blobStorageService.IsUsingAzuriteAsync(cancellationToken);
-
-        if (!isAzurite)
-        {
-            // Try ADLS Gen2 rename API (DataLakeFileClient)
-            try
-            {
-                var dataLakeServiceClient = await blobStorageService.GetDataLakeServiceClientAsync(cancellationToken);
-                var fileSystemClient = dataLakeServiceClient.GetFileSystemClient(await blobStorageService.GetContainerNameAsync(cancellationToken));
-                var sourceFileClient = fileSystemClient.GetFileClient(sourceBlobName);
-
-                await sourceFileClient.RenameAsync(destinationBlobName, cancellationToken: cancellationToken);
-
-                // Set blob index tags if provided (after rename)
-                if (tags != null && tags.Count > 0)
-                {
-                    var destFileClient = fileSystemClient.GetFileClient(destinationBlobName);
-                    var destBlobClient = containerClient.GetBlobClient(destinationBlobName);
-                    await destBlobClient.SetTagsAsync(tags, cancellationToken: cancellationToken);
-                }
-
-                LogBlobMoved(logger, sourceBlobName, destinationBlobName);
-                return;
-            }
-            catch (Exception ex)
-            {
-                // Fall back to copy + delete if rename fails
-                LogFallingBackToCopyDelete(logger, sourceBlobName, ex);
-            }
-        }
-
-        // Fallback: Copy + Delete
-        var copyOperation = await destinationBlobClient.StartCopyFromUriAsync(
-            sourceBlobClient.Uri,
-            cancellationToken: cancellationToken);
-
-        await copyOperation.WaitForCompletionAsync(cancellationToken);
-
-        await sourceBlobClient.DeleteIfExistsAsync(cancellationToken: cancellationToken);
-
-        // Set blob index tags if provided
-        if (tags != null && tags.Count > 0)
-        {
-            await destinationBlobClient.SetTagsAsync(tags, cancellationToken: cancellationToken);
-        }
-
-        LogBlobMoved(logger, sourceBlobName, destinationBlobName);
     }
 
     private async Task UpdateBackupRunStatusAsync(
@@ -458,15 +390,6 @@ public partial class BackupProcessingService(
 
     [LoggerMessage(LogLevel.Warning, "File version already retired: {uniqueFileId}")]
     static partial void LogFileVersionAlreadyRetired(ILogger logger, string uniqueFileId);
-
-    [LoggerMessage(LogLevel.Warning, "Source blob not found: {sourceBlobName}")]
-    static partial void LogSourceBlobNotFound(ILogger logger, string sourceBlobName);
-
-    [LoggerMessage(LogLevel.Information, "Blob moved from {sourceBlobName} to {destinationBlobName}")]
-    static partial void LogBlobMoved(ILogger logger, string sourceBlobName, string destinationBlobName);
-
-    [LoggerMessage(LogLevel.Warning, "Falling back to copy+delete for blob {sourceBlobName}")]
-    static partial void LogFallingBackToCopyDelete(ILogger logger, string sourceBlobName, Exception exception);
 
     [LoggerMessage(LogLevel.Information, "Completed processing backup run {runId} for device {deviceId}. Processed {processedCount} items")]
     static partial void LogProcessingCompleted(ILogger logger, Guid deviceId, Guid runId, int processedCount);

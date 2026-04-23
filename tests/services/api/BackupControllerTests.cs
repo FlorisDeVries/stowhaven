@@ -6,9 +6,11 @@ using FlorisDeV.BackupApi.Models.Application;
 using FlorisDeV.BackupApi.Models.Infrastructure;
 using FlorisDeV.BackupApi.Models.State;
 using FlorisDeV.BackupApi.Services;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 using Moq;
+using System.Net;
 
 namespace FlorisDeV.BackupApi.Tests;
 
@@ -29,6 +31,14 @@ public class BackupControllerTests
         _sut = new BackupController(
             _backupRunServiceMock.Object,
             _loggerMock.Object);
+
+        // Setup HttpContext with mock connection for RemoteIpAddress
+        var mockHttpContext = new DefaultHttpContext();
+        mockHttpContext.Connection.RemoteIpAddress = IPAddress.Parse("127.0.0.1");
+        _sut.ControllerContext = new ControllerContext
+        {
+            HttpContext = mockHttpContext
+        };
     }
 
     #region StartBackupRun Tests
@@ -258,7 +268,10 @@ public class BackupControllerTests
 
         // Assert
         result.Should().NotBeNull();
-        result.Should().BeOfType<OkResult>();
+        result.Result.Should().BeOfType<AcceptedAtActionResult>();
+
+        var acceptedResult = result.Result as AcceptedAtActionResult;
+        acceptedResult!.Value.Should().BeOfType<CommitBackupRunResponse>();
     }
 
     [Fact]

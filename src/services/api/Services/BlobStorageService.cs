@@ -49,6 +49,15 @@ public interface IBlobStorageService
     /// Checks if running in local development mode (Azurite).
     /// </summary>
     Task<bool> IsUsingAzuriteAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Moves a blob from source to destination, using rename (ADLS Gen2) or copy+delete.
+    /// </summary>
+    Task MoveBlobAsync(
+        string sourceBlobName,
+        string destinationBlobName,
+        Dictionary<string, string>? tags = null,
+        CancellationToken cancellationToken = default);
 }
 
 public partial class BlobStorageService(
@@ -228,6 +237,68 @@ public partial class BlobStorageService(
         var useAzurite = await secretService.GetRequiredSecretAsync("USE_AZURITE");
         _isUsingAzurite = bool.TryParse(useAzurite, out var result) && result;
         return _isUsingAzurite.Value;
+    }
+
+    public async Task MoveBlobAsync(
+        string sourceBlobName,
+        string destinationBlobName,
+        Dictionary<string, string>? tags = null,
+        CancellationToken cancellationToken = default)
+    {
+        var containerClient = await GetContainerClientAsync(cancellationToken);
+        var sourceBlobClient = containerClient.GetBlobClient(sourceBlobName);
+        var destinationBlobClient = containerClient.GetBlobClient(destinationBlobName);
+
+        // Check if source exists
+        if (!await sourceBlobClient.ExistsAsync(cancellationToken))
+        {
+            throw new InvalidOperationException($"Source blob not found: {sourceBlobName}");
+        }
+
+        // For ADLS Gen2 (HNS ON), we can use rename operation (no early deletion fees)
+        // For standard storage, we use copy + delete
+        var isAzurite = await IsUsingAzuriteAsync(cancellationToken);
+
+        if (!isAzurite)
+        {
+            // Try ADLS Gen2 rename API (DataLakeFileClient)
+            try
+            {
+                var dataLakeServiceClient = await GetDataLakeServiceClientAsync(cancellationToken);
+                var fileSystemClient = dataLakeServiceClient.GetFileSystemClient(await GetContainerNameAsync(cancellationToken));
+                var sourceFileClient = fileSystemClient.GetFileClient(sourceBlobName);
+
+                await sourceFileClient.RenameAsync(destinationBlobName, cancellationToken: cancellationToken);
+
+                // Set blob index tags if provided (after rename)
+                if (tags != null && tags.Count > 0)
+                {
+                    var destBlobClient = containerClient.GetBlobClient(destinationBlobName);
+                    await destBlobClient.SetTagsAsync(tags, cancellationToken: cancellationToken);
+                }
+
+                return;
+            }
+            catch (Exception)
+            {
+                // Fall back to copy + delete if rename fails
+            }
+        }
+
+        // Fallback: Copy + Delete
+        var copyOperation = await destinationBlobClient.StartCopyFromUriAsync(
+            sourceBlobClient.Uri,
+            cancellationToken: cancellationToken);
+
+        await copyOperation.WaitForCompletionAsync(cancellationToken);
+
+        await sourceBlobClient.DeleteIfExistsAsync(cancellationToken: cancellationToken);
+
+        // Set blob index tags if provided
+        if (tags != null && tags.Count > 0)
+        {
+            await destinationBlobClient.SetTagsAsync(tags, cancellationToken: cancellationToken);
+        }
     }
 
     #region Logging
