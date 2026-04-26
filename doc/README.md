@@ -11,7 +11,7 @@ The service supports:
 * 🔄 **Async commit pipeline** via Dapr pub/sub and background worker
 * 📁 **Centralized manifest/state** stored in Azure Table Storage
 * 🧊 **Lifecycle policies** automatically moving old backups to Archive to reduce cost
-* 🌩️ Full **Infrastructure-as-Code** (Terraform) and **CI/CD** (GitHub Actions)
+* 🌩️ Full **Infrastructure-as-Code** (Bicep) and **CI/CD** (GitHub Actions)
 
 This repository includes everything needed to deploy and operate the backup API and its supporting infrastructure.
 
@@ -37,13 +37,10 @@ This repository includes everything needed to deploy and operate the backup API 
 │       ├── healthchecks/
 │       └── logging/
 │
-├── deploy/terraform/                 # Infrastructure-as-Code
-│   ├── main.tf                       # Root deployment
-│   ├── storage.tf                    # Blob storage + containers
-│   ├── container_app.tf              # API + worker container apps
-│   ├── dapr_components.tf            # Dapr state-store + pubsub config
-│   ├── iam.tf                        # Managed identity + RBAC
-│   └── variables.tf / outputs.tf
+├── deploy/bicep/                     # Infrastructure-as-Code
+│   ├── main.bicep                    # Root deployment
+│   ├── main.bicepparam               # Parameter defaults
+│   └── modules/                      # Storage, compute, registry, monitoring, Dapr infra
 │
 ├── tests/                            # Tests for API + worker
 ├── .github/workflows/                # GitHub Actions pipelines

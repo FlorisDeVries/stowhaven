@@ -104,4 +104,32 @@ public class BackupClientOptions
     /// Maximum time in seconds to wait for the server-side commit worker to complete.
     /// </summary>
     public int CommitStatusTimeoutSeconds { get; init; } = 600;
+
+    /// <summary>
+    /// Optional client-side encryption configuration. ServerSideOnly mode uploads plaintext and relies on Azure Storage encryption at rest.
+    /// ClientAndServer mode encrypts files locally and writes a generated recovery phrase to disk for the user to store offline.
+    /// </summary>
+    public BackupEncryptionOptions Encryption { get; init; } = new();
+}
+
+public sealed class BackupEncryptionOptions
+{
+    public BackupEncryptionMode Mode { get; init; } = BackupEncryptionMode.ServerSideOnly;
+
+    /// <summary>
+    /// Path to the local JSON file containing the generated zero-knowledge recovery phrase.
+    /// If omitted, a file is created under the user's application data folder.
+    /// </summary>
+    public string? RecoveryPhraseFilePath { get; init; }
+
+    /// <summary>
+    /// PBKDF2 iteration count used to derive the master key from the recovery phrase.
+    /// </summary>
+    public int KdfIterations { get; init; } = 600_000;
+}
+
+public enum BackupEncryptionMode
+{
+    ServerSideOnly,
+    ClientAndServer
 }

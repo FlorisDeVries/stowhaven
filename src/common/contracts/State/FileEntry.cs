@@ -1,3 +1,5 @@
+using FlorisDeV.BackupContracts.Manifest;
+
 namespace FlorisDeV.BackupContracts.State;
 
 /// <summary>
@@ -27,6 +29,7 @@ public sealed record FileVersion
     public required string RelativePath { get; init; }
     public required string Sha256 { get; init; }
     public required long Size { get; init; }
+    public FileEncryptionMetadata? Encryption { get; init; }
     public required DateTimeOffset CreatedAt { get; init; }
     public DateTimeOffset? RetiredAt { get; init; }
     public required FileVersionState State { get; init; }

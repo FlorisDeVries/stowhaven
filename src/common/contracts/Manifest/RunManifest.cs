@@ -26,4 +26,20 @@ public sealed record ManifestFileEntry
     public required string Sha256 { get; init; }
     public required long Size { get; init; }
     public required DateTimeOffset Mtime { get; init; }
+    public FileEncryptionMetadata? Encryption { get; init; }
+}
+
+public sealed record FileEncryptionMetadata
+{
+    public required string Mode { get; init; }
+    public required string Algorithm { get; init; }
+    public required string KeyWrapAlgorithm { get; init; }
+    public required string Kdf { get; init; }
+    public required int KdfIterations { get; init; }
+    public required string KdfSalt { get; init; }
+    public required string Iv { get; init; }
+    public required string WrappedKey { get; init; }
+    public required string AuthenticationTag { get; init; }
+    public string? PlaintextSha256 { get; init; }
+    public long? PlaintextSize { get; init; }
 }

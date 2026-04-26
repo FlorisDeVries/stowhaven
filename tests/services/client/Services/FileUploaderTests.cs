@@ -21,8 +21,10 @@ public class FileUploaderTests
     private readonly Mock<ILogger<FileUploader>> _mockLogger = new();
     private readonly Mock<ILogger<ResiliencePipelineProvider>> _mockResilienceLogger = new();
     private readonly Mock<IFileSystemService> _mockFileSystemService = new();
+    private readonly Mock<ILogger<BackupEncryptionService>> _mockEncryptionLogger = new();
     private readonly IOptions<BackupClientOptions> _options;
     private readonly ResiliencePipelineProvider _resiliencePipelines;
+    private readonly BackupEncryptionService _encryptionService;
     private readonly FileUploader _sut;
 
     public FileUploaderTests()
@@ -39,9 +41,13 @@ public class FileUploaderTests
         });
 
         _resiliencePipelines = new ResiliencePipelineProvider(_options, _mockResilienceLogger.Object);
+        _encryptionService = new BackupEncryptionService(
+            _mockFileSystemService.Object,
+            _options,
+            _mockEncryptionLogger.Object);
 
         _sut = new FileUploader(
-            _mockFileSystemService.Object,
+            _encryptionService,
             _resiliencePipelines,
             _options,
             _mockLogger.Object);
@@ -98,7 +104,7 @@ public class FileUploaderTests
 
         // Assert
         result.Should().HaveCount(1);
-        result[0].Should().Be(file);
+        result[0].Should().Be(WithUploadMetadata(file));
         mockBlobClient.Verify(x => x.UploadAsync(
             It.IsAny<Stream>(),
             It.Is<BlobUploadOptions>(o => o.Conditions != null),
@@ -149,7 +155,7 @@ public class FileUploaderTests
 
         // Assert
         result.Should().HaveCount(3);
-        result.Should().Contain(files);
+        result.Should().Contain(files.Select(WithUploadMetadata));
     }
 
     [Fact]
@@ -199,7 +205,7 @@ public class FileUploaderTests
 
         // Assert
         result.Should().HaveCount(1);
-        result[0].Should().Be(file1);
+        result[0].Should().Be(WithUploadMetadata(file1));
         result.Should().NotContain(file2);
     }
 
@@ -436,8 +442,14 @@ public class FileUploaderTests
 
         // Assert
         result.Should().HaveCount(1);
-        result[0].Should().Be(file1);
+        result[0].Should().Be(WithUploadMetadata(file1));
     }
+
+    private static TaggedFile WithUploadMetadata(TaggedFile file) => file with
+    {
+        UploadSha256 = file.Metadata.Hash,
+        UploadSizeBytes = file.Metadata.SizeBytes
+    };
 
     [Fact]
     [Trait("Category", "Unit")]

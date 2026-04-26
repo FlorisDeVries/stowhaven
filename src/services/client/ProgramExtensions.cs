@@ -24,6 +24,7 @@ public static class ProgramExtensions
         services.AddSingleton<IBackupStateService, BackupStateService>();
         services.AddSingleton<BackupDeltaComputer>();
         services.AddSingleton<IBackupScanner, BackupScanner>();
+        services.AddSingleton<IBackupEncryptionService, BackupEncryptionService>();
         services.AddSingleton<IFileUploader, FileUploader>();
         services.AddTransient<IBackupService, BackupService>();
     }

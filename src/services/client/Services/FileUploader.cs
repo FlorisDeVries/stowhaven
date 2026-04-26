@@ -18,7 +18,7 @@ namespace FlorisDeV.BackupClient.Services;
 /// Handles parallel file uploads to Azure Blob Storage with retry logic and progress tracking.
 /// </summary>
 public partial class FileUploader(
-    IFileSystemService fileSystemService,
+    IBackupEncryptionService encryptionService,
     ResiliencePipelineProvider resiliencePipelines,
     IOptions<BackupClientOptions> options,
     ILogger<FileUploader> logger)
@@ -61,10 +61,10 @@ public partial class FileUploader(
             await throttler.WaitAsync(cancellationToken);
             try
             {
-                await UploadSingleFileAsync(containerClient, taggedFile, cancellationToken);
+                var uploadedFile = await UploadSingleFileAsync(containerClient, taggedFile, cancellationToken);
 
                 // Track successfully uploaded file (ConcurrentBag is thread-safe)
-                uploadedFiles.Add(taggedFile);
+                uploadedFiles.Add(uploadedFile);
                 var currentCount = Interlocked.Increment(ref uploadedCount);
 
                 if (currentCount % 10 == 0 || currentCount == files.Count)
@@ -104,11 +104,12 @@ public partial class FileUploader(
     /// <summary>
     /// Uploads a single file with Polly resilience pipeline for automatic retry with exponential backoff.
     /// </summary>
-    private async Task UploadSingleFileAsync(
+    private async Task<TaggedFile> UploadSingleFileAsync(
         BlobContainerClient containerClient,
         TaggedFile taggedFile,
         CancellationToken cancellationToken)
     {
+        TaggedFile? uploadedFile = null;
         var storagePath = taggedFile.UniqueFileId ?? taggedFile.GetStoragePath();
         
         // Prepend base path to create full blob path within container
@@ -141,42 +142,46 @@ public partial class FileUploader(
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeoutCts.CancelAfter(TimeSpan.FromSeconds(_options.BlobUploadTimeoutSeconds));
 
-            // Get file stream
-            await using var fileStream = await fileSystemService.GetFileStreamAsync(
-                taggedFile.Metadata.FilePath, timeoutCts.Token);
+            await using var preparedUpload = await encryptionService.PrepareUploadAsync(taggedFile, timeoutCts.Token);
+            var uploadFile = preparedUpload.File;
+            var uploadSize = uploadFile.GetUploadSizeBytes();
 
-            if (taggedFile.Metadata.SizeBytes >= _options.LargeFileThresholdBytes)
+            if (uploadSize >= _options.LargeFileThresholdBytes)
             {
                 // Track progress for large files
                 var progress = new Progress<long>(bytesTransferred =>
                 {
-                    var percentage = taggedFile.Metadata.SizeBytes > 0
-                        ? (int)((bytesTransferred * 100) / taggedFile.Metadata.SizeBytes)
+                    var percentage = uploadSize > 0
+                        ? (int)((bytesTransferred * 100) / uploadSize)
                         : 0;
                     LogLargeFileProgress(taggedFile.Metadata.FilePath, bytesTransferred,
-                        taggedFile.Metadata.SizeBytes, percentage);
+                        uploadSize, percentage);
                 });
 
                 var uploadOptions = new Azure.Storage.Blobs.Models.BlobUploadOptions
                 {
                     ProgressHandler = progress,
-                    Metadata = CreateBackupMetadata(taggedFile),
+                    Metadata = CreateBackupMetadata(uploadFile),
                     Conditions = new BlobRequestConditions { IfNoneMatch = ETag.All }
                 };
 
-                await blobClient.UploadAsync(fileStream, uploadOptions, timeoutCts.Token);
+                await blobClient.UploadAsync(preparedUpload.Content, uploadOptions, timeoutCts.Token);
+                uploadedFile = uploadFile;
             }
             else
             {
                 var uploadOptions = new BlobUploadOptions
                 {
-                    Metadata = CreateBackupMetadata(taggedFile),
+                    Metadata = CreateBackupMetadata(uploadFile),
                     Conditions = new BlobRequestConditions { IfNoneMatch = ETag.All }
                 };
 
-                await blobClient.UploadAsync(fileStream, uploadOptions, timeoutCts.Token);
+                await blobClient.UploadAsync(preparedUpload.Content, uploadOptions, timeoutCts.Token);
+                uploadedFile = uploadFile;
             }
         }, cancellationToken);
+
+        return uploadedFile ?? throw new InvalidOperationException($"Upload did not produce metadata for {taggedFile.GetStoragePath()}");
     }
 
     private static IDictionary<string, string>? CreateBackupMetadata(TaggedFile taggedFile)
@@ -186,14 +191,15 @@ public partial class FileUploader(
             return null;
         }
 
-        if (string.IsNullOrWhiteSpace(taggedFile.Metadata.Hash))
+        var uploadSha256 = taggedFile.GetUploadSha256();
+        if (string.IsNullOrWhiteSpace(uploadSha256))
         {
             throw new InvalidOperationException($"Missing SHA-256 hash for {taggedFile.GetStoragePath()}");
         }
 
         return new Dictionary<string, string>
         {
-            [BackupBlobMetadata.Sha256] = taggedFile.Metadata.Hash,
+            [BackupBlobMetadata.Sha256] = uploadSha256,
             [BackupBlobMetadata.UniqueFileId] = taggedFile.UniqueFileId
         };
     }

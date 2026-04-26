@@ -523,10 +523,10 @@ public partial class BackupService(
                 RelativePath = file.GetRelativePath(),
                 UniqueFileId = file.UniqueFileId
                     ?? throw new InvalidOperationException($"Missing unique file ID for {file.GetStoragePath()}"),
-                Sha256 = file.Metadata.Hash
-                    ?? throw new InvalidOperationException($"Missing SHA-256 hash for {file.GetStoragePath()}"),
-                Size = file.Metadata.SizeBytes,
-                Mtime = file.Metadata.LastModified
+                Sha256 = file.GetUploadSha256(),
+                Size = file.GetUploadSizeBytes(),
+                Mtime = file.Metadata.LastModified,
+                Encryption = file.Encryption
             }).ToList(),
             Deleted = deletedFiles.Order(StringComparer.OrdinalIgnoreCase).ToList()
         };

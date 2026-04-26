@@ -1,10 +1,10 @@
 Verdict
-The project is not production-ready yet outside CI/CD. The foundation is good: clean .NET structure, tests pass, Dapr/state/pubsub concepts are present, observability is considered, and the design is directionally sound. The client/API staging protocol, run manifest upload, deletion-only commits, and local-state-after-commit flow are now implemented, but authentication/device ownership, commit-worker separation, server-side validation/idempotency, and production infrastructure wiring remain blockers.
+The project is still not production-ready yet outside CI/CD, but the original highest-risk architecture gaps have been addressed. The foundation is good: clean .NET structure, tests pass, Dapr/state/pubsub concepts are present, observability is considered, and the design is directionally sound. The client/API staging protocol, run manifest upload, deletion-only commits, local-state-after-commit flow, device ownership, worker split, server-side staged blob validation, commit idempotency, and production infrastructure wiring are now implemented. Remaining production gaps are mostly client productionization, restore, operational tooling, SaaS administration, and deeper manifest/state hardening.
 
 Validation run:
 
 dotnet test FlorisDeV.BackupApi.sln --no-restore --verbosity minimal
-Result: 397 tests passed, 0 failed
+Result: 400 tests passed, 0 failed
 Bicep validation was skipped because Azure CLI is not available in the environment.
 P0 production blockers
 1. Client and API backup protocol are incompatible — addressed
@@ -21,14 +21,14 @@ Current client behavior:
 Uploads changed blobs under staging/{deviceId}/{runId}/{uniqueFileId}.
 Generates server-compatible uniqueFileId values.
 Uploads runs/{deviceId}/{runId}/run-manifest.json.
-Calls commit with mandatory ManifestBlobPath.
+Calls commit with runId only; the API and worker derive the manifest path from deviceId/runId.
 Relevant locations:
 
 Upload path uses uniqueFileId when present: FileUploader.cs
-Commit uploads manifest and includes ManifestBlobPath: BackupService.cs
-API reads manifest at runs/{deviceId}/{runId}/run-manifest.json: BackupProcessingService.cs
-API moves staged source blob by uniqueFileId: BackupProcessingService.cs
-Remaining risk: server-side validation should derive or strictly validate ManifestBlobPath instead of trusting the client-provided path.
+Commit uploads manifest and sends only runId: BackupService.cs
+Worker reads manifest at runs/{deviceId}/{runId}/run-manifest.json: BackupProcessingService.cs
+Worker moves staged source blob by uniqueFileId: BackupProcessingService.cs
+Manifest path caller-control risk is addressed by deriving paths server-side.
 
 2. Deletion-only backups are not committed to the API — addressed
 If a run has only deleted files and no changed/new files, the client now starts a deletion-only run, uploads a manifest with deleted logical paths, commits the run, polls commit status, and only then removes local deleted-file state.
@@ -291,133 +291,64 @@ Current behavior:
 - compute.bicep defines the manifest and device registry state stores using `state.azure.tablestorage`.
 - The unused Redis output and local docker-compose Redis volume were removed.
 
-P2 implementation gaps
-Client
-Missing or incomplete for production:
+P2 implementation gaps and PRD readiness
 
-No generation of uniqueFileId matching the API contract.
-No manifest upload.
-No commit-status polling.
-No resume model for partially uploaded runs.
-No encryption implementation, although design assumes client-side encryption.
-No Windows service/scheduled task integration.
-No VSS/shadow-copy strategy for locked files.
-FileShare.Read may skip files being written or locked: FileSystemService.cs:300-308
-BackupDeltaComputer appears unused and uses absolute paths inconsistently with TaggedFile.GetStoragePath().
-API
-Missing or incomplete for production:
+Licensing/customer management is intentionally out of scope for this service and is assumed to be handled externally. The API still needs to enforce device ownership and revocation status, but it does not need to own subscriptions, billing, customer hierarchies, or license assignment for PRD.
 
-No restore/download endpoint.
-No customer model, device list endpoint, or device revocation endpoint.
-No admin/operator APIs.
-No per-device quota/policy.
-No manifest schema versioning.
-No server-side file-count/manifest-size limits.
-No poison-message handling endpoint/reporting.
-No reconciliation job.
-No stale run/staging cleanup beyond storage lifecycle.
-No explicit Dapr health/readiness checks for state/pubsub availability before accepting traffic.
-State model
-The current Dapr key/value state model can work for simple lookup, but production restore/status/listing will need queryable indexes. GetAllFileEntriesAsync() is explicitly a stub.
+Required for PRD
 
-Relevant location:
+Client productionization
 
-Stubbed production note: StateStoreManager.cs:426-436
-For Azure Table Storage, define the physical partition/row key strategy now.
+- Durable resume model for partially uploaded or partially committed runs. The client needs persisted pending upload/commit state so a process restart, PC reboot, or network loss does not strand local state behind server state.
+- Windows service or scheduled task integration. A PRD backup client must run unattended after install, survive reboots, and expose predictable logs/status.
+- VSS/shadow-copy strategy for locked and actively written files. Current direct reads can skip locked files; PRD needs a deterministic policy for snapshotting, retrying, or explicitly reporting skipped files.
+- Active/locked file read behavior. `FileShare.Read` can still miss files being written or locked; PRD needs either VSS-based reads or clear skipped-file reporting that affects backup health.
+- Remove or integrate `BackupDeltaComputer`. It is registered but appears unused by the current scan/upload path. Dead delta code should not remain in a PRD client.
+- Restore/decryption for `ClientAndServer` encryption. Backup upload encryption is implemented, but PRD cannot offer encrypted backups without a tested way to restore using the recovery phrase.
 
-Design review
-The design is strong conceptually, especially:
+Restore and operations
 
-direct client-to-Blob upload,
-short-lived SAS,
-async commit,
-state store as authority,
-immutable blob versions,
-lifecycle-based cost management.
-But it needs tightening before it can be the production baseline.
+- Restore/download flow. PRD needs at least list current files for a device, select files, mint download SAS URLs, download, decrypt when needed, and verify plaintext hashes.
+- Queryable state/index model for restore/list/status. The current key/value state model is insufficient for efficient listing and restore UX.
+- Implement `GetAllFileEntriesAsync()` or replace it with explicit indexed query APIs. The current stub blocks restore/list workflows.
+- Formal Azure Table partition/row key strategy. PRD needs defined partitioning for device file listings, file versions, commit jobs, and future operational queries.
+- Poison-message reporting and operational endpoint. Failed commit messages need visibility and a safe operator workflow.
+- Reconciliation/repair job. PRD needs a way to compare state, staged blobs, committed blobs, retired blobs, and commit progress records after partial failures.
+- Stale run/staging cleanup. Lifecycle policy helps eventually, but PRD needs explicit cleanup/reporting for abandoned runs and old staging prefixes.
+- Dapr component readiness checks. Sidecar health alone is not enough; readiness should verify state-store and pub/sub operations before accepting backup traffic.
 
-Design changes recommended
-Separate “control manifest” from “file manifest” clearly
+Manifest hardening
 
-Define the exact JSON schema.
-Include schemaVersion.
-Include encryptionMetadata.
-Include contentHash, size, mtime, relativePath, uniqueFileId.
-Include manifest hash/signature if needed.
-Make commit idempotency explicit
+- Manifest schema validation and version enforcement. `schemaVersion` exists, but the worker must reject unsupported versions and enforce required fields.
+- Server-side file-count and manifest-size limits. PRD must bound manifest memory, processing time, and abuse potential.
+- Exact manifest JSON schema documentation. The schema should include file identity, logical path, hashes, sizes, timestamps, deletion entries, and encryption metadata.
+- Encryption metadata validation. `ClientAndServer` entries should require coherent algorithm/KDF/wrapped-key metadata before commit state is accepted.
+- Optional manifest hash/signature. Not mandatory for first PRD if SAS and server-side validation remain strong, but useful later for tamper evidence.
 
-Define behavior for:
-repeated /commit-run,
-partially moved blobs,
-missing staged source but existing destination,
-duplicate uniqueFileId,
-failed old-version retirement.
-Define customer/device authorization
+Infrastructure and deployment
 
-The current design mentions binding deviceId to authenticated user/tenant, but implementation and schema are missing.
-This is mandatory for centralized customer machines.
-Define restore flow
+- Local Bicep validation tooling. PRD should have a documented local validation path in addition to CI.
+- Key Vault private networking plan. `keyVaultNetworkDefaultAction` is configurable, but actual private endpoint/VNet integration is still not implemented.
+- Audit stale Terraform references in architecture/deployment docs. The project uses Bicep; generic ignore examples for Terraform state files may remain.
+- Production deployment validation. Azure CLI/Bicep validation has not been run in this environment, so PRD needs validation in an Azure-capable environment.
 
-At minimum:
-list current files for device,
-request download SAS for selected paths,
-restore latest version,
-optionally restore deleted/retired versions within retention.
-Clarify encryption
+Not required for PRD in this service
 
-Design assumes client-side encryption but does not specify:
-key source,
-key rotation,
-metadata format,
-restore/decryption flow,
-recovery if the client machine is lost.
-Clarify infrastructure
+- Customer/licensing model. Out of scope and managed externally.
+- Full customer hierarchy or billing state. Out of scope.
+- Rich admin portal. Useful later, but not required if operator endpoints/logs cover PRD operations.
+- Per-device quota/policy inside this API. Only required if not enforced by the external customer/licensing system or storage-level controls.
 
-Design mentions Terraform, project uses Bicep.
-Decide and update docs.
-Keep Dapr component identity configuration aligned with system-assigned or user-assigned managed identity.
-Add private networking before setting Key Vault network default action to Deny.
-Clarify storage lifecycle assumptions
+Already addressed or no longer a PRD blocker
 
-The design assumes rename avoids early deletion fees.
-Production code must fail if rename is unavailable instead of silently copy/deleting.
-Recommended production-readiness roadmap
-Phase 1: make the happy path actually work
-Generate uniqueFileId in client.
-Upload files to staging/{deviceId:N}/{runId:N}/{uniqueFileId}.
-Upload runs/{deviceId:N}/{runId:N}/run-manifest.json.
-Include deleted files in manifest.
-Commit with server-derived manifest path.
-Poll commit-status until terminal state.
-Only then mark local state successful.
-Phase 2: secure multi-customer operation
-Extend the current device registration with licensing/customer binding.
-Keep device registry state separate from manifest/run state.
-Keep authorization checks on start-run, commit-run, and commit-status.
-Validate all paths and manifest content.
-Remove or isolate anonymous development auth.
-Phase 3: harden commit processing
-Split worker from API.
-Add idempotent per-file state transitions.
-Add size/hash validation.
-Add duplicate commit deduplication.
-Add poison queue observability.
-Add reconciliation/repair job.
-Phase 4: production infrastructure cleanup
-Fix secret/config naming.
-Keep Service Bus sender/receiver roles scoped to the namespace.
-Configure Key Vault private endpoint/VNet access and set network default action to Deny.
-Tighten Key Vault/network posture.
-Add Bicep validation in local tooling.
-Phase 5: restore and operations
-Implement restore/download flow.
-Add admin/customer/device APIs.
-Add metrics dashboards and alerts.
-Add backup success SLOs.
-Add run history and audit logs.
-Add documented client installation/update strategy.
+- Client/API staging protocol, run manifest upload, deletion-only commits, commit-status polling, and local-state-after-commit are implemented.
+- Server-side staged blob size/hash validation is implemented.
+- Commit idempotency, atomic claim, and per-file commit progress are implemented.
+- API/worker split is implemented.
+- Device ownership enforcement for backup routes is implemented.
+- Backup upload encryption is implemented for `ClientAndServer` mode; only restore/decryption remains.
 Summary
-The project has a good architecture direction and a decent codebase foundation, but the current client/API integration does not yet satisfy the design. The most urgent gap is the missing run-manifest.json and uniqueFileId-based staging protocol. After that, device authorization, commit idempotency, server-side verification, and production Dapr/secret wiring are the next blockers.
+The project has a good architecture direction and a stronger codebase foundation than the initial review. The client/API integration now follows the target-aware staging/manifest/commit design, server-side validation and idempotent commit processing are in place, device ownership is enforced, and optional zero-knowledge backup encryption exists for uploads.
 
-Current state: good prototype / early alpha.
-Production readiness: not ready yet.
+Current state: solid alpha.
+Production readiness: not ready yet; restore, operations, reconciliation, SaaS administration, durable resume, and production deployment validation remain the main gaps.

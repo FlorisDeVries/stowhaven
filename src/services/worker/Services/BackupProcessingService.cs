@@ -255,6 +255,7 @@ public partial class BackupProcessingService(
                 RelativePath = logicalPath,
                 Sha256 = fileEntry.Sha256,
                 Size = fileEntry.Size,
+                Encryption = fileEntry.Encryption,
                 CreatedAt = DateTimeOffset.UtcNow,
                 State = FileVersionState.Active
             };

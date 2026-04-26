@@ -1,4 +1,5 @@
 using FlorisDeV.BackupClient.Services;
+using FlorisDeV.BackupContracts.Manifest;
 
 namespace FlorisDeV.BackupClient.Models;
 
@@ -12,6 +13,21 @@ public record TaggedFile(string TargetName, string TargetDirectory, FileMetadata
     /// The logical path remains TargetName + relative path.
     /// </summary>
     public string? UniqueFileId { get; init; }
+
+    /// <summary>
+    /// SHA-256 hash of the exact bytes uploaded to blob storage. This differs from Metadata.Hash when client-side encryption is enabled.
+    /// </summary>
+    public string? UploadSha256 { get; init; }
+
+    /// <summary>
+    /// Size of the exact bytes uploaded to blob storage. This differs from Metadata.SizeBytes when client-side encryption is enabled.
+    /// </summary>
+    public long? UploadSizeBytes { get; init; }
+
+    /// <summary>
+    /// Optional client-side encryption metadata required to decrypt this uploaded file during restore.
+    /// </summary>
+    public FileEncryptionMetadata? Encryption { get; init; }
 
     /// <summary>
     /// Gets the relative path within the backup target using forward slashes.
@@ -30,4 +46,9 @@ public record TaggedFile(string TargetName, string TargetDirectory, FileMetadata
     {
         return $"{TargetName}/{GetRelativePath()}";
     }
+
+    public string GetUploadSha256()
+        => UploadSha256 ?? Metadata.Hash ?? throw new InvalidOperationException($"Missing upload SHA-256 for {GetStoragePath()}");
+
+    public long GetUploadSizeBytes() => UploadSizeBytes ?? Metadata.SizeBytes;
 }

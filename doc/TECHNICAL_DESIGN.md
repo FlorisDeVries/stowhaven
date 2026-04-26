@@ -5,7 +5,7 @@
 * Ultra-low cost cloud backup (~€2/TB/month when data is rarely read) by pushing bulk data straight to Azure Blob with minimal control-plane calls.
 * Zero exposure of account keys; clients get **time-boxed, least-privilege** write access only via SAS URLs.
 * **Incremental multi-file sync** (upload only new/changed files).
-* Leverage existing .NET Azure Container Apps infrastructure with Terraform IaC and GitHub Actions CI/CD.
+* Leverage existing .NET Azure Container Apps infrastructure with Bicep IaC and GitHub Actions CI/CD.
 * Centralize **backup manifest/state in a cloud state store** (Azure Table Storage via Dapr) for consistency, restore, and observability.
 
 **Non-Goals**
@@ -18,8 +18,8 @@
 
 * All clients are Windows.
 * Azure Subscription available with: Azure Container Apps, Azure Blob Storage (GPv2 with HNS ON), Microsoft Entra ID, Azure Table Storage.
-* Encryption is applied client-side before/while uploading.
-* Existing Terraform infrastructure can be extended for backup-specific resources.
+* Encryption mode is explicit: `ServerSideOnly` uploads plaintext bytes and relies on Azure Storage encryption at rest; `ClientAndServer` adds zero-knowledge client-side encryption before upload.
+* Existing Bicep infrastructure can be extended for backup-specific resources.
 * Dapr sidecars are enabled for all Container Apps to abstract state and messaging.
 
 ---
@@ -87,7 +87,7 @@ Single storage account + container (example: `backups`) with the following layou
 ```text
 /backups/
   devices/{deviceId}/
-    files/{uniqueFileId}           # immutable active file versions
+    files/{uniqueFileId}           # immutable active file versions; ciphertext when recovery-phrase encryption is enabled
     retired/{uniqueFileId}         # retired versions pending lifecycle cleanup
 
   staging/{deviceId}/{runId}/
@@ -117,6 +117,7 @@ Single storage account + container (example: `backups`) with the following layou
 **File Versioning**
 
 * Each file version gets a **unique blob name** under `/devices/{deviceId}/files/{uniqueFileId}`.
+* In recovery-phrase encryption mode, each blob contains encrypted bytes. The server stores encryption metadata but never receives the recovery phrase or plaintext file key.
 * Backup target names are logical metadata only. Physical blob names use `uniqueFileId`; they do not include customer/local file paths.
 * The **authoritative mapping** from `logicalPath` → `uniqueFileId` lives in the **state store** (Azure Table Storage via Dapr), not in a blob `manifest.json`.
 * Updated files get new `uniqueFileId`; previous versions are marked `Retired` and their blobs moved to `/devices/{deviceId}/retired/{uniqueFileId}`.
@@ -165,6 +166,7 @@ sequenceDiagram
 
     loop foreach changed/new file
       C->>C: Compute sha256, generate uniqueFileId
+      C->>C: Optional recovery-phrase encryption
       C->>B: Upload blob to staging/deviceId/runId/uniqueFileId
     end
 
@@ -197,6 +199,37 @@ sequenceDiagram
 > The commit endpoint is **asynchronous**: it enqueues a commit job and returns `202 Accepted` quickly to avoid long-running HTTP timeouts. Heavy work happens in the commit worker.
 
 > **HNS ON** enables directory-scoped SAS (`sr=d`) for `staging/{deviceId}/{runId}/`. This avoids per-file SAS overhead and keeps control-plane calls minimal.
+
+---
+
+### 4.1.1 Optional zero-knowledge client-side encryption
+
+The client supports two backup encryption modes:
+
+| Mode | Blob contents | Recovery material | Server visibility |
+| --- | --- | --- | --- |
+| `ServerSideOnly` | Original file bytes | None beyond normal Azure Storage encryption at rest | Server can read staged/committed bytes if it has storage access |
+| `ClientAndServer` | Client-encrypted ciphertext | A generated local recovery phrase file | Server sees only ciphertext and per-file decryption metadata |
+
+`ServerSideOnly` is the default compatibility mode. It is useful during development and for customers who choose server-side/Azure-managed encryption only.
+
+`ClientAndServer` is the zero-knowledge mode. On first use, the client generates a 12-token recovery phrase and writes it to a local JSON file. The configured path is `BackupClient:Encryption:RecoveryPhraseFilePath`; if omitted, the client uses the user application-data folder under `FlorisDeV/BackupClient/recovery-phrase.json`.
+
+Important recovery rule:
+
+> If the recovery phrase file and written-down phrase are both lost, encrypted backups are unrecoverable. The API, worker, storage account, and operator cannot decrypt the data.
+
+Current implementation details:
+
+* The recovery phrase is generated locally by the client and never sent to the API.
+* A master wrapping key is derived from the normalized phrase with PBKDF2-SHA256. The default iteration count is 600,000 and is configurable through `BackupClient:Encryption:KdfIterations`.
+* Each uploaded file receives a random per-file key.
+* File bytes are encrypted locally before upload with AES-256-CBC plus HMAC-SHA256 over IV + ciphertext.
+* The per-file key is wrapped with the phrase-derived master key using AES-256-GCM.
+* The manifest stores the ciphertext SHA-256 and ciphertext size so server-side staged-blob validation continues to validate the exact uploaded bytes.
+* The manifest/state also stores plaintext hash/size and decryption metadata needed for a future restore/decrypt flow.
+
+Restore/decryption is intentionally not a UI feature yet. The restore path must require the locally stored or manually re-entered recovery phrase, unwrap each file key, verify HMAC, decrypt, and verify the plaintext SHA-256 before writing restored files.
 
 ---
 
@@ -644,7 +677,20 @@ runs/deviceId/runId/run-manifest.json
       "uniqueFileId": "...",
       "sha256": "...",
       "size": 1234,
-      "mtime": "..."
+      "mtime": "...",
+      "encryption": {
+        "mode": "ClientAndServer",
+        "algorithm": "AES-256-CBC-HMAC-SHA256",
+        "keyWrapAlgorithm": "AES-256-GCM",
+        "kdf": "PBKDF2-SHA256",
+        "kdfIterations": 600000,
+        "kdfSalt": "...",
+        "iv": "...",
+        "wrappedKey": "...",
+        "authenticationTag": "...",
+        "plaintextSha256": "...",
+        "plaintextSize": 1234
+      }
     }
   ],
   "deleted": [
@@ -653,6 +699,8 @@ runs/deviceId/runId/run-manifest.json
   ]
 }
 ```
+
+In `ServerSideOnly` mode, `encryption` is omitted and `sha256`/`size` describe the original file bytes. In `ClientAndServer` mode, `sha256`/`size` describe the uploaded ciphertext bytes, while `encryption.plaintextSha256` and `encryption.plaintextSize` preserve plaintext integrity data for restore.
 
 ---
 
@@ -686,40 +734,47 @@ runs/deviceId/runId/run-manifest.json
 
 *(unchanged conceptually, updated to reflect manifest-in-state-store)*
 
-```terraform
-resource "azurerm_storage_management_policy" "backup_lifecycle" {
-  storage_account_id = azurerm_storage_account.backup.id
-
-  rule {
-    name    = "backup-tier-promotion"
-    enabled = true
-
-    filters {
-      prefix_match = ["devices/"]
-      blob_types   = ["blockBlob"]
-    }
-
-    actions {
-      base_blob {
-        tier_to_archive_after_days_since_creation = 30
-        delete_after_days_since_creation          = 210  # 180 (archive min) + 30 (grace)
-      }
-    }
-  }
-
-  rule {
-    name    = "retired-cleanup"
-    enabled = true
-
-    filters {
-      prefix_match = ["devices/*/retired/"]
-      blob_types   = ["blockBlob"]
-    }
-
-    actions {
-      base_blob {
-        delete_after_days_since_creation = 210
-      }
+```bicep
+resource lifecyclePolicy 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05-01' = {
+  name: 'default'
+  parent: storageAccount
+  properties: {
+    policy: {
+      rules: [
+        {
+          enabled: true
+          name: 'backup-tier-promotion'
+          type: 'Lifecycle'
+          definition: {
+            filters: {
+              blobTypes: [ 'blockBlob' ]
+              prefixMatch: [ 'backups/devices/' ]
+            }
+            actions: {
+              baseBlob: {
+                tierToArchive: { daysAfterModificationGreaterThan: 30 }
+                delete: { daysAfterModificationGreaterThan: 210 }
+              }
+            }
+          }
+        }
+        {
+          enabled: true
+          name: 'retired-cleanup'
+          type: 'Lifecycle'
+          definition: {
+            filters: {
+              blobTypes: [ 'blockBlob' ]
+              prefixMatch: [ 'backups/devices/' ]
+            }
+            actions: {
+              baseBlob: {
+                delete: { daysAfterModificationGreaterThan: 210 }
+              }
+            }
+          }
+        }
+      ]
     }
   }
 }
