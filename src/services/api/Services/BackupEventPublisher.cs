@@ -13,7 +13,7 @@ namespace FlorisDeV.BackupApi.Services;
 /// </summary>
 public interface IBackupEventPublisher
 {
-    Task PublishBackupRunCommittedAsync(CommitJob commitJob, string manifestPath, CancellationToken cancellationToken = default);
+    Task PublishBackupRunCommittedAsync(CommitJob commitJob, CancellationToken cancellationToken = default);
 }
 
 public partial class BackupEventPublisher(
@@ -22,7 +22,7 @@ public partial class BackupEventPublisher(
     TelemetryProvider telemetry
 ) : IBackupEventPublisher
 {
-    public async Task PublishBackupRunCommittedAsync(CommitJob commitJob, string manifestPath, CancellationToken cancellationToken = default)
+    public async Task PublishBackupRunCommittedAsync(CommitJob commitJob, CancellationToken cancellationToken = default)
     {
         using var activity = telemetry.ActivitySource.StartActivity("PublishBackupRunCommittedEvent");
         activity?.SetTag(ActivityAttributes.OperationName, "PublishBackupRunCommittedEvent");
@@ -35,6 +35,7 @@ public partial class BackupEventPublisher(
 
         try
         {
+            var manifestPath = GetManifestPath(commitJob.DeviceId, commitJob.RunId);
             var backupEvent = new BackupRunCommittedEvent
             {
                 CommitId = commitJob.CommitId,
@@ -89,15 +90,17 @@ public partial class BackupEventPublisher(
 
     #region Logging
 
-    [LoggerMessage(LogLevel.Information, 
+    private static string GetManifestPath(Guid deviceId, Guid runId) => $"runs/{deviceId:N}/{runId:N}/run-manifest.json";
+
+    [LoggerMessage(LogLevel.Information,
         "Publishing BackupRunCommitted event for device {deviceId}, run {runId}, staging path: {stagingPath}, manifest: {manifestPath}")]
     static partial void LogPublishingEvent(ILogger logger, Guid deviceId, Guid runId, string stagingPath, string manifestPath);
 
-    [LoggerMessage(LogLevel.Information, 
+    [LoggerMessage(LogLevel.Information,
         "Successfully published BackupRunCommitted event for device {deviceId}, run {runId}")]
     static partial void LogEventPublishedSuccess(ILogger logger, Guid deviceId, Guid runId);
 
-    [LoggerMessage(LogLevel.Error, 
+    [LoggerMessage(LogLevel.Error,
         "Failed to publish BackupRunCommitted event for device {deviceId}, run {runId}")]
     static partial void LogEventPublishingFailed(ILogger logger, Guid deviceId, Guid runId, Exception ex);
 

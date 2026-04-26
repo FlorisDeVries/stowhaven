@@ -32,18 +32,27 @@ param serviceBusNamespaceName string
 @secure()
 param serviceBusScaleConnectionString string
 
-@description('API key secret value (stored as a Container App secret)')
-@secure()
-param apiKey string
-
 @description('Container image tag to deploy')
 param imageTag string = 'latest'
 
 @description('Explicitly allow copy/delete fallback when ADLS Gen2 rename fails. Keep false in production unless early deletion cost and partial-failure risks are accepted.')
 param allowCopyDeleteFallback bool = false
 
+@description('Restrict upload SAS URLs to the API-observed client IP. Keep false for SaaS clients unless proxy/client IP behavior has been validated.')
+param enableSasIpRestriction bool = false
+
+@description('Optional Azure client ID for a user-assigned managed identity used by Dapr Azure components. Leave empty for system-assigned Container App identities.')
+param daprAzureClientId string = ''
+
 @description('Common resource tags')
 param tags object
+
+var daprAzureIdentityMetadata = empty(daprAzureClientId) ? [] : [
+  {
+    name: 'azureClientId'
+    value: daprAzureClientId
+  }
+]
 
 // ---------------------------------------------------------------------------
 // Container App Environment
@@ -75,12 +84,12 @@ resource daprSecretStore 'Microsoft.App/managedEnvironments/daprComponents@2023-
   properties: {
     componentType: 'secretstores.azure.keyvault'
     version: 'v1'
-    metadata: [
+    metadata: concat([
       {
         name: 'vaultName'
         value: keyVaultName
       }
-    ]
+    ], daprAzureIdentityMetadata)
   }
 }
 
@@ -94,7 +103,7 @@ resource daprManifestStateStore 'Microsoft.App/managedEnvironments/daprComponent
   properties: {
     componentType: 'state.azure.tablestorage'
     version: 'v1'
-    metadata: [
+    metadata: concat([
       {
         name: 'accountName'
         value: dataStorageAccountName
@@ -103,7 +112,7 @@ resource daprManifestStateStore 'Microsoft.App/managedEnvironments/daprComponent
         name: 'tableName'
         value: 'manifeststate'
       }
-    ]
+    ], daprAzureIdentityMetadata)
   }
 }
 
@@ -117,7 +126,7 @@ resource daprDeviceRegistryStateStore 'Microsoft.App/managedEnvironments/daprCom
   properties: {
     componentType: 'state.azure.tablestorage'
     version: 'v1'
-    metadata: [
+    metadata: concat([
       {
         name: 'accountName'
         value: dataStorageAccountName
@@ -126,7 +135,7 @@ resource daprDeviceRegistryStateStore 'Microsoft.App/managedEnvironments/daprCom
         name: 'tableName'
         value: 'deviceregistry'
       }
-    ]
+    ], daprAzureIdentityMetadata)
   }
 }
 
@@ -140,7 +149,7 @@ resource daprPubSub 'Microsoft.App/managedEnvironments/daprComponents@2023-05-01
   properties: {
     componentType: 'pubsub.azure.servicebus.topics'
     version: 'v1'
-    metadata: [
+    metadata: concat([
       {
         name: 'namespaceName'
         value: '${serviceBusNamespaceName}.servicebus.windows.net'
@@ -161,7 +170,7 @@ resource daprPubSub 'Microsoft.App/managedEnvironments/daprComponents@2023-05-01
         name: 'maxRetryCount'
         value: '3'
       }
-    ]
+    ], daprAzureIdentityMetadata)
   }
 }
 
@@ -202,12 +211,6 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
           identity: 'system' // Use system-assigned managed identity for ACR pull
         }
       ]
-      secrets: [
-        {
-          name: 'api-key'
-          value: apiKey
-        }
-      ]
     }
     template: {
       scale: {
@@ -236,8 +239,8 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
               value: string(allowCopyDeleteFallback)
             }
             {
-              name: 'API_KEY'
-              secretRef: 'api-key'
+              name: 'Backup__Sas__EnableIpRestriction'
+              value: string(enableSasIpRestriction)
             }
             {
               name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
@@ -278,10 +281,6 @@ resource workerContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
         }
       ]
       secrets: [
-        {
-          name: 'api-key'
-          value: apiKey
-        }
         {
           name: 'servicebus-scale-connection-string'
           value: serviceBusScaleConnectionString
@@ -332,10 +331,6 @@ resource workerContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
             {
               name: 'ALLOW_COPY_DELETE_FALLBACK'
               value: string(allowCopyDeleteFallback)
-            }
-            {
-              name: 'API_KEY'
-              secretRef: 'api-key'
             }
             {
               name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'

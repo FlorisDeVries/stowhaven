@@ -1,4 +1,5 @@
 ﻿using System.Diagnostics;
+using System.Net;
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -19,13 +20,8 @@ public static class ProgramExtensions
         {
             builder.Services.AddSingleton<TelemetryProvider>();
             builder.Services.AddScoped<IBlobStorageService, BlobStorageService>();
-            builder.Services.AddScoped<ISasUrlService, SasUrlService>();
-            builder.Services.AddScoped<IBackupRunService, BackupRunService>();
-            builder.Services.AddScoped<IBackupEventPublisher, BackupEventPublisher>();
             builder.Services.AddScoped<IManifestManager, ManifestManager>();
             builder.Services.AddScoped<ISecretService, SecretService>();
-            builder.Services.AddScoped<IDeviceRegistryService, DeviceRegistryService>();
-            builder.Services.AddScoped<IDeviceAuthorizationService, DeviceAuthorizationService>();
         }
 
         public void AddCustomDaprClient()
@@ -138,11 +134,44 @@ public static class ProgramExtensions
         {
             builder.Services.Configure<ForwardedHeadersOptions>(options =>
             {
-                options.ForwardedHeaders = ForwardedHeaders.All;
-                options.KnownIPNetworks.Clear();
-                options.KnownProxies.Clear();
+                var section = builder.Configuration.GetSection("ReverseProxy:ForwardedHeaders");
+
+                options.ForwardedHeaders = ForwardedHeaders.XForwardedFor
+                                           | ForwardedHeaders.XForwardedProto
+                                           | ForwardedHeaders.XForwardedHost;
+                options.ForwardLimit = section.GetValue<int?>("ForwardLimit") ?? 1;
+
+                foreach (var proxy in section.GetSection("KnownProxies").Get<string[]>() ?? [])
+                {
+                    options.KnownProxies.Add(ParseIpAddress(proxy, "known proxy"));
+                }
+
+                foreach (var network in section.GetSection("KnownNetworks").Get<string[]>() ?? [])
+                {
+                    options.KnownIPNetworks.Add(ParseIpNetwork(network));
+                }
             });
         }
+    }
+
+    private static IPAddress ParseIpAddress(string value, string description)
+    {
+        if (IPAddress.TryParse(value, out var address))
+        {
+            return address;
+        }
+
+        throw new InvalidOperationException($"Invalid reverse proxy {description}: '{value}'.");
+    }
+
+    private static System.Net.IPNetwork ParseIpNetwork(string value)
+    {
+        if (System.Net.IPNetwork.TryParse(value, out var network))
+        {
+            return network;
+        }
+
+        throw new InvalidOperationException($"Invalid reverse proxy known network CIDR: '{value}'.");
     }
 
     public static void AddCustomDaprIntegration(this IMvcBuilder builder)

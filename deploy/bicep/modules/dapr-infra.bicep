@@ -1,4 +1,4 @@
-// Dapr infrastructure: Redis Cache, Service Bus, and Key Vault
+// Dapr infrastructure: Service Bus and Key Vault
 // Note: Key Vault secrets are created in main.bicep after IAM role assignments are in place.
 
 @description('Azure region for resources')
@@ -13,27 +13,15 @@ param keyVaultName string
 @description('Azure AD tenant ID for Key Vault')
 param tenantId string
 
+@description('Key Vault network ACL default action. Allow is required unless private endpoint/VNet routing for Container Apps/Dapr has been configured.')
+@allowed([
+  'Allow'
+  'Deny'
+])
+param keyVaultNetworkDefaultAction string = 'Allow'
+
 @description('Common resource tags')
 param tags object
-
-// ---------------------------------------------------------------------------
-// Redis Cache (Dapr State Store)
-// ---------------------------------------------------------------------------
-
-resource redisCache 'Microsoft.Cache/redis@2023-08-01' = {
-  name: 'redis-${nameSuffix}'
-  location: location
-  properties: {
-    sku: {
-      name: 'Standard'
-      family: 'C'
-      capacity: 1
-    }
-    enableNonSslPort: false
-    minimumTlsVersion: '1.2'
-  }
-  tags: tags
-}
 
 // ---------------------------------------------------------------------------
 // Service Bus (Dapr Pub/Sub)
@@ -93,7 +81,7 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
     enableRbacAuthorization: true
     networkAcls: {
       bypass: 'AzureServices'
-      defaultAction: 'Allow' // Tighten to 'Deny' with explicit rules in production
+      defaultAction: keyVaultNetworkDefaultAction
     }
   }
   tags: tags
@@ -105,7 +93,6 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
 
 output keyVaultName string = keyVault.name
 output keyVaultId string = keyVault.id
-output redisCacheName string = redisCache.name
 output serviceBusNamespaceName string = serviceBusNamespace.name
 @secure()
 output serviceBusScaleConnectionString string = backupWorkerScaleListenRule.listKeys().primaryConnectionString

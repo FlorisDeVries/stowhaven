@@ -3,8 +3,8 @@ The project is not production-ready yet outside CI/CD. The foundation is good: c
 
 Validation run:
 
-dotnet test [FlorisDeV.BackupApi.sln](http://_vscodecontentref_/0) --no-restore --verbosity minimal
-Result: 395 tests passed, 0 failed
+dotnet test FlorisDeV.BackupApi.sln --no-restore --verbosity minimal
+Result: 397 tests passed, 0 failed
 Bicep validation was skipped because Azure CLI is not available in the environment.
 P0 production blockers
 1. Client and API backup protocol are incompatible — addressed
@@ -142,140 +142,154 @@ If rename fails and ALLOW_COPY_DELETE_FALLBACK is not true, the move fails and l
 If fallback is explicitly enabled, the move logs an Error and continues with copy/delete.
 Fallback copy uses create-only destination conditions to avoid overwriting an existing destination blob.
 
-Remaining recommendation: add blob leases or richer per-file idempotency markers together with the broader commit transaction hardening in item 9.
-9. Commit processing is not transactionally safe
+9. Commit processing is not transactionally safe — addressed
 ProcessFileEntryAsync moves the staged blob, saves a new FileVersion, retires the old version, then saves FileEntry.
 
-Relevant location:
+Mitigation:
 
-Multi-step commit flow: BackupProcessingService.cs:212-260
-Impact: failure halfway through can leave:
-
-blob moved but state not updated,
-old version retired but new mapping not saved,
-state says active but blob missing,
-retries failing because source blob was already moved.
-Recommendation:
-
-Make commit idempotent per file.
-Record per-file commit status.
-Treat destination-exists/source-missing as recoverable when state confirms prior progress.
-Use deterministic state transitions: Pending → Moved → StateUpdated → Succeeded.
-Add repair/reconciliation tooling.
-10. Duplicate commits are not deduplicated by deviceId + runId
-CreateCommitJobAsync always creates a new CommitJob with a new GUID.
-
-Relevant location:
-
-New commit ID every time: StateStoreManager.cs:183-216
-Impact: retrying /commit-run for the same runId can enqueue multiple jobs for the same backup run.
-
-Recommendation: key commit jobs by deviceId/runId or maintain a secondary idempotency key.
-
-11. Concurrency handling is incomplete
-The code checks CommitJobStatus.Processing and returns, but it does not atomically claim the job. Two consumers can read Queued and both update to Processing.
-
-Relevant location:
-
-Non-atomic processing claim: BackupProcessingService.cs:35-67
-Recommendation: use ETag-based compare-and-set for Queued → Processing, and if it fails, abandon/skip.
-
-12. Uploads overwrite blobs
-The client uses overwrite: true for smaller files and does not enforce create-only semantics.
-
-Relevant location:
-
-Overwrite upload: FileUploader.cs:151-153
-This conflicts with the design’s intent to use If-None-Match: * and immutable unique blob names.
-
-Recommendation: use BlobRequestConditions { IfNoneMatch = ETag.All } and unique file IDs.
-
-P1 security issues
-13. ManifestBlobPath is not validated
-ManifestBlobPath is accepted from the client and later used to download a blob.
+- Commit processing records per-file progress in the manifest state store.
+- The worker uses deterministic progress transitions: Pending → Moved → StateUpdated → Succeeded.
+- Failed file commits are recorded with error details and can be retried.
+- A retry can continue when the destination blob already exists and the source staging blob is gone.
 
 Relevant locations:
 
-Request property has no validation: CommitBackupRunRequest.cs:6-17
-API uses it directly: BackupRunService.cs:102-113
-Worker downloads from that path: BackupProcessingService.cs:75-83
-Recommendation: server should derive the manifest path from authenticated device/run only, or validate it strictly against:
+- Per-file progress contract: src/common/contracts/State/CommitJob.cs
+- Per-file progress state methods: src/common/core/Services/StateStoreManager.cs
+- Idempotent worker flow: src/services/worker/Services/BackupProcessingService.cs
+
+Remaining recommendation: add dedicated repair/reconciliation tooling for long-lived failed commit progress records.
+
+10. Duplicate commits are not deduplicated by deviceId + runId — addressed
+CreateCommitJobAsync now derives a deterministic commit ID from {deviceId, runId} and returns the existing CommitJob if it already exists.
+
+Relevant location:
+
+Commit idempotency key: src/common/core/Services/StateStoreManager.cs
+
+Impact: retrying /commit-run for the same runId returns the same commit job instead of creating duplicate work.
+
+11. Concurrency handling is incomplete — addressed
+The worker now atomically claims queued commit jobs through an ETag compare-and-save operation.
+
+Relevant locations:
+
+- Atomic claim method: src/common/core/Services/StateStoreManager.cs
+- Worker claim use: src/services/worker/Services/BackupProcessingService.cs
+
+Impact: if two consumers receive the same event, only one can transition Queued → Processing. The other skips without doing blob/state work.
+
+12. Uploads overwrite blobs — addressed
+The client now uses create-only BlobUploadOptions for all file uploads, including legacy logical-path uploads and unique-file uploads.
+
+Relevant location:
+
+Create-only uploads: src/services/client/Services/FileUploader.cs
+
+This conflicts with the design’s intent to use If-None-Match: * and immutable unique blob names.
+
+Mitigation: every upload uses BlobRequestConditions { IfNoneMatch = ETag.All }; unique-file uploads also include SHA-256 and unique-file metadata.
+
+P1 security issues
+13. ManifestBlobPath is not validated — addressed
+ManifestBlobPath is no longer accepted from the client and the API no longer forwards caller-supplied manifest paths.
+
+Current behavior:
+
+- CommitBackupRunRequest contains only runId.
+- BackupController passes only route deviceId and request runId to the service.
+- BackupRunService and BackupEventPublisher derive the manifest path from deviceId/runId.
+- BackupProcessingService also derives the manifest path from the event deviceId/runId and ignores any ManifestPath field on the event.
+
+The only accepted manifest location is:
 
 runs/{deviceId:N}/{runId:N}/run-manifest.json
 
-14. Forwarded headers trust all proxies
-KnownIPNetworks and KnownProxies are cleared while all forwarded headers are accepted.
+14. Forwarded headers trust all proxies — addressed
+Forwarded headers no longer clear trusted proxy/network restrictions by default.
 
-Relevant location:
+Current behavior:
 
-Forwarded headers configuration: ProgramExtensions.cs:204-214
-Impact: if exposed incorrectly, clients can spoof forwarded headers. This also affects RemoteIpAddress, which is used for SAS IP restriction.
+- Only X-Forwarded-For, X-Forwarded-Proto, and X-Forwarded-Host are enabled.
+- ForwardLimit defaults to 1.
+- KnownProxies and KnownNetworks remain enforced by ASP.NET Core and can be configured under ReverseProxy:ForwardedHeaders.
+- Unknown client-supplied forwarded headers are ignored instead of trusted globally.
 
-Recommendation:
+Relevant location: ProgramExtensions.cs
 
-Configure known Azure proxy ranges or ACA ingress behavior carefully.
-Avoid relying on client IP restriction unless tested with ACA.
-Prefer short TTL, create-only SAS, and device/run-scoped paths.
-15. SAS IP restriction may break real customer clients
-StartBackupRun uses HttpContext.Connection.RemoteIpAddress.
+15. SAS IP restriction may break real customer clients — addressed
+SAS IP restriction is disabled by default for the SaaS API because customers may use changing residential IPs, CGNAT, VPNs, or proxy paths.
 
-Relevant location:
+Current behavior:
 
-Client IP capture: BackupController.cs:35-40
-In ACA, this may be a proxy/NAT address, not the actual customer IP. Residential customer IPs can also change mid-run.
+- BackupController passes no client IP to SAS minting unless Backup:Sas:EnableIpRestriction is true.
+- Bicep exposes enableSasIpRestriction, default false, mapped to Backup__Sas__EnableIpRestriction.
+- Short TTL, create-only SAS, and device/run-scoped paths remain the default protection.
 
-Recommendation: make SAS IP restriction optional and configurable per deployment/customer.
+Relevant locations: BackupController.cs, SasSecurityOptions.cs, main.bicep, compute.bicep
 
-16. Development anonymous auth is dangerous if environment is misconfigured
-In development, authentication is fully bypassed.
+16. Development anonymous auth is dangerous if environment is misconfigured — addressed
+Development anonymous authentication now requires an explicit process environment variable.
 
-Relevant location:
+Current behavior:
 
-Anonymous auth in development: ProgramExtensions.cs:126-137
-This is acceptable locally, but production deployment must ensure ASPNETCORE_ENVIRONMENT=Production always. Consider adding a startup guard that refuses anonymous auth unless explicitly enabled.
+- If ASPNETCORE_ENVIRONMENT=Development but ALLOW_DEVELOPMENT_ANONYMOUS_AUTHENTICATION is not true, startup fails.
+- docker-compose sets ALLOW_DEVELOPMENT_ANONYMOUS_AUTHENTICATION=true for local API development only.
+- Production Bicep sets ASPNETCORE_ENVIRONMENT=Production and does not set the anonymous-auth override.
+
+Relevant locations: HostBuilderExtensions.cs, docker-compose.yml
 
 P1 infrastructure issues
-17. Bicep still contains an unused API key model
-The design is JWT/Entra-based, but Bicep still provisions apiKey.
+17. Bicep still contains an unused API key model — addressed
+The deployment is JWT/Entra-based and no API-key authentication path is used. The stale API-key model has been removed from Bicep.
 
-Relevant locations:
+Current behavior:
 
-Secure apiKey parameter: main.bicep:28-30
-Container secret/env API_KEY: compute.bicep:139-143
-No API-key authentication path appears to be used. Remove it unless there is a specific internal admin endpoint.
+- main.bicep no longer accepts a secure apiKey parameter.
+- compute.bicep no longer creates api-key Container App secrets.
+- API and worker containers no longer receive an API_KEY environment variable.
+- main.bicep no longer creates an api-key Key Vault secret.
 
-18. Service Bus roles are incomplete for a subscriber
-The app publishes and subscribes to Service Bus. Bicep assigns Azure Service Bus Data Sender, but the same app also needs to receive messages.
+18. Service Bus roles are incomplete for a subscriber — addressed
+The architecture now uses separate Container Apps for publishing and subscribing. RBAC is assigned per managed identity and scoped to the Service Bus namespace.
 
-Relevant location:
+Current behavior:
 
-Sender-only role assignment: main.bicep:158-169
-Recommendation: assign Azure Service Bus Data Receiver or Azure Service Bus Data Owner depending on Dapr component requirements.
+- The API Container App identity receives Azure Service Bus Data Sender for Dapr pub/sub publishing.
+- The worker Container App identity receives Azure Service Bus Data Receiver for the Dapr pub/sub subscription.
+- The worker KEDA scaler continues to use a separate least-privilege Listen connection string for scale decisions only.
 
-19. Dapr managed identity metadata should be verified
-The Dapr components define Azure Table Storage and Service Bus metadata, but no explicit managed identity metadata is configured.
+19. Dapr managed identity metadata should be verified — addressed
+The Dapr Azure components now make the identity choice explicit.
 
-Relevant locations:
+Current behavior:
 
-Table state component: compute.bicep:60-78
-Service Bus pub/sub component: compute.bicep:82-114
-Key Vault secret store component: compute.bicep:44-57
-Recommendation: verify current Dapr Azure component identity requirements for Container Apps and explicitly configure managed identity where required.
+- Dapr components continue to use managed identity and do not use account keys or Service Bus connection strings for runtime pub/sub/state access.
+- `daprAzureClientId` is exposed in main.bicep and compute.bicep.
+- Leave `daprAzureClientId` empty for system-assigned Container App identities, which is the current deployment model.
+- Set `daprAzureClientId` only when switching the Dapr components to a user-assigned managed identity; compute.bicep then emits `azureClientId` metadata for Key Vault, Table Storage state stores, and Service Bus pub/sub.
 
-20. Key Vault network ACLs are open
-Relevant location:
+Relevant locations: main.bicep, compute.bicep
 
-Key Vault defaultAction: 'Allow': dapr-infra.bicep:76-79
-For production, tighten this if possible. At minimum, document why it remains open for ACA/Dapr.
+20. Key Vault network ACLs are open — addressed with explicit deployment posture
+Key Vault remains network-open by default because Container Apps/Dapr access through private networking is not configured in this Bicep yet. RBAC still restricts secret access to the API and worker managed identities.
 
-21. Redis is provisioned but not used by the design
-The design says the state store is Azure Table Storage via Dapr. Bicep provisions Redis as “Dapr State Store”, but compute uses Table Storage.
+Current behavior:
 
-Relevant locations:
+- `keyVaultNetworkDefaultAction` is exposed in main.bicep and dapr-infra.bicep.
+- The default remains `Allow` to avoid breaking Container Apps/Dapr Key Vault access in the current public-ingress deployment.
+- Production deployments that add VNet integration/private endpoints can set `keyVaultNetworkDefaultAction = 'Deny'`.
 
-Redis provisioned: dapr-infra.bicep:23-37
-Table Storage Dapr component used: compute.bicep:60-78
-Recommendation: remove Redis unless it has a defined production purpose.
+Relevant locations: main.bicep, main.bicepparam, dapr-infra.bicep
+
+21. Redis is provisioned but not used by the design — addressed
+Redis has been removed from the Bicep infrastructure because the design and implementation use Azure Table Storage-backed Dapr state stores.
+
+Current behavior:
+
+- dapr-infra.bicep provisions Service Bus and Key Vault only.
+- compute.bicep defines the manifest and device registry state stores using `state.azure.tablestorage`.
+- The unused Redis output and local docker-compose Redis volume were removed.
 
 P2 implementation gaps
 Client
@@ -361,8 +375,8 @@ Clarify infrastructure
 
 Design mentions Terraform, project uses Bicep.
 Decide and update docs.
-Remove unused Redis/API-key resources.
-Add explicit Service Bus receiver role and Dapr identity configuration.
+Keep Dapr component identity configuration aligned with system-assigned or user-assigned managed identity.
+Add private networking before setting Key Vault network default action to Deny.
 Clarify storage lifecycle assumptions
 
 The design assumes rename avoids early deletion fees.
@@ -391,10 +405,8 @@ Add poison queue observability.
 Add reconciliation/repair job.
 Phase 4: production infrastructure cleanup
 Fix secret/config naming.
-Add Service Bus receiver role.
-Verify Dapr managed identity metadata.
-Remove Redis if unused.
-Remove API key if unused.
+Keep Service Bus sender/receiver roles scoped to the namespace.
+Configure Key Vault private endpoint/VNet access and set network default action to Deny.
 Tighten Key Vault/network posture.
 Add Bicep validation in local tooling.
 Phase 5: restore and operations

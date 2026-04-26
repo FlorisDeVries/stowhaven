@@ -356,7 +356,7 @@ public class BackupRunServiceTests
             .ReturnsAsync(commitJob);
 
         _eventPublisherMock
-            .Setup(x => x.PublishBackupRunCommittedAsync(It.IsAny<CommitJob>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Setup(x => x.PublishBackupRunCommittedAsync(It.IsAny<CommitJob>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
 
         // Act
@@ -402,7 +402,7 @@ public class BackupRunServiceTests
             });
 
         _eventPublisherMock
-            .Setup(x => x.PublishBackupRunCommittedAsync(It.IsAny<CommitJob>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Setup(x => x.PublishBackupRunCommittedAsync(It.IsAny<CommitJob>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
 
         // Act
@@ -468,11 +468,11 @@ public class BackupRunServiceTests
             });
 
         _eventPublisherMock
-            .Setup(x => x.PublishBackupRunCommittedAsync(It.IsAny<CommitJob>(), It.IsAny<string>(), cts.Token))
+            .Setup(x => x.PublishBackupRunCommittedAsync(It.IsAny<CommitJob>(), cts.Token))
             .Returns(Task.CompletedTask);
 
         // Act
-        await _sut.CommitBackupRunAsync(deviceId, runId, null, cts.Token);
+        await _sut.CommitBackupRunAsync(deviceId, runId, cts.Token);
 
         // Assert
         _manifestManagerMock.Verify(
@@ -515,7 +515,7 @@ public class BackupRunServiceTests
             .ReturnsAsync(commitJob);
 
         _eventPublisherMock
-            .Setup(x => x.PublishBackupRunCommittedAsync(It.IsAny<CommitJob>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Setup(x => x.PublishBackupRunCommittedAsync(It.IsAny<CommitJob>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
 
         // Act

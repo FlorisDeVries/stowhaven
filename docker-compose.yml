@@ -10,6 +10,7 @@ services:
         environment:
             - ASPNETCORE_ENVIRONMENT=Development
             - ASPNETCORE_URLS=http://+:8080
+            - ALLOW_DEVELOPMENT_ANONYMOUS_AUTHENTICATION=true
             - LOG_PATH=/var/log
         volumes:
             - ./run/api/data:/var/lib/backup-api
@@ -160,4 +161,3 @@ services:
 
 volumes:
     azurite-data:
-    redis-data:

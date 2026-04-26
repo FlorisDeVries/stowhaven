@@ -24,3 +24,28 @@ public enum CommitJobStatus
     Succeeded,
     Failed
 }
+
+/// <summary>
+/// Tracks deterministic, retry-safe progress for a single file within a commit job.
+/// </summary>
+public class CommitFileProgress
+{
+    public Guid CommitId { get; set; }
+    public Guid DeviceId { get; set; }
+    public Guid RunId { get; set; }
+    public required string UniqueFileId { get; set; }
+    public required string LogicalPath { get; set; }
+    public CommitFileStatus Status { get; set; }
+    public DateTimeOffset UpdatedAt { get; set; }
+    public string? Error { get; set; }
+    public string? ETag { get; set; }
+}
+
+public enum CommitFileStatus
+{
+    Pending,
+    Moved,
+    StateUpdated,
+    Succeeded,
+    Failed
+}

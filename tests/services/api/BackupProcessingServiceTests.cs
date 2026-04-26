@@ -100,8 +100,8 @@ public class BackupProcessingServiceTests
         };
 
         _manifestManagerMock
-            .Setup(x => x.GetCommitJobAsync(commitId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(commitJob);
+            .Setup(x => x.TryClaimCommitJobAsync(commitId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((false, commitJob));
 
         // Act
         await _sut.ProcessBackupRunAsync(backupEvent);
@@ -137,8 +137,8 @@ public class BackupProcessingServiceTests
         };
 
         _manifestManagerMock
-            .Setup(x => x.GetCommitJobAsync(commitId, It.IsAny<CancellationToken>()))
-            .ReturnsAsync(commitJob);
+            .Setup(x => x.TryClaimCommitJobAsync(commitId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((false, commitJob));
 
         // Act
         await _sut.ProcessBackupRunAsync(backupEvent);
@@ -187,7 +187,7 @@ public class BackupProcessingServiceTests
 
     [Fact]
     [Trait("Category", "Unit")]
-    public async Task ProcessBackupRunAsync_UsesDefaultManifestPath_WhenNotProvided()
+    public async Task ProcessBackupRunAsync_IgnoresEventManifestPath_AndUsesDerivedPath()
     {
         // Arrange
         var deviceId = Guid.NewGuid();
@@ -202,7 +202,7 @@ public class BackupProcessingServiceTests
             StartedAt = DateTimeOffset.UtcNow.AddMinutes(-5),
             CommittedAt = DateTimeOffset.UtcNow,
             StagingPath = $"staging/{deviceId:N}/{runId:N}/",
-            ManifestPath = null // Not provided
+            ManifestPath = "runs/other-device/other-run/malicious-manifest.json"
         };
 
         SetupQueuedCommitJob(commitId, deviceId, runId);
@@ -637,8 +637,11 @@ public class BackupProcessingServiceTests
         await _sut.ProcessBackupRunAsync(backupEvent);
 
         // Assert
-        updateSequence.Should().HaveCountGreaterOrEqualTo(2);
-        updateSequence.First().Should().Be(CommitJobStatus.Processing);
+        _manifestManagerMock.Verify(
+            x => x.TryClaimCommitJobAsync(commitId, It.IsAny<CancellationToken>()),
+            Times.Once);
+
+        updateSequence.Should().HaveCountGreaterOrEqualTo(1);
         updateSequence.Last().Should().Be(CommitJobStatus.Succeeded);
     }
 
@@ -760,8 +763,28 @@ public class BackupProcessingServiceTests
             .ReturnsAsync(commitJob);
 
         _manifestManagerMock
+            .Setup(x => x.TryClaimCommitJobAsync(commitId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync((true, new CommitJob
+            {
+                CommitId = commitId,
+                DeviceId = deviceId,
+                RunId = runId,
+                Status = CommitJobStatus.Processing,
+                CreatedAt = commitJob.CreatedAt,
+                UpdatedAt = DateTimeOffset.UtcNow
+            }));
+
+        _manifestManagerMock
             .Setup(x => x.UpdateCommitJobAsync(It.IsAny<CommitJob>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((CommitJob job, CancellationToken ct) => job);
+
+        _manifestManagerMock
+            .Setup(x => x.GetCommitFileProgressAsync(It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((CommitFileProgress?)null);
+
+        _manifestManagerMock
+            .Setup(x => x.SaveCommitFileProgressAsync(It.IsAny<CommitFileProgress>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((CommitFileProgress progress, CancellationToken ct) => progress);
     }
 
     private void SetupBackupRun(Guid deviceId, Guid runId)

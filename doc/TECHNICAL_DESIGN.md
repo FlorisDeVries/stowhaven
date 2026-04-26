@@ -354,7 +354,10 @@ flowchart TD
 
   * Separate Dapr state-store component configuration for manifest/run state and device registry state.
   * Managed Identity in production; local development may use an Azurite connection string from local configuration/secrets.
+  * System-assigned Container App identities are the default. If a deployment switches Dapr components to a user-assigned managed identity, `daprAzureClientId` is set and emitted as `azureClientId` metadata on the Key Vault, Table Storage, and Service Bus Dapr components.
 * Storage resource names such as `DATA_STORAGE_ACCOUNT` and `DATA_CONTAINER` are non-secret configuration values and may be supplied as Container App environment variables. Actual secrets remain in Dapr secret store / Key Vault.
+* Key Vault uses RBAC authorization. Its network ACL default action is configurable through `keyVaultNetworkDefaultAction`; it remains `Allow` until Container Apps/Dapr access through private networking is available, then should be changed to `Deny`.
+* Redis is intentionally not provisioned for v1. Dapr state is backed by Azure Table Storage; Service Bus is used for pub/sub.
 * Multi-tenant / multi-device isolation:
 
   * `deviceId` is bound to the authenticated user/tenant in a server-side `DeviceRegistration` record.
@@ -363,7 +366,10 @@ flowchart TD
   * A single user can own multiple devices. Device sharing is intentionally out of scope for v1.
   * Backup clients use a narrow delegated scope such as `backup.client`; `backup-admin` is reserved for future operator/admin APIs.
   * SAS scope includes `deviceId` + `runId`, ensuring a client cannot write outside its staging area.
+  * SAS IP restriction is disabled by default for SaaS clients. It can be enabled per deployment with `Backup:Sas:EnableIpRestriction` / `Backup__Sas__EnableIpRestriction` only after ACA/proxy and customer network behavior is validated.
   * Backup routes include `deviceId`; the route value is authoritative and every start/commit/status operation authorizes ownership before touching storage, runs, commits, or SAS.
+  * Forwarded headers are accepted only from configured trusted proxies/networks. Unknown forwarded headers are ignored to avoid spoofing client IP, host, or scheme.
+  * Development anonymous authentication requires `ALLOW_DEVELOPMENT_ANONYMOUS_AUTHENTICATION=true`; production deployments use JWT authentication and do not set this override.
 * Optional: **Blob index tags** (e.g., `state=retired`, `deviceId={deviceId}`) to refine lifecycle policies.
 
 ---
@@ -473,7 +479,7 @@ To avoid long-running HTTP calls and timeouts:
   * Authorizes that the authenticated `(tenantId, userId)` owns `deviceId`.
   * Validates payload shape quickly.
   * Derives `runs/{deviceId:N}/{runId:N}/run-manifest.json` server-side.
-  * Saves a `CommitJob` with `status=Queued`.
+  * Saves or reuses a deterministic `CommitJob` keyed by `{deviceId, runId}` with `status=Queued`.
   * Publishes a commit message via Dapr Pub/Sub / Queue.
   * Responds `202 Accepted { commitId }`.
 
@@ -484,14 +490,18 @@ To avoid long-running HTTP calls and timeouts:
   * Has no external ingress.
   * Scales from zero on the `backup-events` Service Bus topic subscription.
   * Uses a least-privilege Service Bus Listen connection string only for the Container Apps/KEDA scaler; Dapr pub/sub continues to use managed identity.
+  * Uses namespace-scoped Service Bus RBAC: the API managed identity has Data Sender for publishing, and the worker managed identity has Data Receiver for subscription processing.
 
-  * Loads `CommitJob`, `BackupRun`, and file lists from the state store.
+  * Atomically claims the `CommitJob` with an ETag compare-and-save transition from `Queued` to `Processing`.
+  * Derives the manifest path from `deviceId` and `runId` instead of trusting any path carried in the event body.
+  * Loads `BackupRun` and file lists from the state store.
   * Verifies staged blobs with HEAD requests (size/hash).
+  * Records per-file commit progress in the state store using deterministic transitions: `Pending` → `Moved` → `StateUpdated` → `Succeeded`.
   * Renames blobs:
 
     * `staging/{deviceId}/{runId}/{uniqueFileId}` → `/devices/{deviceId}/files/{uniqueFileId}`
     * Previous active versions → `/devices/{deviceId}/retired/{oldUniqueFileId}`
-  * Updates `Files` and `FileVersions` state in a consistent way (using batches).
+  * Updates `Files` and `FileVersions` state idempotently and can continue a retry when a prior attempt already moved the blob.
   * Updates `CommitJob.status` and `BackupRun.status` to `Succeeded` or `Failed`.
 
 * Client polls `GET /api/devices/{deviceId}/backup/commit-status/{commitId}`:
@@ -737,8 +747,10 @@ resource "azurerm_storage_management_policy" "backup_lifecycle" {
 * **Idempotent runs & commits**:
 
   * `runId` uniquely identifies a backup run.
-  * `commitId` uniquely identifies a commit job.
-  * Replays of `/api/devices/{deviceId}/backup/commit-run` with the same `runId` are either deduplicated or mapped to the existing `CommitJob`.
+  * `commitId` is derived deterministically from `{deviceId, runId}` and uniquely identifies a commit job.
+  * Replays of `/api/devices/{deviceId}/backup/commit-run` with the same `runId` return the existing `CommitJob`.
+  * Commit workers use ETags to atomically claim queued jobs so duplicate queue deliveries do not run the same commit concurrently.
+  * Per-file commit progress tracks `Pending`, `Moved`, `StateUpdated`, `Succeeded`, and `Failed` to make retries deterministic.
 * **Asynchronous commit** ensures:
 
   * No long-lived HTTP requests.

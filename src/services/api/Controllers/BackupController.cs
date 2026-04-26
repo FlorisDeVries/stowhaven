@@ -1,9 +1,11 @@
-﻿using FlorisDeV.BackupApi.Services;
+﻿using FlorisDeV.BackupApi.Options;
+using FlorisDeV.BackupApi.Services;
 using FlorisDeV.BackupContracts.Api.Requests;
 using FlorisDeV.BackupContracts.Api.Responses;
 using FlorisDeV.BackupContracts.State;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
 
 namespace FlorisDeV.BackupApi.Controllers;
 
@@ -13,6 +15,7 @@ namespace FlorisDeV.BackupApi.Controllers;
 public partial class BackupController(
     IBackupRunService backupRunService,
     IDeviceAuthorizationService deviceAuthorizationService,
+    IOptions<SasSecurityOptions> sasSecurityOptions,
     ILogger<BackupController> logger
 ) : ControllerBase
 {
@@ -41,8 +44,9 @@ public partial class BackupController(
 
         LogStartingBackupRun(logger, deviceId);
 
-        // Get client IP for SAS URL restriction
-        var clientIp = HttpContext.Connection.RemoteIpAddress?.ToString();
+        var clientIp = sasSecurityOptions.Value.EnableIpRestriction
+            ? HttpContext.Connection.RemoteIpAddress?.ToString()
+            : null;
 
         // Start backup-run - let exceptions bubble up to GlobalExceptionFilter
         var result = await backupRunService.StartBackupRunAsync(deviceId, clientIp, cancellationToken);
@@ -90,13 +94,10 @@ public partial class BackupController(
 
         LogStartCommitBackupRun(logger, request.RunId, deviceId);
 
-        var manifestBlobPath = $"runs/{deviceId:N}/{request.RunId:N}/run-manifest.json";
-
         // Create commit job for async processing - let exceptions bubble up to GlobalExceptionFilter
         var commitJob = await backupRunService.CommitBackupRunAsync(
             deviceId,
             request.RunId,
-            manifestBlobPath,
             cancellationToken);
 
         var response = new CommitBackupRunResponse

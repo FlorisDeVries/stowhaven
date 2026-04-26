@@ -1,5 +1,6 @@
 using FluentAssertions;
 using FlorisDeV.BackupApi.Controllers;
+using FlorisDeV.BackupApi.Options;
 using FlorisDeV.BackupApi.Services;
 using FlorisDeV.BackupContracts.Api.Requests;
 using FlorisDeV.BackupContracts.Api.Responses;
@@ -9,6 +10,7 @@ using FlorisDeV.BackupContracts.State;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Moq;
 using System.Net;
 using System.Security.Claims;
@@ -22,6 +24,7 @@ public class BackupControllerTests
 {
     private readonly Mock<IBackupRunService> _backupRunServiceMock;
     private readonly Mock<IDeviceAuthorizationService> _deviceAuthorizationServiceMock;
+    private readonly SasSecurityOptions _sasSecurityOptions;
     private readonly Mock<ILogger<BackupController>> _loggerMock;
     private readonly BackupController _sut;
 
@@ -29,6 +32,7 @@ public class BackupControllerTests
     {
         _backupRunServiceMock = new Mock<IBackupRunService>();
         _deviceAuthorizationServiceMock = new Mock<IDeviceAuthorizationService>();
+        _sasSecurityOptions = new SasSecurityOptions();
         _loggerMock = new Mock<ILogger<BackupController>>();
 
         _deviceAuthorizationServiceMock
@@ -38,6 +42,7 @@ public class BackupControllerTests
         _sut = new BackupController(
             _backupRunServiceMock.Object,
             _deviceAuthorizationServiceMock.Object,
+            Microsoft.Extensions.Options.Options.Create(_sasSecurityOptions),
             _loggerMock.Object);
 
         // Setup HttpContext with mock connection for RemoteIpAddress
@@ -178,7 +183,7 @@ public class BackupControllerTests
 
         // Assert
         _backupRunServiceMock.Verify(
-            x => x.StartBackupRunAsync(deviceId, It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            x => x.StartBackupRunAsync(deviceId, null, It.IsAny<CancellationToken>()),
             Times.Once);
     }
 
@@ -214,7 +219,43 @@ public class BackupControllerTests
 
         // Assert
         _backupRunServiceMock.Verify(
-            x => x.StartBackupRunAsync(deviceId,It.IsAny<string>(),  cts.Token),
+            x => x.StartBackupRunAsync(deviceId, null, cts.Token),
+            Times.Once);
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task StartBackupRun_WhenSasIpRestrictionEnabled_PassesRemoteIpToService()
+    {
+        // Arrange
+        var deviceId = Guid.NewGuid();
+        _sasSecurityOptions.EnableIpRestriction = true;
+
+        _backupRunServiceMock
+            .Setup(x => x.StartBackupRunAsync(deviceId, "127.0.0.1", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new BackupRunStartResult
+            {
+                Run = new BackupRun
+                {
+                    DeviceId = deviceId,
+                    RunId = Guid.NewGuid(),
+                    StartedAt = DateTimeOffset.UtcNow,
+                    Status = BackupRunStatus.Queued
+                },
+                SasUrl = new SasUrlInfo
+                {
+                    Url = new Uri("https://storage.blob.core.windows.net/backups/staging/device/run?sig=token"),
+                    ExpiresAt = DateTimeOffset.UtcNow.AddHours(1),
+                    TtlMinutes = 60
+                }
+            });
+
+        // Act
+        await _sut.StartBackupRun(deviceId, CancellationToken.None);
+
+        // Assert
+        _backupRunServiceMock.Verify(
+            x => x.StartBackupRunAsync(deviceId, "127.0.0.1", It.IsAny<CancellationToken>()),
             Times.Once);
     }
 
@@ -256,7 +297,7 @@ public class BackupControllerTests
         };
 
         _backupRunServiceMock
-            .Setup(x => x.CommitBackupRunAsync(deviceId, runId, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Setup(x => x.CommitBackupRunAsync(deviceId, runId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new CommitJob
             {
                 CommitId = Guid.NewGuid(),
@@ -292,7 +333,7 @@ public class BackupControllerTests
         };
 
         _backupRunServiceMock
-            .Setup(x => x.CommitBackupRunAsync(deviceId, runId, It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Setup(x => x.CommitBackupRunAsync(deviceId, runId, It.IsAny<CancellationToken>()))
             .ReturnsAsync(new CommitJob
             {
                 CommitId = Guid.NewGuid(),
@@ -308,7 +349,7 @@ public class BackupControllerTests
 
         // Assert
         _backupRunServiceMock.Verify(
-            x => x.CommitBackupRunAsync(deviceId, runId, It.IsAny<string>(), It.IsAny<CancellationToken>()),
+            x => x.CommitBackupRunAsync(deviceId, runId, It.IsAny<CancellationToken>()),
             Times.Once);
     }
 
@@ -325,7 +366,7 @@ public class BackupControllerTests
         var cts = new CancellationTokenSource();
 
         _backupRunServiceMock
-            .Setup(x => x.CommitBackupRunAsync(It.IsAny<Guid>(), It.IsAny<Guid>(),It.IsAny<string>(),  cts.Token))
+            .Setup(x => x.CommitBackupRunAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), cts.Token))
             .ReturnsAsync(new CommitJob
             {
                 CommitId = Guid.NewGuid(),
@@ -341,7 +382,7 @@ public class BackupControllerTests
 
         // Assert
         _backupRunServiceMock.Verify(
-            x => x.CommitBackupRunAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(), cts.Token),
+            x => x.CommitBackupRunAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), cts.Token),
             Times.Once);
     }
 
@@ -358,7 +399,7 @@ public class BackupControllerTests
         var expectedException = new InvalidOperationException("Commit failed");
 
         _backupRunServiceMock
-            .Setup(x => x.CommitBackupRunAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .Setup(x => x.CommitBackupRunAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(expectedException);
 
         // Act

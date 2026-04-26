@@ -24,10 +24,6 @@ param nameSuffixStr string = 'fdevneuprd'
 @description('Days after which blobs are moved to archive tier')
 param lifecycleArchiveAfterDays int = 30
 
-@description('API key for authenticating requests to the Backup API')
-@secure()
-param apiKey string
-
 @description('Retention period for Log Analytics workspace in days')
 param logAnalyticsRetentionDays int = 30
 
@@ -39,6 +35,19 @@ param imageTag string = 'latest'
 
 @description('Explicitly allow copy/delete fallback when ADLS Gen2 rename fails. Keep false in production unless early deletion cost and partial-failure risks are accepted.')
 param allowCopyDeleteFallback bool = false
+
+@description('Restrict upload SAS URLs to the API-observed client IP. Keep false for SaaS clients unless proxy/client IP behavior has been validated.')
+param enableSasIpRestriction bool = false
+
+@description('Optional Azure client ID for a user-assigned managed identity used by Dapr Azure components. Leave empty for system-assigned Container App identities.')
+param daprAzureClientId string = ''
+
+@description('Key Vault network ACL default action. Keep Allow until Container Apps/Dapr access through private networking has been configured; set Deny with private endpoints/VNet integration.')
+@allowed([
+  'Allow'
+  'Deny'
+])
+param keyVaultNetworkDefaultAction string = 'Allow'
 
 // ---------------------------------------------------------------------------
 // Locals / derived values
@@ -96,7 +105,7 @@ module registry 'modules/registry.bicep' = {
   }
 }
 
-// Deploy Dapr infrastructure (Redis, Service Bus, Key Vault).
+// Deploy Dapr infrastructure (Service Bus, Key Vault).
 // The Key Vault name is fixed in advance so compute.bicep can reference it.
 module daprInfra 'modules/dapr-infra.bicep' = {
   name: 'dapr-infra'
@@ -105,6 +114,7 @@ module daprInfra 'modules/dapr-infra.bicep' = {
     nameSuffix: nameSuffix
     keyVaultName: keyVaultName
     tenantId: tenant().tenantId
+    keyVaultNetworkDefaultAction: keyVaultNetworkDefaultAction
     tags: commonTags
   }
 }
@@ -123,11 +133,16 @@ module compute 'modules/compute.bicep' = {
     keyVaultName: daprInfra.outputs.keyVaultName
     serviceBusNamespaceName: daprInfra.outputs.serviceBusNamespaceName
     serviceBusScaleConnectionString: daprInfra.outputs.serviceBusScaleConnectionString
-    apiKey: apiKey
     imageTag: imageTag
     allowCopyDeleteFallback: allowCopyDeleteFallback
+    enableSasIpRestriction: enableSasIpRestriction
+    daprAzureClientId: daprAzureClientId
     tags: commonTags
   }
+}
+
+resource serviceBusNamespace 'Microsoft.ServiceBus/namespaces@2022-10-01-preview' existing = {
+  name: 'sb-${nameSuffix}'
 }
 
 // ---------------------------------------------------------------------------
@@ -234,42 +249,25 @@ resource roleAssignWorkerStorageTableContributor 'Microsoft.Authorization/roleAs
 }
 
 resource roleAssignServiceBusDataSender 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(resourceGroup().id, 'sb-${nameSuffix}', 'ca-${nameSuffix}', 'sb-sender')
-  scope: resourceGroup()
+  name: guid(serviceBusNamespace.id, 'ca-${nameSuffix}', 'sb-sender')
+  scope: serviceBusNamespace
   properties: {
     roleDefinitionId: roleServiceBusDataSender
     principalId: compute.outputs.principalId
     principalType: 'ServicePrincipal'
-    description: 'Container App - Service Bus Data Sender for Dapr pub/sub'
+    description: 'API Container App - Service Bus Data Sender for Dapr pub/sub publishing'
   }
 }
 
 resource roleAssignWorkerServiceBusDataReceiver 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(resourceGroup().id, 'sb-${nameSuffix}', 'ca-${nameSuffix}-worker', 'sb-receiver')
-  scope: resourceGroup()
+  name: guid(serviceBusNamespace.id, 'ca-${nameSuffix}-worker', 'sb-receiver')
+  scope: serviceBusNamespace
   properties: {
     roleDefinitionId: roleServiceBusDataReceiver
     principalId: compute.outputs.workerPrincipalId
     principalType: 'ServicePrincipal'
-    description: 'Worker Container App - Service Bus Data Receiver for Dapr pub/sub'
+    description: 'Worker Container App - Service Bus Data Receiver for Dapr pub/sub subscription'
   }
-}
-
-// ---------------------------------------------------------------------------
-// Key Vault secrets (created after IAM role assignments are in place)
-// ---------------------------------------------------------------------------
-
-resource kvRef 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
-  name: keyVaultName
-}
-
-resource kvSecretApiKey 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
-  parent: kvRef
-  name: 'api-key'
-  properties: {
-    value: apiKey
-  }
-  dependsOn: [roleAssignKeyVaultSecretsUser]
 }
 
 // ---------------------------------------------------------------------------

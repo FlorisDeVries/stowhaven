@@ -161,14 +161,12 @@ public partial class FileUploader(
                 {
                     ProgressHandler = progress,
                     Metadata = CreateBackupMetadata(taggedFile),
-                    Conditions = taggedFile.UniqueFileId != null
-                        ? new BlobRequestConditions { IfNoneMatch = ETag.All }
-                        : null
+                    Conditions = new BlobRequestConditions { IfNoneMatch = ETag.All }
                 };
 
                 await blobClient.UploadAsync(fileStream, uploadOptions, timeoutCts.Token);
             }
-            else if (taggedFile.UniqueFileId != null)
+            else
             {
                 var uploadOptions = new BlobUploadOptions
                 {
@@ -177,11 +175,6 @@ public partial class FileUploader(
                 };
 
                 await blobClient.UploadAsync(fileStream, uploadOptions, timeoutCts.Token);
-            }
-            else
-            {
-                // Regular upload for smaller files
-                await blobClient.UploadAsync(fileStream, overwrite: true, timeoutCts.Token);
             }
         }, cancellationToken);
     }

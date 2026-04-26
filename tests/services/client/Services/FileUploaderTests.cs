@@ -89,7 +89,7 @@ public class FileUploaderTests
 
         mockBlobClient.Setup(x => x.UploadAsync(
                 It.IsAny<Stream>(),
-                It.IsAny<bool>(),
+                It.IsAny<BlobUploadOptions>(),
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(mockResponse.Object);
 
@@ -101,7 +101,7 @@ public class FileUploaderTests
         result[0].Should().Be(file);
         mockBlobClient.Verify(x => x.UploadAsync(
             It.IsAny<Stream>(),
-            true,
+            It.Is<BlobUploadOptions>(o => o.Conditions != null),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -139,7 +139,7 @@ public class FileUploaderTests
 
             mockBlobClient.Setup(x => x.UploadAsync(
                     It.IsAny<Stream>(),
-                    It.IsAny<bool>(),
+                    It.IsAny<BlobUploadOptions>(),
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(mockResponse.Object);
         }
@@ -180,7 +180,7 @@ public class FileUploaderTests
 
         mockBlobClient1.Setup(x => x.UploadAsync(
                 It.IsAny<Stream>(),
-                It.IsAny<bool>(),
+                It.IsAny<BlobUploadOptions>(),
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(mockResponse.Object);
 
@@ -324,7 +324,7 @@ public class FileUploaderTests
 
         mockBlobClient.Setup(x => x.UploadAsync(
                 It.IsAny<Stream>(),
-                It.IsAny<bool>(),
+                It.IsAny<BlobUploadOptions>(),
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(mockResponse.Object);
 
@@ -335,7 +335,7 @@ public class FileUploaderTests
         result.Should().HaveCount(1);
         mockBlobClient.Verify(x => x.UploadAsync(
             It.IsAny<Stream>(),
-            true,
+            It.Is<BlobUploadOptions>(o => o.Conditions != null),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -410,7 +410,7 @@ public class FileUploaderTests
 
         mockBlobClient1.Setup(x => x.UploadAsync(
                 It.IsAny<Stream>(),
-                It.IsAny<bool>(),
+                It.IsAny<BlobUploadOptions>(),
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(mockResponse.Object);
 
@@ -427,7 +427,7 @@ public class FileUploaderTests
 
         mockBlobClient2.Setup(x => x.UploadAsync(
                 It.IsAny<Stream>(),
-                It.IsAny<bool>(),
+                It.IsAny<BlobUploadOptions>(),
                 It.IsAny<CancellationToken>()))
             .ThrowsAsync(new RequestFailedException("Network error"));
 
@@ -463,7 +463,7 @@ public class FileUploaderTests
 
         mockBlobClient.Setup(x => x.UploadAsync(
                 It.IsAny<Stream>(),
-                It.IsAny<bool>(),
+                It.IsAny<BlobUploadOptions>(),
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(mockResponse.Object);
 

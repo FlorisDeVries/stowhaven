@@ -15,6 +15,13 @@ public static class HostBuilderExtensions
         {
             if (builder.Environment.IsDevelopment())
             {
+                if (!IsDevelopmentAnonymousAuthenticationExplicitlyAllowed())
+                {
+                    throw new InvalidOperationException(
+                        "Development anonymous authentication is disabled. " +
+                        "Set ALLOW_DEVELOPMENT_ANONYMOUS_AUTHENTICATION=true only for local development.");
+                }
+
                 // For local development: allow anonymous access
                 // WARNING: This bypasses all authentication - never use in production!
                 builder.Services
@@ -43,5 +50,12 @@ public static class HostBuilderExtensions
                     policy.RequireRole("Admin", "Developer"));
             });
         }
+
     }
+
+    private static bool IsDevelopmentAnonymousAuthenticationExplicitlyAllowed()
+        => string.Equals(
+            Environment.GetEnvironmentVariable("ALLOW_DEVELOPMENT_ANONYMOUS_AUTHENTICATION"),
+            "true",
+            StringComparison.OrdinalIgnoreCase);
 }

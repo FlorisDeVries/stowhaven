@@ -33,7 +33,7 @@ public partial class SasUrlService(
         // Validate path
         path = ValidatePath(path);
         activity?.SetTag(ActivityAttributes.SasUrlPath, path);
-        
+
         if (!string.IsNullOrEmpty(clientIp))
         {
             activity?.SetTag("sas.client_ip", clientIp);
@@ -74,7 +74,7 @@ public partial class SasUrlService(
                     Protocol          = SasProtocol.HttpsAndHttp // Azurite serves HTTP only
                 };
                 containerSasBuilder.SetPermissions(BlobContainerSasPermissions.Create | BlobContainerSasPermissions.Write);
-                
+
                 // Add IP restriction if client IP is provided
                 if (!string.IsNullOrEmpty(clientIp))
                 {
@@ -104,7 +104,7 @@ public partial class SasUrlService(
                     Protocol          = SasProtocol.Https
                 };
                 dirSasBuilder.SetPermissions(BlobSasPermissions.Create | BlobSasPermissions.Write);
-                
+
                 // Add IP restriction if client IP is provided
                 if (!string.IsNullOrEmpty(clientIp))
                 {
@@ -169,7 +169,7 @@ public partial class SasUrlService(
         if (path.Contains("..", StringComparison.Ordinal))
             throw new SecurityException("Invalid path traversal");
 
-        if (!path.StartsWith("staging/", StringComparison.Ordinal) && 
+        if (!path.StartsWith("staging/", StringComparison.Ordinal) &&
             !path.StartsWith("runs/", StringComparison.Ordinal))
             throw new SecurityException("Upload SAS may only target staging/ or runs/");
 

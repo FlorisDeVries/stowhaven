@@ -8,7 +8,7 @@ This project is an **Azure Backup API** in .NET with IaC (Bicep) and CI/CD via G
   - Storage Account (LRS, Cool tier, lifecycle → Archive) + `backups` container
   - Log Analytics Workspace + Application Insights
   - Azure Container Registry (Basic)
-  - Dapr infrastructure: Redis Cache, Service Bus, Key Vault
+  - Dapr infrastructure: Service Bus, Key Vault
   - Container App Environment + Container App (system-assigned MI, Dapr enabled)
   - RBAC role assignments (Storage Blob Data Contributor, AcrPull, Key Vault Secrets User)
 - **GitHub Actions** pipeline (`.github/workflows/deploy.yml`):
@@ -26,7 +26,7 @@ deploy/bicep/
     ├── storage.bicep     # Storage accounts, container, lifecycle policy
     ├── monitoring.bicep  # Log Analytics, Application Insights
     ├── registry.bicep    # Azure Container Registry
-    ├── dapr-infra.bicep  # Redis, Service Bus, Key Vault (no secrets)
+    ├── dapr-infra.bicep  # Service Bus, Key Vault (no secrets)
     └── compute.bicep     # Container App Environment + Container App + Dapr component
 ```
 

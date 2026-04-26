@@ -41,30 +41,16 @@ public partial class BackupProcessingService(
         {
             LogProcessingStarted(logger, backupEvent.DeviceId, backupEvent.RunId, backupEvent.StagingPath);
 
-            // Load the CommitJob and update status to Processing
-            var commitJob = await manifestManager.GetCommitJobAsync(backupEvent.CommitId, cancellationToken);
-
-            // IDEMPOTENCY CHECK: Verify the commit job hasn't already been processed
-            if (commitJob.Status == CommitJobStatus.Succeeded)
+            // Atomically claim the queued commit job before doing any work. If another worker
+            // claimed it first, skip this delivery and let that worker finish.
+            var (claimed, commitJob) = await manifestManager.TryClaimCommitJobAsync(backupEvent.CommitId, cancellationToken);
+            if (!claimed)
             {
                 LogAlreadyProcessed(logger, backupEvent.DeviceId, backupEvent.RunId, commitJob.Status);
                 activity?.SetTag(ActivityAttributes.OperationStatus, "skipped");
-                activity?.SetTag("skip_reason", "already_succeeded");
-                return; // Already processed successfully, skip
-            }
-
-            if (commitJob.Status == CommitJobStatus.Processing)
-            {
-                LogConcurrentProcessing(logger, backupEvent.DeviceId, backupEvent.RunId);
-                // Another instance is processing, let it complete
-                activity?.SetTag(ActivityAttributes.OperationStatus, "skipped");
-                activity?.SetTag("skip_reason", "concurrent_processing");
+                activity?.SetTag("skip_reason", commitJob.Status.ToString());
                 return;
             }
-
-            // Update CommitJob status to Processing
-            commitJob.Status = CommitJobStatus.Processing;
-            commitJob = await manifestManager.UpdateCommitJobAsync(commitJob, cancellationToken);
 
             // Update BackupRun status to Processing
             var run = await manifestManager.GetBackupRunAsync(backupEvent.DeviceId, backupEvent.RunId, cancellationToken);
@@ -75,8 +61,9 @@ public partial class BackupProcessingService(
                 run,
                 cancellationToken);
 
-            // Download and parse run-manifest.json
-            var manifestPath = backupEvent.ManifestPath ?? $"runs/{backupEvent.DeviceId:N}/{backupEvent.RunId:N}/run-manifest.json";
+            // Download and parse run-manifest.json. Derive the path from the event identity
+            // instead of trusting ManifestPath from the message body.
+            var manifestPath = GetManifestPath(backupEvent.DeviceId, backupEvent.RunId);
             var manifest = await DownloadManifestAsync(manifestPath, cancellationToken);
 
             if (manifest == null)
@@ -95,6 +82,7 @@ public partial class BackupProcessingService(
                 await ProcessFileEntryAsync(
                     backupEvent.DeviceId,
                     backupEvent.RunId,
+                    commitJob.CommitId,
                     fileEntry,
                     containerClient,
                     cancellationToken);
@@ -208,6 +196,7 @@ public partial class BackupProcessingService(
     private async Task ProcessFileEntryAsync(
         Guid deviceId,
         Guid runId,
+        Guid commitId,
         ManifestFileEntry fileEntry,
         BlobContainerClient containerClient,
         CancellationToken cancellationToken)
@@ -218,57 +207,137 @@ public partial class BackupProcessingService(
         var sourceBlobName = $"staging/{deviceId:N}/{runId:N}/{fileEntry.UniqueFileId}";
         var destinationBlobName = $"devices/{deviceId:N}/files/{fileEntry.UniqueFileId}";
 
-        await ValidateStagedBlobAsync(containerClient, sourceBlobName, fileEntry, cancellationToken);
+        var progress = await GetOrCreateFileProgressAsync(commitId, deviceId, runId, fileEntry, logicalPath, cancellationToken);
 
-        // Check if file already exists
-        var existingFile = await manifestManager.GetFileEntryAsync(deviceId, logicalPath, cancellationToken);
-
-        // Move blob from staging to files/
-        await blobStorageService.MoveBlobAsync(sourceBlobName, destinationBlobName, null, cancellationToken);
-
-        // Create new FileVersion (Active)
-        var newVersion = new FileVersion
+        if (progress.Status == CommitFileStatus.Succeeded)
         {
-            DeviceId = deviceId,
-            UniqueFileId = fileEntry.UniqueFileId,
-            RelativePath = logicalPath,
-            Sha256 = fileEntry.Sha256,
-            Size = fileEntry.Size,
-            CreatedAt = DateTimeOffset.UtcNow,
-            State = FileVersionState.Active
-        };
-        await manifestManager.SaveFileVersionAsync(newVersion, cancellationToken);
-
-        // If file existed before, retire the old version
-        if (existingFile != null && !existingFile.IsDeleted)
-        {
-            await RetireFileVersionAsync(
-                deviceId,
-                existingFile.CurrentVersionId,
-                containerClient,
-                cancellationToken);
+            LogCommitFileAlreadySucceeded(logger, commitId, fileEntry.UniqueFileId, logicalPath);
+            return;
         }
 
-        // Update/create FileEntry
-        var fileEntryRecord = new FileEntry
+        if (progress.Status == CommitFileStatus.StateUpdated)
         {
-            DeviceId = deviceId,
-            RelativePath = logicalPath,
-            CurrentVersionId = fileEntry.UniqueFileId,
-            Size = fileEntry.Size,
-            LastWriteUtc = fileEntry.Mtime,
-            LastBackupRunId = runId.ToString("N"),
-            IsDeleted = false,
-            ETag = existingFile?.ETag // Preserve ETag if updating
-        };
-        await manifestManager.SaveFileEntryAsync(fileEntryRecord, cancellationToken);
+            await SaveFileProgressAsync(progress, CommitFileStatus.Succeeded, cancellationToken);
+            return;
+        }
+
+        try
+        {
+            if (progress.Status == CommitFileStatus.Pending || progress.Status == CommitFileStatus.Failed)
+            {
+                await ValidateStagedBlobAsync(containerClient, sourceBlobName, destinationBlobName, fileEntry, cancellationToken);
+                try
+                {
+                    // Move blob from staging to files/
+                    await blobStorageService.MoveBlobAsync(sourceBlobName, destinationBlobName, null, cancellationToken);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    if (!await IsDestinationBlobPresentAsync(containerClient, destinationBlobName, cancellationToken))
+                    {
+                        throw;
+                    }
+
+                    LogSourceMissingDestinationPresent(logger, sourceBlobName, destinationBlobName, ex);
+                }
+
+                progress = await SaveFileProgressAsync(progress, CommitFileStatus.Moved, cancellationToken);
+            }
+
+            // Check if file already exists
+            var existingFile = await manifestManager.GetFileEntryAsync(deviceId, logicalPath, cancellationToken);
+
+            // Create new FileVersion (Active)
+            var newVersion = new FileVersion
+            {
+                DeviceId = deviceId,
+                UniqueFileId = fileEntry.UniqueFileId,
+                RelativePath = logicalPath,
+                Sha256 = fileEntry.Sha256,
+                Size = fileEntry.Size,
+                CreatedAt = DateTimeOffset.UtcNow,
+                State = FileVersionState.Active
+            };
+            await manifestManager.SaveFileVersionAsync(newVersion, cancellationToken);
+
+            // If file existed before, retire the old version
+            if (existingFile != null && !existingFile.IsDeleted)
+            {
+                await RetireFileVersionAsync(
+                    deviceId,
+                    existingFile.CurrentVersionId,
+                    containerClient,
+                    cancellationToken);
+            }
+
+            // Update/create FileEntry
+            var fileEntryRecord = new FileEntry
+            {
+                DeviceId = deviceId,
+                RelativePath = logicalPath,
+                CurrentVersionId = fileEntry.UniqueFileId,
+                Size = fileEntry.Size,
+                LastWriteUtc = fileEntry.Mtime,
+                LastBackupRunId = runId.ToString("N"),
+                IsDeleted = false,
+                ETag = existingFile?.ETag // Preserve ETag if updating
+            };
+            await manifestManager.SaveFileEntryAsync(fileEntryRecord, cancellationToken);
+
+            progress = await SaveFileProgressAsync(progress, CommitFileStatus.StateUpdated, cancellationToken);
+            await SaveFileProgressAsync(progress, CommitFileStatus.Succeeded, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            progress.Status = CommitFileStatus.Failed;
+            progress.Error = ex.Message;
+            await manifestManager.SaveCommitFileProgressAsync(progress, cancellationToken);
+            throw;
+        }
 
         LogFileEntryProcessed(logger, logicalPath, fileEntry.UniqueFileId);
+    }
+
+    private async Task<CommitFileProgress> GetOrCreateFileProgressAsync(
+        Guid commitId,
+        Guid deviceId,
+        Guid runId,
+        ManifestFileEntry fileEntry,
+        string logicalPath,
+        CancellationToken cancellationToken)
+    {
+        var progress = await manifestManager.GetCommitFileProgressAsync(commitId, fileEntry.UniqueFileId, cancellationToken);
+        if (progress != null)
+        {
+            return progress;
+        }
+
+        return await manifestManager.SaveCommitFileProgressAsync(new CommitFileProgress
+        {
+            CommitId = commitId,
+            DeviceId = deviceId,
+            RunId = runId,
+            UniqueFileId = fileEntry.UniqueFileId,
+            LogicalPath = logicalPath,
+            Status = CommitFileStatus.Pending,
+            UpdatedAt = DateTimeOffset.UtcNow
+        }, cancellationToken);
+    }
+
+    private async Task<CommitFileProgress> SaveFileProgressAsync(
+        CommitFileProgress progress,
+        CommitFileStatus status,
+        CancellationToken cancellationToken)
+    {
+        progress.Status = status;
+        progress.Error = null;
+        return await manifestManager.SaveCommitFileProgressAsync(progress, cancellationToken);
     }
 
     private static async Task ValidateStagedBlobAsync(
         BlobContainerClient containerClient,
         string sourceBlobName,
+        string destinationBlobName,
         ManifestFileEntry fileEntry,
         CancellationToken cancellationToken)
     {
@@ -281,6 +350,11 @@ public partial class BackupProcessingService(
         }
         catch (RequestFailedException ex) when (ex.Status == 404)
         {
+            if (await IsDestinationBlobPresentAsync(containerClient, destinationBlobName, cancellationToken))
+            {
+                return;
+            }
+
             throw new InvalidOperationException($"Staged blob not found: {sourceBlobName}", ex);
         }
 
@@ -301,6 +375,21 @@ public partial class BackupProcessingService(
         {
             throw new InvalidOperationException(
                 $"Staged blob SHA-256 metadata mismatch for '{fileEntry.LogicalPath}' ({fileEntry.UniqueFileId}).");
+        }
+    }
+
+    private static async Task<bool> IsDestinationBlobPresentAsync(
+        BlobContainerClient containerClient,
+        string destinationBlobName,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await containerClient.GetBlobClient(destinationBlobName).ExistsAsync(cancellationToken);
+        }
+        catch (RequestFailedException)
+        {
+            return false;
         }
     }
 
@@ -384,7 +473,19 @@ public partial class BackupProcessingService(
             { "deviceId", deviceId.ToString("N") }
         };
 
-        await blobStorageService.MoveBlobAsync(sourceBlobName, destinationBlobName, tags, cancellationToken);
+        try
+        {
+            await blobStorageService.MoveBlobAsync(sourceBlobName, destinationBlobName, tags, cancellationToken);
+        }
+        catch (InvalidOperationException ex)
+        {
+            if (!await IsDestinationBlobPresentAsync(containerClient, destinationBlobName, cancellationToken))
+            {
+                throw;
+            }
+
+            LogSourceMissingDestinationPresent(logger, sourceBlobName, destinationBlobName, ex);
+        }
 
         // Update FileVersion state to Retired
         var retiredVersion = fileVersion with
@@ -419,6 +520,8 @@ public partial class BackupProcessingService(
     }
 
     #region Logging
+
+    private static string GetManifestPath(Guid deviceId, Guid runId) => $"runs/{deviceId:N}/{runId:N}/run-manifest.json";
 
     [LoggerMessage(LogLevel.Information, "Started processing backup run {runId} for device {deviceId} from staging path: {stagingPath}")]
     static partial void LogProcessingStarted(ILogger logger, Guid deviceId, Guid runId, string stagingPath);
@@ -467,6 +570,12 @@ public partial class BackupProcessingService(
 
     [LoggerMessage(LogLevel.Warning, "Backup run {runId} for device {deviceId} is being processed concurrently. Skipping this message.")]
     static partial void LogConcurrentProcessing(ILogger logger, Guid deviceId, Guid runId);
+
+    [LoggerMessage(LogLevel.Information, "Commit file progress {commitId}/{uniqueFileId} for {logicalPath} already succeeded. Skipping.")]
+    static partial void LogCommitFileAlreadySucceeded(ILogger logger, Guid commitId, string uniqueFileId, string logicalPath);
+
+    [LoggerMessage(LogLevel.Warning, "Source blob {sourceBlobName} is missing, but destination blob {destinationBlobName} exists. Continuing idempotent move recovery.")]
+    static partial void LogSourceMissingDestinationPresent(ILogger logger, string sourceBlobName, string destinationBlobName, Exception ex);
 
     #endregion
 }

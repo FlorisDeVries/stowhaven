@@ -29,6 +29,7 @@ builder.AddStandardHealthChecks();
 builder.AddCustomAuthentication();
 
 builder.AddApplicationServices();
+builder.AddBackupApiServices();
 builder.ConfigureRouting();
 builder.ConfigureWebServer();
 builder.ConfigureProxyForwarding();
