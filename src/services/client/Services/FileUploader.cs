@@ -7,6 +7,7 @@ using Azure.Storage.Blobs;
 using Azure.Storage.Blobs.Models;
 using FlorisDeV.BackupClient.Config;
 using FlorisDeV.BackupClient.Models;
+using FlorisDeV.BackupContracts.Infrastructure;
 using FlorisDeV.BackupContracts.Manifest;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -159,6 +160,7 @@ public partial class FileUploader(
                 var uploadOptions = new Azure.Storage.Blobs.Models.BlobUploadOptions
                 {
                     ProgressHandler = progress,
+                    Metadata = CreateBackupMetadata(taggedFile),
                     Conditions = taggedFile.UniqueFileId != null
                         ? new BlobRequestConditions { IfNoneMatch = ETag.All }
                         : null
@@ -170,6 +172,7 @@ public partial class FileUploader(
             {
                 var uploadOptions = new BlobUploadOptions
                 {
+                    Metadata = CreateBackupMetadata(taggedFile),
                     Conditions = new BlobRequestConditions { IfNoneMatch = ETag.All }
                 };
 
@@ -181,6 +184,25 @@ public partial class FileUploader(
                 await blobClient.UploadAsync(fileStream, overwrite: true, timeoutCts.Token);
             }
         }, cancellationToken);
+    }
+
+    private static IDictionary<string, string>? CreateBackupMetadata(TaggedFile taggedFile)
+    {
+        if (taggedFile.UniqueFileId == null)
+        {
+            return null;
+        }
+
+        if (string.IsNullOrWhiteSpace(taggedFile.Metadata.Hash))
+        {
+            throw new InvalidOperationException($"Missing SHA-256 hash for {taggedFile.GetStoragePath()}");
+        }
+
+        return new Dictionary<string, string>
+        {
+            [BackupBlobMetadata.Sha256] = taggedFile.Metadata.Hash,
+            [BackupBlobMetadata.UniqueFileId] = taggedFile.UniqueFileId
+        };
     }
 
     public async Task UploadRunManifestAsync(

@@ -6,8 +6,10 @@ using FluentAssertions;
 using FlorisDeV.BackupApi.Services;
 using FlorisDeV.BackupApi.Telemetry;
 using FlorisDeV.BackupContracts.Events;
+using FlorisDeV.BackupContracts.Infrastructure;
 using FlorisDeV.BackupContracts.Manifest;
 using FlorisDeV.BackupContracts.State;
+using FlorisDeV.BackupWorker.Services;
 using Microsoft.Extensions.Logging;
 using Moq;
 using System.Text;
@@ -361,6 +363,130 @@ public class BackupProcessingServiceTests
             Times.Once);
     }
 
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task ProcessBackupRunAsync_WhenStagedBlobMissing_ThrowsAndDoesNotMoveBlob()
+    {
+        // Arrange
+        var deviceId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var commitId = Guid.NewGuid();
+        var fileEntry = CreateFileEntry("documents/test.txt", "abc123_20260419_xyz");
+
+        var backupEvent = CreateBackupEvent(deviceId, runId, commitId);
+        SetupQueuedCommitJob(commitId, deviceId, runId);
+        SetupBackupRun(deviceId, runId);
+
+        var manifest = CreateManifest(deviceId, runId, new List<ManifestFileEntry> { fileEntry }, new List<string>());
+        SetupManifestDownload(manifest);
+
+        var sourcePath = $"staging/{deviceId:N}/{runId:N}/{fileEntry.UniqueFileId}";
+        _blobClients[sourcePath]
+            .Setup(x => x.GetPropertiesAsync(It.IsAny<BlobRequestConditions>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new RequestFailedException(404, "Not Found"));
+
+        // Act
+        var act = async () => await _sut.ProcessBackupRunAsync(backupEvent);
+
+        // Assert
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*Staged blob not found*");
+
+        _blobStorageServiceMock.Verify(
+            x => x.MoveBlobAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Dictionary<string, string>>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task ProcessBackupRunAsync_WhenStagedBlobSizeDiffersFromManifest_ThrowsAndDoesNotMoveBlob()
+    {
+        // Arrange
+        var deviceId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var commitId = Guid.NewGuid();
+        var fileEntry = CreateFileEntry("documents/test.txt", "abc123_20260419_xyz") with { Size = 1024 };
+
+        var backupEvent = CreateBackupEvent(deviceId, runId, commitId);
+        SetupQueuedCommitJob(commitId, deviceId, runId);
+        SetupBackupRun(deviceId, runId);
+
+        var manifest = CreateManifest(deviceId, runId, new List<ManifestFileEntry> { fileEntry }, new List<string>());
+        SetupManifestDownload(manifest);
+        SetupStagedBlobProperties(deviceId.ToString("N"), runId.ToString("N"), fileEntry, contentLength: 1000);
+
+        // Act
+        var act = async () => await _sut.ProcessBackupRunAsync(backupEvent);
+
+        // Assert
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*size mismatch*");
+
+        _blobStorageServiceMock.Verify(
+            x => x.MoveBlobAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Dictionary<string, string>>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task ProcessBackupRunAsync_WhenStagedBlobHashMetadataMissing_ThrowsAndDoesNotMoveBlob()
+    {
+        // Arrange
+        var deviceId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var commitId = Guid.NewGuid();
+        var fileEntry = CreateFileEntry("documents/test.txt", "abc123_20260419_xyz");
+
+        var backupEvent = CreateBackupEvent(deviceId, runId, commitId);
+        SetupQueuedCommitJob(commitId, deviceId, runId);
+        SetupBackupRun(deviceId, runId);
+
+        var manifest = CreateManifest(deviceId, runId, new List<ManifestFileEntry> { fileEntry }, new List<string>());
+        SetupManifestDownload(manifest);
+        SetupStagedBlobProperties(deviceId.ToString("N"), runId.ToString("N"), fileEntry, includeSha256Metadata: false);
+
+        // Act
+        var act = async () => await _sut.ProcessBackupRunAsync(backupEvent);
+
+        // Assert
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage($"*{BackupBlobMetadata.Sha256}*");
+
+        _blobStorageServiceMock.Verify(
+            x => x.MoveBlobAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Dictionary<string, string>>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task ProcessBackupRunAsync_WhenStagedBlobHashMetadataDiffersFromManifest_ThrowsAndDoesNotMoveBlob()
+    {
+        // Arrange
+        var deviceId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var commitId = Guid.NewGuid();
+        var fileEntry = CreateFileEntry("documents/test.txt", "abc123_20260419_xyz");
+
+        var backupEvent = CreateBackupEvent(deviceId, runId, commitId);
+        SetupQueuedCommitJob(commitId, deviceId, runId);
+        SetupBackupRun(deviceId, runId);
+
+        var manifest = CreateManifest(deviceId, runId, new List<ManifestFileEntry> { fileEntry }, new List<string>());
+        SetupManifestDownload(manifest);
+        SetupStagedBlobProperties(deviceId.ToString("N"), runId.ToString("N"), fileEntry, sha256: "different-hash");
+
+        // Act
+        var act = async () => await _sut.ProcessBackupRunAsync(backupEvent);
+
+        // Assert
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*SHA-256 metadata mismatch*");
+
+        _blobStorageServiceMock.Verify(
+            x => x.MoveBlobAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Dictionary<string, string>>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
     #endregion
 
     #region File Deletion Tests
@@ -688,6 +814,41 @@ public class BackupProcessingServiceTests
         manifestBlobClient
             .Setup(x => x.DownloadContentAsync(It.IsAny<CancellationToken>()))
             .Callback<CancellationToken>(ct => pathCallback?.Invoke(manifestPath))
+            .ReturnsAsync(response);
+
+        foreach (var fileEntry in manifest.Files)
+        {
+            SetupStagedBlobProperties(manifest.DeviceId, manifest.RunId, fileEntry);
+        }
+    }
+
+    private void SetupStagedBlobProperties(
+        string deviceId,
+        string runId,
+        ManifestFileEntry fileEntry,
+        long? contentLength = null,
+        string? sha256 = null,
+        bool includeSha256Metadata = true)
+    {
+        var sourcePath = $"staging/{deviceId}/{runId}/{fileEntry.UniqueFileId}";
+        if (!_blobClients.ContainsKey(sourcePath))
+        {
+            _blobClients[sourcePath] = new Mock<BlobClient>();
+        }
+
+        var metadata = new Dictionary<string, string>();
+        if (includeSha256Metadata)
+        {
+            metadata[BackupBlobMetadata.Sha256] = sha256 ?? fileEntry.Sha256;
+        }
+
+        var properties = BlobsModelFactory.BlobProperties(
+            contentLength: contentLength ?? fileEntry.Size,
+            metadata: metadata);
+        var response = Response.FromValue(properties, Mock.Of<Response>());
+
+        _blobClients[sourcePath]
+            .Setup(x => x.GetPropertiesAsync(It.IsAny<BlobRequestConditions>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(response);
     }
 

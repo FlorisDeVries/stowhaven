@@ -4,6 +4,7 @@ using Azure.Storage.Blobs.Models;
 using FlorisDeV.BackupClient.Config;
 using FlorisDeV.BackupClient.Models;
 using FlorisDeV.BackupClient.Services;
+using FlorisDeV.BackupContracts.Infrastructure;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -335,6 +336,51 @@ public class FileUploaderTests
         mockBlobClient.Verify(x => x.UploadAsync(
             It.IsAny<Stream>(),
             true,
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task UploadFilesAsync_WithUniqueFileId_ShouldUploadCreateOnlyWithSha256Metadata()
+    {
+        // Arrange
+        var mockContainer = new Mock<BlobContainerClient>();
+        var mockBlobClient = new Mock<BlobClient>();
+        var mockResponse = new Mock<Response<BlobContentInfo>>();
+
+        var file = new TaggedFile("test", "/test/path",
+            new FileMetadata("/test/path/smallfile.txt", 1024, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddDays(-1), "hash1"))
+        {
+            UniqueFileId = "hash1_20260426T120000Z_abc123"
+        };
+
+        mockContainer.Setup(x => x.GetBlobClient(file.UniqueFileId))
+            .Returns(mockBlobClient.Object);
+
+        var memoryStream = new MemoryStream(new byte[1024]);
+        _mockFileSystemService.Setup(x => x.GetFileStreamAsync(
+                "/test/path/smallfile.txt",
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(memoryStream);
+
+        mockBlobClient.Setup(x => x.UploadAsync(
+                It.IsAny<Stream>(),
+                It.IsAny<BlobUploadOptions>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(mockResponse.Object);
+
+        // Act
+        var result = await _sut.UploadFilesAsync(mockContainer.Object, new[] { file }, CancellationToken.None);
+
+        // Assert
+        result.Should().HaveCount(1);
+        mockBlobClient.Verify(x => x.UploadAsync(
+            It.IsAny<Stream>(),
+            It.Is<BlobUploadOptions>(o =>
+                o.Conditions != null &&
+                o.Metadata != null &&
+                o.Metadata[BackupBlobMetadata.Sha256] == "hash1" &&
+                o.Metadata[BackupBlobMetadata.UniqueFileId] == file.UniqueFileId),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 

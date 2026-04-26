@@ -109,22 +109,23 @@ The API and worker use separate images, but the worker image reuses the API serv
 Remaining recommendation: verify Service Bus scaler behavior after deployment and tune maxReplicas, messageCount, timeoutInSec, and maxConcurrentHandlers for real backup sizes.
 
 P1 critical reliability and data integrity issues
-7. Server does not verify uploaded blob size/hash before commit
-The design says the worker verifies staged blobs with HEAD requests and validates size/hash. The implementation moves blobs without validation.
+7. Server does not verify uploaded blob size/hash before commit — addressed
+The worker now validates each staged blob before moving it into the committed file location. The client writes SHA-256 metadata on staged uploads, and the worker checks blob properties before state changes.
 
 Relevant locations:
 
-File processing loops directly call ProcessFileEntryAsync: BackupProcessingService.cs:88-100
-ProcessFileEntryAsync moves the blob before any hash/size validation: BackupProcessingService.cs:212-224
-Impact: corrupt, truncated, or wrong blobs can become authoritative.
+Client stores staged blob metadata: FileUploader.cs
+Shared metadata keys: BackupBlobMetadata.cs
+Worker validates staged blob HEAD/properties before move: BackupProcessingService.cs
 
-Recommendation:
+Current validation:
 
-Check blob exists.
-Validate ContentLength == manifest.Size.
-Store and verify hash metadata or tags.
-Consider client-provided transactional hash plus Azure checksum headers.
-Fail the commit if validation fails.
+Checks the staged blob exists.
+Validates ContentLength == manifest.Size.
+Validates backup_sha256 metadata == manifest.Sha256.
+Fails the commit before moving the blob if validation fails.
+
+Remaining recommendation: add optional transactional checksum headers or full server-side hash verification for a future paranoid mode if the additional read cost is acceptable.
 8. Blob move fallback can cause early deletion fees and partial failures
 The design relies on ADLS Gen2 rename to avoid early deletion penalties. The implementation catches all rename errors and silently falls back to copy+delete.
 

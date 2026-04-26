@@ -3,13 +3,15 @@ using System.Text.Json;
 using Azure;
 using Azure.Storage.Blobs;
 using Azure.Storage.Blobs.Models;
+using FlorisDeV.BackupApi.Services;
 using FlorisDeV.BackupApi.Telemetry;
 using FlorisDeV.BackupContracts.Events;
+using FlorisDeV.BackupContracts.Infrastructure;
 using FlorisDeV.BackupContracts.Manifest;
 using FlorisDeV.BackupContracts.State;
 using FlorisDeV.Logging.OpenTelemetry;
 
-namespace FlorisDeV.BackupApi.Services;
+namespace FlorisDeV.BackupWorker.Services;
 
 public interface IBackupProcessingService
 {
@@ -213,13 +215,15 @@ public partial class BackupProcessingService(
         var logicalPath = fileEntry.LogicalPath;
         LogProcessingFileEntry(logger, logicalPath, fileEntry.UniqueFileId);
 
+        var sourceBlobName = $"staging/{deviceId:N}/{runId:N}/{fileEntry.UniqueFileId}";
+        var destinationBlobName = $"devices/{deviceId:N}/files/{fileEntry.UniqueFileId}";
+
+        await ValidateStagedBlobAsync(containerClient, sourceBlobName, fileEntry, cancellationToken);
+
         // Check if file already exists
         var existingFile = await manifestManager.GetFileEntryAsync(deviceId, logicalPath, cancellationToken);
 
         // Move blob from staging to files/
-        var sourceBlobName = $"staging/{deviceId:N}/{runId:N}/{fileEntry.UniqueFileId}";
-        var destinationBlobName = $"devices/{deviceId:N}/files/{fileEntry.UniqueFileId}";
-
         await blobStorageService.MoveBlobAsync(sourceBlobName, destinationBlobName, null, cancellationToken);
 
         // Create new FileVersion (Active)
@@ -260,6 +264,62 @@ public partial class BackupProcessingService(
         await manifestManager.SaveFileEntryAsync(fileEntryRecord, cancellationToken);
 
         LogFileEntryProcessed(logger, logicalPath, fileEntry.UniqueFileId);
+    }
+
+    private static async Task ValidateStagedBlobAsync(
+        BlobContainerClient containerClient,
+        string sourceBlobName,
+        ManifestFileEntry fileEntry,
+        CancellationToken cancellationToken)
+    {
+        var sourceBlobClient = containerClient.GetBlobClient(sourceBlobName);
+        BlobProperties properties;
+
+        try
+        {
+            properties = await sourceBlobClient.GetPropertiesAsync(cancellationToken: cancellationToken);
+        }
+        catch (RequestFailedException ex) when (ex.Status == 404)
+        {
+            throw new InvalidOperationException($"Staged blob not found: {sourceBlobName}", ex);
+        }
+
+        if (properties.ContentLength != fileEntry.Size)
+        {
+            throw new InvalidOperationException(
+                $"Staged blob size mismatch for '{fileEntry.LogicalPath}' ({fileEntry.UniqueFileId}). " +
+                $"Expected {fileEntry.Size} bytes, actual {properties.ContentLength} bytes.");
+        }
+
+        if (!TryGetMetadataValue(properties.Metadata, BackupBlobMetadata.Sha256, out var uploadedSha256))
+        {
+            throw new InvalidOperationException(
+                $"Staged blob is missing required metadata '{BackupBlobMetadata.Sha256}' for '{fileEntry.LogicalPath}' ({fileEntry.UniqueFileId}).");
+        }
+
+        if (!string.Equals(uploadedSha256, fileEntry.Sha256, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"Staged blob SHA-256 metadata mismatch for '{fileEntry.LogicalPath}' ({fileEntry.UniqueFileId}).");
+        }
+    }
+
+    private static bool TryGetMetadataValue(
+        IDictionary<string, string> metadata,
+        string key,
+        out string value)
+    {
+        foreach (var item in metadata)
+        {
+            if (string.Equals(item.Key, key, StringComparison.OrdinalIgnoreCase))
+            {
+                value = item.Value;
+                return true;
+            }
+        }
+
+        value = string.Empty;
+        return false;
     }
 
     private async Task ProcessFileDeletionAsync(

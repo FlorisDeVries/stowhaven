@@ -7,6 +7,7 @@ using FlorisDeV.HealthChecks;
 using FlorisDeV.Logging;
 using FlorisDeV.Logging.ErrorHandling;
 using FlorisDeV.Logging.Middleware;
+using FlorisDeV.BackupWorker.Services;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Mvc.ApplicationModels;
 using Serilog;
@@ -27,6 +28,8 @@ builder.ConfigureRouting();
 builder.ConfigureWebServer();
 builder.ConfigureProxyForwarding();
 builder.AddAzureFeatureFlags();
+
+builder.Services.AddScoped<IBackupProcessingService, BackupProcessingService>();
 
 builder.Services
     .AddExceptionHandlers()

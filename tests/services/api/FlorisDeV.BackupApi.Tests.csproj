@@ -21,6 +21,7 @@
 
     <ItemGroup>
       <ProjectReference Include="..\..\..\src\services\api\FlorisDeV.BackupApi.csproj" />
+            <ProjectReference Include="..\..\..\src\services\worker\FlorisDeV.BackupWorker.csproj" />
     </ItemGroup>
 
 </Project>

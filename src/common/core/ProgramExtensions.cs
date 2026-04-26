@@ -21,7 +21,6 @@ public static class ProgramExtensions
             builder.Services.AddScoped<IBlobStorageService, BlobStorageService>();
             builder.Services.AddScoped<ISasUrlService, SasUrlService>();
             builder.Services.AddScoped<IBackupRunService, BackupRunService>();
-            builder.Services.AddScoped<IBackupProcessingService, BackupProcessingService>();
             builder.Services.AddScoped<IBackupEventPublisher, BackupEventPublisher>();
             builder.Services.AddScoped<IManifestManager, ManifestManager>();
             builder.Services.AddScoped<ISecretService, SecretService>();
