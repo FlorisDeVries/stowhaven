@@ -348,6 +348,7 @@ flowchart TD
 
   * Get User Delegation Keys from Blob storage.
   * Perform blob rename/move operations (`staging` → `files`, `files` → `retired`).
+  * Fail the move if ADLS Gen2 rename fails, unless `ALLOW_COPY_DELETE_FALLBACK=true` is explicitly configured for a deployment that accepts early deletion cost and partial-failure risk.
 * **Blob Storage public access disabled**; all access via SAS or Managed Identity from trusted services.
 * **State stores (Azure Table Storage)** are accessed only from Container Apps via:
 

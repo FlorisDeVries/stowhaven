@@ -37,6 +37,9 @@ param logAnalyticsDailyQuotaGb int = 1
 @description('Container image tag to deploy')
 param imageTag string = 'latest'
 
+@description('Explicitly allow copy/delete fallback when ADLS Gen2 rename fails. Keep false in production unless early deletion cost and partial-failure risks are accepted.')
+param allowCopyDeleteFallback bool = false
+
 // ---------------------------------------------------------------------------
 // Locals / derived values
 // ---------------------------------------------------------------------------
@@ -122,6 +125,7 @@ module compute 'modules/compute.bicep' = {
     serviceBusScaleConnectionString: daprInfra.outputs.serviceBusScaleConnectionString
     apiKey: apiKey
     imageTag: imageTag
+    allowCopyDeleteFallback: allowCopyDeleteFallback
     tags: commonTags
   }
 }

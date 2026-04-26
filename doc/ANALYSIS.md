@@ -126,21 +126,23 @@ Validates backup_sha256 metadata == manifest.Sha256.
 Fails the commit before moving the blob if validation fails.
 
 Remaining recommendation: add optional transactional checksum headers or full server-side hash verification for a future paranoid mode if the additional read cost is acceptable.
-8. Blob move fallback can cause early deletion fees and partial failures
-The design relies on ADLS Gen2 rename to avoid early deletion penalties. The implementation catches all rename errors and silently falls back to copy+delete.
+8. Blob move fallback can cause early deletion fees and partial failures — addressed
+The design relies on ADLS Gen2 rename to avoid early deletion penalties. The implementation no longer silently falls back to copy/delete in Azure production paths.
 
 Relevant location:
 
-Rename failure is swallowed and falls back to copy/delete: BlobStorageService.cs:238-267
-Impact:
+BlobStorageService.MoveBlobAsync now treats ADLS rename failure as fatal unless ALLOW_COPY_DELETE_FALLBACK is explicitly true: BlobStorageService.cs
+Bicep exposes allowCopyDeleteFallback and maps it to ALLOW_COPY_DELETE_FALLBACK for API and worker containers: main.bicep, compute.bicep
 
-If HNS rename fails, copy+delete may trigger costs and leave inconsistent state.
-Silent fallback hides a major production assumption violation.
-Recommendation:
+Current behavior:
 
-In production, fail hard if ADLS Gen2 rename fails unless an explicit AllowCopyDeleteFallback flag is enabled.
-Log the rename exception with high severity.
-Use leases or idempotency markers around moves.
+Azurite/local development still uses copy/delete because ADLS rename is unavailable.
+Azure production first attempts ADLS Gen2 rename.
+If rename fails and ALLOW_COPY_DELETE_FALLBACK is not true, the move fails and logs a Critical event.
+If fallback is explicitly enabled, the move logs an Error and continues with copy/delete.
+Fallback copy uses create-only destination conditions to avoid overwriting an existing destination blob.
+
+Remaining recommendation: add blob leases or richer per-file idempotency markers together with the broader commit transaction hardening in item 9.
 9. Commit processing is not transactionally safe
 ProcessFileEntryAsync moves the staged blob, saves a new FileVersion, retires the old version, then saves FileEntry.
 

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Azure;
 using Azure.Identity;
 using Azure.Storage;
 using Azure.Storage.Blobs;
@@ -67,6 +68,9 @@ public partial class BlobStorageService(
     TelemetryProvider telemetry
 ) : IBlobStorageService
 {
+    private const string AllowCopyDeleteFallbackSecretName = "ALLOW_COPY_DELETE_FALLBACK";
+    private const string AllowCopyDeleteFallbackConfigurationKey = "Storage:AllowCopyDeleteFallback";
+
     private BlobServiceClient? _blobServiceClient;
     private string? _storageAccountName;
     private string? _containerName;
@@ -256,8 +260,8 @@ public partial class BlobStorageService(
             throw new InvalidOperationException($"Source blob not found: {sourceBlobName}");
         }
 
-        // For ADLS Gen2 (HNS ON), we can use rename operation (no early deletion fees)
-        // For standard storage, we use copy + delete
+        // For ADLS Gen2 (HNS ON), use rename operation in Azure to avoid early deletion fees.
+        // Copy+delete is used automatically only for Azurite/local development.
         var isAzurite = await IsUsingAzuriteAsync(cancellationToken);
 
         if (!isAzurite)
@@ -280,16 +284,30 @@ public partial class BlobStorageService(
 
                 return;
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                // Fall back to copy + delete if rename fails
+                if (!await IsCopyDeleteFallbackAllowedAsync(cancellationToken))
+                {
+                    LogAdlsRenameFailedCopyDeleteDisabled(logger, sourceBlobName, destinationBlobName, ex);
+                    throw new InvalidOperationException(
+                        "ADLS Gen2 rename failed and copy/delete fallback is disabled. " +
+                        $"Source: '{sourceBlobName}', destination: '{destinationBlobName}'. " +
+                        $"Set '{AllowCopyDeleteFallbackSecretName}=true' only if the extra cost and partial-failure risk are accepted.",
+                        ex);
+                }
+
+                LogAdlsRenameFailedCopyDeleteEnabled(logger, sourceBlobName, destinationBlobName, ex);
             }
         }
 
         // Fallback: Copy + Delete
         var copyOperation = await destinationBlobClient.StartCopyFromUriAsync(
             sourceBlobClient.Uri,
-            cancellationToken: cancellationToken);
+            new BlobCopyFromUriOptions
+            {
+                DestinationConditions = new BlobRequestConditions { IfNoneMatch = ETag.All }
+            },
+            cancellationToken);
 
         await copyOperation.WaitForCompletionAsync(cancellationToken);
 
@@ -300,6 +318,18 @@ public partial class BlobStorageService(
         {
             await destinationBlobClient.SetTagsAsync(tags, cancellationToken: cancellationToken);
         }
+    }
+
+    private async Task<bool> IsCopyDeleteFallbackAllowedAsync(CancellationToken cancellationToken)
+    {
+        var configuredValue = await secretService.GetSecretAsync(AllowCopyDeleteFallbackSecretName);
+
+        if (string.IsNullOrWhiteSpace(configuredValue))
+        {
+            configuredValue = await secretService.GetSecretAsync(AllowCopyDeleteFallbackConfigurationKey);
+        }
+
+        return bool.TryParse(configuredValue, out var allowFallback) && allowFallback;
     }
 
     #region Logging
@@ -321,6 +351,14 @@ public partial class BlobStorageService(
 
     [LoggerMessage(LogLevel.Error, "Failed to retrieve user delegation key")]
     static partial void LogDelegationKeyRetrievalFailed(ILogger logger, Exception ex);
+
+    [LoggerMessage(LogLevel.Critical,
+        "ADLS Gen2 rename failed for blob move {sourceBlobName} -> {destinationBlobName}. Copy/delete fallback is disabled; failing the move to avoid early deletion fees and partial-failure risk.")]
+    static partial void LogAdlsRenameFailedCopyDeleteDisabled(ILogger logger, string sourceBlobName, string destinationBlobName, Exception ex);
+
+    [LoggerMessage(LogLevel.Error,
+        "ADLS Gen2 rename failed for blob move {sourceBlobName} -> {destinationBlobName}. Copy/delete fallback is explicitly enabled; continuing with copy/delete.")]
+    static partial void LogAdlsRenameFailedCopyDeleteEnabled(ILogger logger, string sourceBlobName, string destinationBlobName, Exception ex);
 
     #endregion
 }

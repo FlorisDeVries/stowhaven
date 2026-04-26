@@ -39,6 +39,9 @@ param apiKey string
 @description('Container image tag to deploy')
 param imageTag string = 'latest'
 
+@description('Explicitly allow copy/delete fallback when ADLS Gen2 rename fails. Keep false in production unless early deletion cost and partial-failure risks are accepted.')
+param allowCopyDeleteFallback bool = false
+
 @description('Common resource tags')
 param tags object
 
@@ -229,6 +232,10 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
               value: containerName
             }
             {
+              name: 'ALLOW_COPY_DELETE_FALLBACK'
+              value: string(allowCopyDeleteFallback)
+            }
+            {
               name: 'API_KEY'
               secretRef: 'api-key'
             }
@@ -321,6 +328,10 @@ resource workerContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
             {
               name: 'DATA_CONTAINER'
               value: containerName
+            }
+            {
+              name: 'ALLOW_COPY_DELETE_FALLBACK'
+              value: string(allowCopyDeleteFallback)
             }
             {
               name: 'API_KEY'

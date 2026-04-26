@@ -10,6 +10,7 @@ param lifecycleArchiveAfterDays = 30
 param logAnalyticsRetentionDays = 30
 param logAnalyticsDailyQuotaGb = 1
 param imageTag = 'latest'
+param allowCopyDeleteFallback = false
 param apiKey = ''
 
 // apiKey is @secure() – pass via CI secret or CLI:
