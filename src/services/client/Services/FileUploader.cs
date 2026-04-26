@@ -1,7 +1,13 @@
 using System.Collections.Concurrent;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using Azure;
 using Azure.Storage.Blobs;
+using Azure.Storage.Blobs.Models;
 using FlorisDeV.BackupClient.Config;
 using FlorisDeV.BackupClient.Models;
+using FlorisDeV.BackupContracts.Manifest;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -19,13 +25,15 @@ public partial class FileUploader(
 {
     private readonly BackupClientOptions _options = options.Value;
     private string? _basePath; // Base path for uploaded blobs (e.g., "staging/device/run/")
+    private bool _isPathEmbedded;
 
     /// <summary>
     /// Sets the base path prefix for uploaded blobs. Must be called before uploading files.
     /// </summary>
-    public void SetBasePath(string? basePath)
+    public void SetBasePath(string? basePath, bool isPathEmbedded = false)
     {
         _basePath = basePath?.TrimEnd('/');
+        _isPathEmbedded = isPathEmbedded;
     }
 
     /// <summary>
@@ -100,12 +108,12 @@ public partial class FileUploader(
         TaggedFile taggedFile,
         CancellationToken cancellationToken)
     {
-        var storagePath = taggedFile.GetStoragePath();
+        var storagePath = taggedFile.UniqueFileId ?? taggedFile.GetStoragePath();
         
         // Prepend base path to create full blob path within container
         // Base path is provided by API (e.g., "staging/device-id/run-id/")
-        // This maintains directory structure: {basePath}/{relativePath}
-        var blobPath = string.IsNullOrEmpty(_basePath) 
+        // Production directory SAS URLs already embed this base path in the client URI.
+        var blobPath = string.IsNullOrEmpty(_basePath) || _isPathEmbedded
             ? storagePath 
             : $"{_basePath}/{storagePath}";
             
@@ -150,7 +158,19 @@ public partial class FileUploader(
 
                 var uploadOptions = new Azure.Storage.Blobs.Models.BlobUploadOptions
                 {
-                    ProgressHandler = progress
+                    ProgressHandler = progress,
+                    Conditions = taggedFile.UniqueFileId != null
+                        ? new BlobRequestConditions { IfNoneMatch = ETag.All }
+                        : null
+                };
+
+                await blobClient.UploadAsync(fileStream, uploadOptions, timeoutCts.Token);
+            }
+            else if (taggedFile.UniqueFileId != null)
+            {
+                var uploadOptions = new BlobUploadOptions
+                {
+                    Conditions = new BlobRequestConditions { IfNoneMatch = ETag.All }
                 };
 
                 await blobClient.UploadAsync(fileStream, uploadOptions, timeoutCts.Token);
@@ -160,6 +180,37 @@ public partial class FileUploader(
                 // Regular upload for smaller files
                 await blobClient.UploadAsync(fileStream, overwrite: true, timeoutCts.Token);
             }
+        }, cancellationToken);
+    }
+
+    public async Task UploadRunManifestAsync(
+        BlobContainerClient containerClient,
+        RunManifest manifest,
+        string? basePath,
+        bool isPathEmbedded,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(containerClient);
+        ArgumentNullException.ThrowIfNull(manifest);
+
+        var blobName = isPathEmbedded || string.IsNullOrWhiteSpace(basePath)
+            ? "run-manifest.json"
+            : $"{basePath.TrimEnd('/')}/run-manifest.json";
+
+        var blobClient = containerClient.GetBlobClient(blobName);
+
+        var json = JsonSerializer.Serialize(manifest, new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+            Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) }
+        });
+
+        await using var stream = new MemoryStream(Encoding.UTF8.GetBytes(json));
+        await blobClient.UploadAsync(stream, new BlobUploadOptions
+        {
+            HttpHeaders = new BlobHttpHeaders { ContentType = "application/json" },
+            Conditions = new BlobRequestConditions { IfNoneMatch = ETag.All }
         }, cancellationToken);
     }
 }

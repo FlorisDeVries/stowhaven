@@ -57,11 +57,21 @@ resource backupEventsTopic 'Microsoft.ServiceBus/namespaces/topics@2022-10-01-pr
   }
 }
 
-resource backupApiSubscription 'Microsoft.ServiceBus/namespaces/topics/subscriptions@2022-10-01-preview' = {
+resource backupWorkerSubscription 'Microsoft.ServiceBus/namespaces/topics/subscriptions@2022-10-01-preview' = {
   parent: backupEventsTopic
-  name: 'backup-api'
+  name: 'backup-worker'
   properties: {
     maxDeliveryCount: 3
+  }
+}
+
+resource backupWorkerScaleListenRule 'Microsoft.ServiceBus/namespaces/authorizationRules@2022-10-01-preview' = {
+  parent: serviceBusNamespace
+  name: 'backup-worker-scale-listen'
+  properties: {
+    rights: [
+      'Listen'
+    ]
   }
 }
 
@@ -97,3 +107,5 @@ output keyVaultName string = keyVault.name
 output keyVaultId string = keyVault.id
 output redisCacheName string = redisCache.name
 output serviceBusNamespaceName string = serviceBusNamespace.name
+@secure()
+output serviceBusScaleConnectionString string = backupWorkerScaleListenRule.listKeys().primaryConnectionString

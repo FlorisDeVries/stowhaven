@@ -7,6 +7,8 @@ using FlorisDeV.Logging.OpenTelemetry;
 using Microsoft.ApplicationInsights.AspNetCore.Extensions;
 using Microsoft.ApplicationInsights.Extensibility;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Diagnostics;
+using Microsoft.AspNetCore.HttpLogging;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -17,6 +19,7 @@ using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
+using Refit;
 using Serilog;
 using Serilog.Enrichers.Span;
 using Serilog.Events;
@@ -25,6 +28,67 @@ namespace FlorisDeV.Logging;
 
 public static class HostBuilderExtensions
 {
+    public static void AddCustomLogging(this WebApplicationBuilder builder)
+    {
+        builder.Host.AddSerilog(builder.Environment.ApplicationName);
+
+        // Configure log sampling options
+        builder.Services.Configure<LogSamplingOptions>(
+            builder.Configuration.GetSection(LogSamplingOptions.SectionName));
+
+        builder.Services.AddHttpLogging(o =>
+        {
+            o.LoggingFields =
+                HttpLoggingFields.RequestMethod |
+                HttpLoggingFields.RequestPath |
+                HttpLoggingFields.RequestQuery |
+                HttpLoggingFields.ResponseStatusCode |
+                HttpLoggingFields.Duration |
+                HttpLoggingFields.RequestHeaders |
+                HttpLoggingFields.ResponseHeaders;
+
+            // Only log harmless headers you need
+            o.RequestHeaders.Add("User-Agent");
+            o.RequestHeaders.Add("X-Request-Id");
+            o.RequestHeaders.Add("Traceparent");
+
+            o.ResponseHeaders.Add("X-Request-Id");
+            o.ResponseHeaders.Add("Traceparent");
+        });
+
+        builder.Services.AddProblemDetails(options =>
+        {
+            options.CustomizeProblemDetails = context =>
+            {
+                var contextFeature = context.HttpContext.Features.Get<IExceptionHandlerFeature>();
+                var exception = contextFeature?.Error;
+
+                if (exception == null)
+                {
+                    return;
+                }
+
+                var problemDetails = context.ProblemDetails;
+                var response = context.HttpContext.Response;
+
+                problemDetails.Title = exception.GetType().Name;
+                problemDetails.Detail = exception.Message;
+
+                if (exception is not ApiException apiException)
+                {
+                    return;
+                }
+
+                // set the response status and problem details codes
+                // equal to the one returned by the client api exception
+                problemDetails.Status = (int)apiException.StatusCode;
+                response.StatusCode = (int)apiException.StatusCode;
+            };
+        });
+
+        // Note: Exception handling is done via GlobalExceptionFilter for better control.
+    }
+
     /// <summary>
     ///   Adds Serilog as logging library
     /// </summary>
@@ -129,7 +193,6 @@ public static class HostBuilderExtensions
 
         var serviceName = configuration.GetValue<string>("OTEL_SERVICE_NAME");
         var otlpEndpoint = configuration.GetValue<string>("OTEL_EXPORTER_OTLP_ENDPOINT");
-        var zipkinEndpointAddress = configuration.GetValue<string>("OTEL_EXPORTER_ZIPKIN_ENDPOINT");
         var azureMonitorConnection = configuration.GetValue<string>("OTEL_EXPORTER_AZURE_MONITOR_CONNECTION");
 
         // shared resource to use for both OTel metrics and tracing
@@ -175,11 +238,6 @@ public static class HostBuilderExtensions
                 if (!string.IsNullOrEmpty(otlpEndpoint))
                 {
                     tracing.AddOtlpExporter(exportOptions => { exportOptions.Endpoint = new Uri(otlpEndpoint); });
-                }
-
-                if (!string.IsNullOrEmpty(zipkinEndpointAddress))
-                {
-                    tracing.AddZipkinExporter(c => c.Endpoint = new Uri(zipkinEndpointAddress));
                 }
 
                 if (!string.IsNullOrEmpty(azureMonitorConnection))
@@ -255,7 +313,6 @@ public static class HostBuilderExtensions
             .ConfigureServices((context, services) =>
             {
                 var configuration = context.Configuration;
-                var zipkinEndpoint = configuration.GetValue<string>("OTEL_EXPORTER_ZIPKIN_ENDPOINT");
                 var otlpEndpoint = configuration.GetValue<string>("OTEL_EXPORTER_OTLP_ENDPOINT");
                 var azureMonitorConnection = configuration.GetValue<string>("OTEL_EXPORTER_AZURE_MONITOR_CONNECTION");
 
@@ -301,12 +358,6 @@ public static class HostBuilderExtensions
                             {
                                 exportOptions.Endpoint = new Uri(otlpEndpoint);
                             });
-                        }
-
-                        if (!string.IsNullOrEmpty(zipkinEndpoint))
-                        {
-                            tracing.AddZipkinExporter(exportOptions =>
-                                exportOptions.Endpoint = new Uri(zipkinEndpoint));
                         }
 
                         if (!string.IsNullOrEmpty(azureMonitorConnection))

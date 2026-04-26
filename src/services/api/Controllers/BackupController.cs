@@ -1,7 +1,7 @@
-﻿using FlorisDeV.BackupApi.Models.Api.Requests;
-using FlorisDeV.BackupApi.Models.Api.Responses;
-using FlorisDeV.BackupApi.Models.State;
-using FlorisDeV.BackupApi.Services;
+﻿using FlorisDeV.BackupApi.Services;
+using FlorisDeV.BackupContracts.Api.Requests;
+using FlorisDeV.BackupContracts.Api.Responses;
+using FlorisDeV.BackupContracts.State;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -12,21 +12,22 @@ namespace FlorisDeV.BackupApi.Controllers;
 [Route("api/[controller]")]
 public partial class BackupController(
     IBackupRunService backupRunService,
+    IDeviceAuthorizationService deviceAuthorizationService,
     ILogger<BackupController> logger
 ) : ControllerBase
 {
-    [HttpPost("start-run")]
+    [HttpPost("/api/devices/{deviceId:guid}/backup/start-run")]
     [ProducesResponseType(typeof(StartBackupRunResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status500InternalServerError)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     public async Task<ActionResult<StartBackupRunResponse>> StartBackupRun(
-        [FromBody] StartBackupRunRequest request,
+        Guid deviceId,
         CancellationToken cancellationToken
     )
     {
         using var scope = logger.BeginScope(new Dictionary<string, object>
         {
-            ["DeviceId"] = request.DeviceId,
+            ["DeviceId"] = deviceId,
             ["Operation"] = "StartBackupRun"
         });
 
@@ -36,13 +37,15 @@ public partial class BackupController(
             return BadRequest(ModelState);
         }
 
-        LogStartingBackupRun(logger, request.DeviceId);
+        await deviceAuthorizationService.AuthorizeDeviceAsync(User, deviceId, cancellationToken);
+
+        LogStartingBackupRun(logger, deviceId);
 
         // Get client IP for SAS URL restriction
         var clientIp = HttpContext.Connection.RemoteIpAddress?.ToString();
 
         // Start backup-run - let exceptions bubble up to GlobalExceptionFilter
-        var result = await backupRunService.StartBackupRunAsync(request.DeviceId, clientIp, cancellationToken);
+        var result = await backupRunService.StartBackupRunAsync(deviceId, clientIp, cancellationToken);
 
         var response = new StartBackupRunResponse
         {
@@ -50,7 +53,8 @@ public partial class BackupController(
             RunId = result.Run.RunId,
             StartedAt = result.Run.StartedAt,
             Status = result.Run.Status,
-            SasUrlInfo = result.SasUrl
+            SasUrlInfo = result.SasUrl,
+            ManifestSasUrlInfo = result.ManifestSasUrl
         };
 
         LogBackupRunStartedSuccess(logger, result.Run.RunId, result.Run.DeviceId);
@@ -58,7 +62,7 @@ public partial class BackupController(
         return Ok(response);
     }
 
-    [HttpPost("commit-run")]
+    [HttpPost("/api/devices/{deviceId:guid}/backup/commit-run")]
     [ProducesResponseType(typeof(CommitBackupRunResponse), StatusCodes.Status202Accepted)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
@@ -66,12 +70,13 @@ public partial class BackupController(
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status500InternalServerError)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     public async Task<ActionResult<CommitBackupRunResponse>> CommitBackupRun(
+        Guid deviceId,
         [FromBody] CommitBackupRunRequest request,
         CancellationToken cancellationToken)
     {
         using var scope = logger.BeginScope(new Dictionary<string, object>
         {
-            ["DeviceId"] = request.DeviceId,
+            ["DeviceId"] = deviceId,
             ["Operation"] = "CommitBackupRun"
         });
 
@@ -81,13 +86,17 @@ public partial class BackupController(
             return BadRequest(ModelState);
         }
 
-        LogStartCommitBackupRun(logger, request.RunId, request.DeviceId);
+        await deviceAuthorizationService.AuthorizeDeviceAsync(User, deviceId, cancellationToken);
+
+        LogStartCommitBackupRun(logger, request.RunId, deviceId);
+
+        var manifestBlobPath = $"runs/{deviceId:N}/{request.RunId:N}/run-manifest.json";
 
         // Create commit job for async processing - let exceptions bubble up to GlobalExceptionFilter
         var commitJob = await backupRunService.CommitBackupRunAsync(
-            request.DeviceId,
+            deviceId,
             request.RunId,
-            request.ManifestBlobPath,
+            manifestBlobPath,
             cancellationToken);
 
         var response = new CommitBackupRunResponse
@@ -99,19 +108,20 @@ public partial class BackupController(
             CreatedAt = commitJob.CreatedAt
         };
 
-        LogCommitBackupRunAccepted(logger, commitJob.CommitId, request.RunId, request.DeviceId);
+        LogCommitBackupRunAccepted(logger, commitJob.CommitId, request.RunId, deviceId);
 
         return AcceptedAtAction(
             nameof(GetCommitStatus),
-            new { commitId = commitJob.CommitId },
+            new { deviceId, commitId = commitJob.CommitId },
             response);
     }
 
-    [HttpGet("commit-status/{commitId}")]
+    [HttpGet("/api/devices/{deviceId:guid}/backup/commit-status/{commitId:guid}")]
     [ProducesResponseType(typeof(CommitStatusResponse), StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status500InternalServerError)]
     public async Task<ActionResult<CommitStatusResponse>> GetCommitStatus(
+        Guid deviceId,
         Guid commitId,
         CancellationToken cancellationToken)
     {
@@ -123,8 +133,15 @@ public partial class BackupController(
 
         LogGetCommitStatus(logger, commitId);
 
+        await deviceAuthorizationService.AuthorizeDeviceAsync(User, deviceId, cancellationToken);
+
         // Get commit job status - let exceptions bubble up to GlobalExceptionFilter
         var commitJob = await backupRunService.GetCommitStatusAsync(commitId, cancellationToken);
+
+        if (commitJob.DeviceId != deviceId)
+        {
+            return NotFound();
+        }
 
         var response = new CommitStatusResponse
         {

@@ -1,10 +1,13 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
 using Azure.Storage.Blobs;
 using FlorisDeV.BackupClient.Clients.BackupApi;
-using FlorisDeV.BackupClient.Clients.BackupApi.DTOs;
 using FlorisDeV.BackupClient.Config;
 using FlorisDeV.BackupClient.Models;
 using FlorisDeV.BackupClient.Telemetry;
+using FlorisDeV.BackupContracts.Api.Requests;
+using FlorisDeV.BackupContracts.Manifest;
+using FlorisDeV.BackupContracts.State;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -42,6 +45,8 @@ public partial class BackupService(
         var deviceState = await backupStateService.GetOrCreateDeviceStateAsync(cancellationToken);
         var deviceId = deviceState.DeviceId;
 
+        await RegisterDeviceAsync(deviceId, cancellationToken);
+
         SetupTelemetryBackupStart(activity, deviceId, targets);
 
         var stopwatch = Stopwatch.StartNew();
@@ -53,34 +58,50 @@ public partial class BackupService(
             var excludePatterns = ResolveExclusionPatterns();
 
             // Step 2: Scan, hash, batch, and upload files
-            var (stats, hasStartedBackupRun, runId) = await ProcessFilesAsync(
+            var processingResult = await ProcessFilesAsync(
                 deviceState, deviceId, targets, excludePatterns, activity, metricTags, cancellationToken);
 
             // Step 3: Detect deleted files
-            var deletedFiles = await DetectDeletedFilesAsync(deviceState, stats.ScannedPaths, cancellationToken);
+            var deletedFiles = await DetectDeletedFilesAsync(deviceState, processingResult.Stats.ScannedPaths, cancellationToken);
 
-            LogDeltaComputed(stats.NewFilesCount, stats.ModifiedFilesCount, deletedFiles.Count);
-            LogSmartHashingStats(stats.NewFilesCount, stats.ModifiedFilesCount, stats.UnchangedCount, stats.SkippedCount);
+            LogDeltaComputed(processingResult.Stats.NewFilesCount, processingResult.Stats.ModifiedFilesCount, deletedFiles.Count);
+            LogSmartHashingStats(processingResult.Stats.NewFilesCount, processingResult.Stats.ModifiedFilesCount, processingResult.Stats.UnchangedCount, processingResult.Stats.SkippedCount);
 
             // Step 4: Handle case of no changes
-            if (!hasStartedBackupRun && deletedFiles.Count == 0)
+            if (!processingResult.HasStartedBackupRun && deletedFiles.Count == 0)
             {
                 return HandleNoChanges(activity, stopwatch);
             }
 
+            if (!processingResult.HasStartedBackupRun && deletedFiles.Count > 0)
+            {
+                processingResult = await StartDeletionOnlyRunAsync(
+                    processingResult,
+                    deviceId,
+                    activity,
+                    metricTags,
+                    cancellationToken);
+            }
+
             // Step 5: Commit backup run and update state
-            await CommitBackupAsync(hasStartedBackupRun, runId, deviceId, stats.AllChangedFiles, cancellationToken);
+            await CommitBackupAsync(
+                processingResult.HasStartedBackupRun,
+                processingResult.RunId,
+                deviceId,
+                processingResult.Stats.UploadedChangedFiles,
+                deletedFiles,
+                processingResult.ManifestContainerClient,
+                processingResult.ManifestBasePath,
+                processingResult.ManifestIsPathEmbedded,
+                cancellationToken);
 
-            // Step 6: Clean up deleted files
-            await CleanupDeletedFilesAsync(deletedFiles, cancellationToken);
-
-            // Step 7: Validate failure threshold and record metrics
-            ValidateFailureThreshold(stats.TotalUploadAttempts, stats.TotalUploadFailures);
+            // Step 6: Validate failure threshold and record metrics
+            ValidateFailureThreshold(processingResult.Stats.TotalUploadAttempts, processingResult.Stats.TotalUploadFailures);
 
             stopwatch.Stop();
-            RecordSuccessMetrics(activity, runId, stats, metricTags, stopwatch);
+            RecordSuccessMetrics(activity, processingResult.RunId, processingResult.Stats, metricTags, stopwatch);
 
-            LogBackupCompleted(stats.NewFilesCount + stats.ModifiedFilesCount, stats.TotalBytes,
+            LogBackupCompleted(processingResult.Stats.NewFilesCount + processingResult.Stats.ModifiedFilesCount, processingResult.Stats.TotalBytes,
                 stopwatch.ElapsedMilliseconds);
             return true;
         }
@@ -124,7 +145,7 @@ public partial class BackupService(
         return excludePatterns;
     }
 
-    private async Task<(BackupStats Stats, bool HasStartedBackupRun, Guid? RunId)>
+    private async Task<FileProcessingResult>
         ProcessFilesAsync(
             DeviceState deviceState,
             Guid deviceId,
@@ -147,6 +168,9 @@ public partial class BackupService(
         var hasStartedBackupRun = false;
         Guid? runId = null;
         BlobContainerClient? containerClient = null;
+        BlobContainerClient? manifestContainerClient = null;
+        string? manifestBasePath = null;
+        bool manifestIsPathEmbedded = false;
 
         await foreach (var taggedFile in scanner.ScanAllTargetsAsync(targets, excludePatterns, cancellationToken))
         {
@@ -181,10 +205,15 @@ public partial class BackupService(
 
             if (needsBackup)
             {
-                currentBatch.Add(fileWithHash);
-                stats.AllChangedFiles.Add(fileWithHash);
-                currentBatchBytes += fileWithHash.Metadata.SizeBytes;
-                stats.TotalBytes += fileWithHash.Metadata.SizeBytes;
+                var stagedFile = fileWithHash with
+                {
+                    UniqueFileId = GenerateUniqueFileId(fileWithHash.Metadata.Hash)
+                };
+
+                currentBatch.Add(stagedFile);
+                stats.AllChangedFiles.Add(stagedFile);
+                currentBatchBytes += stagedFile.Metadata.SizeBytes;
+                stats.TotalBytes += stagedFile.Metadata.SizeBytes;
 
                 // Backpressure warning: detect unbounded memory growth
                 // Warn every 10,000 files to indicate potential memory pressure
@@ -196,9 +225,16 @@ public partial class BackupService(
 
             if (currentBatch.Count >= batchSize || currentBatchBytes >= batchSizeBytes)
             {
-                (hasStartedBackupRun, runId, containerClient) = await ProcessBatchAsync(
-                    hasStartedBackupRun, runId, containerClient, deviceId, backupType,
+                var batchResult = await ProcessBatchAsync(
+                    hasStartedBackupRun, runId, containerClient, manifestContainerClient, manifestBasePath, manifestIsPathEmbedded, deviceId, backupType,
                     currentBatch, currentBatchBytes, stats, activity, metricTags, cancellationToken);
+
+                hasStartedBackupRun = batchResult.HasStartedBackupRun;
+                runId = batchResult.RunId;
+                containerClient = batchResult.ContainerClient;
+                manifestContainerClient = batchResult.ManifestContainerClient;
+                manifestBasePath = batchResult.ManifestBasePath;
+                manifestIsPathEmbedded = batchResult.ManifestIsPathEmbedded;
 
                 currentBatch.Clear();
                 currentBatchBytes = 0;
@@ -209,18 +245,34 @@ public partial class BackupService(
 
         if (currentBatch.Count > 0)
         {
-            (hasStartedBackupRun, runId, containerClient) = await ProcessBatchAsync(
-                hasStartedBackupRun, runId, containerClient, deviceId, backupType,
+            var batchResult = await ProcessBatchAsync(
+                hasStartedBackupRun, runId, containerClient, manifestContainerClient, manifestBasePath, manifestIsPathEmbedded, deviceId, backupType,
                 currentBatch, currentBatchBytes, stats, activity, metricTags, cancellationToken);
+
+            hasStartedBackupRun = batchResult.HasStartedBackupRun;
+            runId = batchResult.RunId;
+            containerClient = batchResult.ContainerClient;
+            manifestContainerClient = batchResult.ManifestContainerClient;
+            manifestBasePath = batchResult.ManifestBasePath;
+            manifestIsPathEmbedded = batchResult.ManifestIsPathEmbedded;
         }
 
-        return (stats, hasStartedBackupRun, runId);
+        return new FileProcessingResult(
+            stats,
+            hasStartedBackupRun,
+            runId,
+            manifestContainerClient,
+            manifestBasePath,
+            manifestIsPathEmbedded);
     }
 
-    private async Task<(bool HasStartedBackupRun, Guid? RunId, BlobContainerClient? ContainerClient)> ProcessBatchAsync(
+    private async Task<BatchProcessingResult> ProcessBatchAsync(
         bool hasStartedBackupRun,
         Guid? runId,
         BlobContainerClient? containerClient,
+        BlobContainerClient? manifestContainerClient,
+        string? manifestBasePath,
+        bool manifestIsPathEmbedded,
         Guid deviceId,
         BackupType backupType,
         List<TaggedFile> currentBatch,
@@ -233,24 +285,21 @@ public partial class BackupService(
         if (!hasStartedBackupRun)
         {
             // Start backup run on first batch with changes
-            var startRequest = new StartBackupRunRequest { DeviceId = deviceId };
-            var startResponse = await backupApiClient.StartBackupRun(startRequest, cancellationToken);
-            runId = startResponse.RunId;
-            
-            // Translate Docker service names to localhost for local development
-            var sasUrl = TranslateStorageUrlForLocalDevelopment(startResponse.SasUrlInfo.Url);
-            containerClient = new BlobContainerClient(sasUrl);
-            
-            // Set the base path for uploaded blobs from the API response
-            uploader.SetBasePath(startResponse.SasUrlInfo.BasePath);
-            
+            var runStart = await StartBackupRunAsync(
+                deviceId,
+                backupType,
+                currentBatch.Count,
+                currentBatchBytes,
+                activity,
+                metricTags,
+                cancellationToken);
+
+            runId = runStart.RunId;
+            containerClient = runStart.ContainerClient;
+            manifestContainerClient = runStart.ManifestContainerClient;
+            manifestBasePath = runStart.ManifestBasePath;
+            manifestIsPathEmbedded = runStart.ManifestIsPathEmbedded;
             hasStartedBackupRun = true;
-
-            var backupTypeString = backupType.ToString().ToLowerInvariant();
-            activity?.SetTag(ActivityAttributes.BackupType, backupTypeString);
-            metricTags.Add("backup.type", backupTypeString);
-
-            LogBackupRunStarted(runId.Value, currentBatch.Count, currentBatchBytes);
         }
 
         // Upload batch
@@ -262,19 +311,96 @@ public partial class BackupService(
         // Check failure threshold after each batch (early detection)
         CheckFailureThresholdProgress(stats.TotalUploadAttempts, stats.TotalUploadFailures);
 
-        // Save state for successfully uploaded files
-        if (uploadedFiles.Count > 0)
-        {
-            await backupStateService.UpsertFileStateBatchAsync(uploadedFiles, runId!.Value, cancellationToken);
-            LogBatchProcessed(uploadedFiles.Count, currentBatchBytes, stats.TotalScanned);
-        }
+        // Local file state is updated only after the server-side commit succeeds.
+        stats.UploadedChangedFiles.AddRange(uploadedFiles);
+        LogBatchProcessed(uploadedFiles.Count, currentBatchBytes, stats.TotalScanned);
 
         if (failedCount > 0)
         {
             LogBatchPartialFailure(failedCount, currentBatch.Count);
         }
 
-        return (hasStartedBackupRun, runId, containerClient);
+        return new BatchProcessingResult(
+            hasStartedBackupRun,
+            runId,
+            containerClient,
+            manifestContainerClient,
+            manifestBasePath,
+            manifestIsPathEmbedded);
+    }
+
+    private async Task<FileProcessingResult> StartDeletionOnlyRunAsync(
+        FileProcessingResult processingResult,
+        Guid deviceId,
+        Activity? activity,
+        TagList metricTags,
+        CancellationToken cancellationToken)
+    {
+        var runStart = await StartBackupRunAsync(
+            deviceId,
+            BackupType.Incremental,
+            batchFileCount: 0,
+            batchSizeBytes: 0,
+            activity,
+            metricTags,
+            cancellationToken);
+
+        return processingResult with
+        {
+            HasStartedBackupRun = true,
+            RunId = runStart.RunId,
+            ManifestContainerClient = runStart.ManifestContainerClient,
+            ManifestBasePath = runStart.ManifestBasePath,
+            ManifestIsPathEmbedded = runStart.ManifestIsPathEmbedded
+        };
+    }
+
+    private async Task<RunStartResult> StartBackupRunAsync(
+        Guid deviceId,
+        BackupType backupType,
+        int batchFileCount,
+        long batchSizeBytes,
+        Activity? activity,
+        TagList metricTags,
+        CancellationToken cancellationToken)
+    {
+        var startResponse = await backupApiClient.StartBackupRun(deviceId, cancellationToken);
+
+        var sasUrl = TranslateStorageUrlForLocalDevelopment(startResponse.SasUrlInfo.Url);
+        var containerClient = new BlobContainerClient(sasUrl);
+
+        uploader.SetBasePath(startResponse.SasUrlInfo.BasePath, startResponse.SasUrlInfo.IsPathEmbedded);
+
+        var manifestSasInfo = startResponse.ManifestSasUrlInfo ?? startResponse.SasUrlInfo;
+        var manifestSasUrl = TranslateStorageUrlForLocalDevelopment(manifestSasInfo.Url);
+        var manifestContainerClient = new BlobContainerClient(manifestSasUrl);
+
+        var backupTypeString = backupType.ToString().ToLowerInvariant();
+        activity?.SetTag(ActivityAttributes.BackupType, backupTypeString);
+        metricTags.Add("backup.type", backupTypeString);
+
+        LogBackupRunStarted(startResponse.RunId, batchFileCount, batchSizeBytes);
+
+        return new RunStartResult(
+            startResponse.RunId,
+            containerClient,
+            manifestContainerClient,
+            manifestSasInfo.BasePath,
+            manifestSasInfo.IsPathEmbedded);
+    }
+
+    private async Task RegisterDeviceAsync(Guid deviceId, CancellationToken cancellationToken)
+    {
+        var response = await backupApiClient.RegisterDevice(new RegisterDeviceRequest
+        {
+            DeviceId = deviceId,
+            DisplayName = Environment.MachineName
+        }, cancellationToken);
+
+        if (response.DeviceId != deviceId)
+        {
+            throw new InvalidOperationException($"Registered device ID {response.DeviceId} did not match local device ID {deviceId}");
+        }
     }
 
     private async Task<HashSet<string>> DetectDeletedFilesAsync(
@@ -306,25 +432,118 @@ public partial class BackupService(
         Guid? runId,
         Guid deviceId,
         List<TaggedFile> allChangedFiles,
+        HashSet<string> deletedFiles,
+        BlobContainerClient? manifestContainerClient,
+        string? manifestBasePath,
+        bool manifestIsPathEmbedded,
         CancellationToken cancellationToken)
     {
         if (!hasStartedBackupRun)
             return;
 
+        if (manifestContainerClient == null)
+            throw new InvalidOperationException("Manifest upload client was not initialized for the backup run");
+
+        var manifestPath = $"runs/{deviceId:N}/{runId!.Value:N}/run-manifest.json";
+        var manifest = BuildRunManifest(deviceId, runId.Value, allChangedFiles, deletedFiles);
+
+        await uploader.UploadRunManifestAsync(
+            manifestContainerClient,
+            manifest,
+            manifestBasePath,
+            manifestIsPathEmbedded,
+            cancellationToken);
+
         var commitRequest = new CommitBackupRunRequest
         {
-            DeviceId = deviceId,
-            RunId = runId!.Value
+            RunId = runId.Value
         };
-        await backupApiClient.CommitBackupRun(commitRequest, cancellationToken);
+        var commitResponse = await backupApiClient.CommitBackupRun(deviceId, commitRequest, cancellationToken);
 
         LogBackupRunCommitted(runId.Value);
 
+        await WaitForCommitSucceededAsync(deviceId, commitResponse.CommitId, cancellationToken);
+
+        if (allChangedFiles.Count > 0)
+        {
+            await backupStateService.UpsertFileStateBatchAsync(allChangedFiles, runId.Value, cancellationToken);
+        }
+
+        await CleanupDeletedFilesAsync(deletedFiles, cancellationToken);
+
         await backupStateService.SaveBackupSuccessAsync(
             runId.Value,
-            $"backup-{runId.Value:N}",
-            allChangedFiles.Select(tf => tf.Metadata).ToList(),
+            commitResponse.CommitId.ToString("N"),
+            [],
             cancellationToken);
+    }
+
+    private async Task WaitForCommitSucceededAsync(Guid deviceId, Guid commitId, CancellationToken cancellationToken)
+    {
+        var timeout = TimeSpan.FromSeconds(_options.CommitStatusTimeoutSeconds);
+        var pollInterval = TimeSpan.FromSeconds(_options.CommitStatusPollIntervalSeconds);
+        var stopwatch = Stopwatch.StartNew();
+
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var status = await backupApiClient.GetCommitStatus(deviceId, commitId, cancellationToken);
+
+            switch (status.Status)
+            {
+                case CommitJobStatus.Succeeded:
+                    return;
+                case CommitJobStatus.Failed:
+                    throw new InvalidOperationException($"Backup commit {commitId} failed: {status.Error ?? "Unknown error"}");
+            }
+
+            if (stopwatch.Elapsed >= timeout)
+            {
+                throw new TimeoutException($"Backup commit {commitId} did not complete within {timeout.TotalSeconds:N0} seconds");
+            }
+
+            await Task.Delay(pollInterval, cancellationToken);
+        }
+    }
+
+    private static RunManifest BuildRunManifest(
+        Guid deviceId,
+        Guid runId,
+        IReadOnlyList<TaggedFile> changedFiles,
+        IReadOnlySet<string> deletedFiles)
+    {
+        return new RunManifest
+        {
+            DeviceId = deviceId.ToString("N"),
+            RunId = runId.ToString("N"),
+            Files = changedFiles.Select(file => new ManifestFileEntry
+            {
+                TargetName = file.TargetName,
+                RelativePath = file.GetRelativePath(),
+                UniqueFileId = file.UniqueFileId
+                    ?? throw new InvalidOperationException($"Missing unique file ID for {file.GetStoragePath()}"),
+                Sha256 = file.Metadata.Hash
+                    ?? throw new InvalidOperationException($"Missing SHA-256 hash for {file.GetStoragePath()}"),
+                Size = file.Metadata.SizeBytes,
+                Mtime = file.Metadata.LastModified
+            }).ToList(),
+            Deleted = deletedFiles.Order(StringComparer.OrdinalIgnoreCase).ToList()
+        };
+    }
+
+    private static string GenerateUniqueFileId(string? sha256)
+    {
+        if (string.IsNullOrWhiteSpace(sha256))
+        {
+            throw new InvalidOperationException("Cannot generate a unique file ID without a SHA-256 hash");
+        }
+
+        Span<byte> randomBytes = stackalloc byte[5];
+        RandomNumberGenerator.Fill(randomBytes);
+        var suffix = Convert.ToHexString(randomBytes).ToLowerInvariant();
+
+        return $"{sha256}_{DateTimeOffset.UtcNow:yyyyMMddTHHmmssZ}_{suffix}";
     }
 
     private async Task CleanupDeletedFilesAsync(HashSet<string> deletedFiles, CancellationToken cancellationToken)
@@ -474,6 +693,7 @@ public partial class BackupService(
     private class BackupStats
     {
         public List<TaggedFile> AllChangedFiles { get; } = new();
+        public List<TaggedFile> UploadedChangedFiles { get; } = new();
         public HashSet<string> ScannedPaths { get; } = new(StringComparer.OrdinalIgnoreCase);
         public long TotalBytes { get; set; }
         public int TotalScanned { get; set; }
@@ -484,4 +704,27 @@ public partial class BackupService(
         public int TotalUploadAttempts { get; set; }
         public int TotalUploadFailures { get; set; }
     }
+
+    private sealed record FileProcessingResult(
+        BackupStats Stats,
+        bool HasStartedBackupRun,
+        Guid? RunId,
+        BlobContainerClient? ManifestContainerClient,
+        string? ManifestBasePath,
+        bool ManifestIsPathEmbedded);
+
+    private sealed record BatchProcessingResult(
+        bool HasStartedBackupRun,
+        Guid? RunId,
+        BlobContainerClient? ContainerClient,
+        BlobContainerClient? ManifestContainerClient,
+        string? ManifestBasePath,
+        bool ManifestIsPathEmbedded);
+
+    private sealed record RunStartResult(
+        Guid RunId,
+        BlobContainerClient ContainerClient,
+        BlobContainerClient ManifestContainerClient,
+        string? ManifestBasePath,
+        bool ManifestIsPathEmbedded);
 }

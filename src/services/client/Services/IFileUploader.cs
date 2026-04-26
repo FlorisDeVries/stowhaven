@@ -1,5 +1,6 @@
 using Azure.Storage.Blobs;
 using FlorisDeV.BackupClient.Models;
+using FlorisDeV.BackupContracts.Manifest;
 
 namespace FlorisDeV.BackupClient.Services;
 
@@ -12,7 +13,7 @@ public interface IFileUploader
     /// Sets the base path prefix for uploaded blobs (e.g., "staging/device/run/").
     /// Must be called before uploading files.
     /// </summary>
-    void SetBasePath(string? basePath);
+    void SetBasePath(string? basePath, bool isPathEmbedded = false);
     
     /// <summary>
     /// Uploads tagged files to blob storage using parallel uploads with retry logic.
@@ -21,5 +22,15 @@ public interface IFileUploader
     Task<IReadOnlyList<TaggedFile>> UploadFilesAsync(
         BlobContainerClient containerClient,
         IReadOnlyList<TaggedFile> files,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Uploads run-manifest.json to the run manifest location.
+    /// </summary>
+    Task UploadRunManifestAsync(
+        BlobContainerClient containerClient,
+        RunManifest manifest,
+        string? basePath,
+        bool isPathEmbedded,
         CancellationToken cancellationToken);
 }

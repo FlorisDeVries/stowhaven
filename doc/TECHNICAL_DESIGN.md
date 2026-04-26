@@ -76,7 +76,7 @@ Key ideas:
 * The Backup API uses its **Managed Identity** + **Storage Blob Delegator** role to mint **User Delegation SAS** (UD-SAS) for a **staging directory** per backup run.
 * The client uploads **directly to Blob** using a short-lived directory-scoped SAS (write/create only), minimizing Container App traffic and costs.
 * The API and commit worker use **Dapr state store** (backed by Azure Table Storage) as the **authoritative manifest/state**.
-* A background **commit worker** (ACA Job or separate Container App) processes commit jobs asynchronously: verifies staged blobs, moves them to `files/`, retires old versions, and updates manifest state.
+* A background **commit worker** runs as a separate scale-to-zero Container App from a dedicated worker project/image. The API project exposes public backup/device endpoints; the worker project exposes only the Dapr commit-event endpoint. The worker processes commit jobs asynchronously: verifies staged blobs, moves them to `files/`, retires old versions, and updates manifest state.
 
 ---
 
@@ -101,6 +101,9 @@ Single storage account + container (example: `backups`) with the following layou
 
 * `deviceId`: deterministic (e.g., stable GUID per PC).
 * `runId`: unique per backup run (`yyyyMMddTHHmmssZ` + random or GUID).
+* `targetName`: client-configured logical namespace for a backup target (e.g. `documents`, `photos`, `drive-d`). It is never used as the staged blob name.
+* `relativePath`: path relative to the configured backup target.
+* `logicalPath`: `{targetName}/{relativePath}`; this is the logical identity stored in manifest/state.
 * `uniqueFileId`: SHA-256 hash + timestamp + random suffix; e.g.
   `abc123def...789_2025-09-16T14-30-15Z_k8p3m`.
 
@@ -114,7 +117,8 @@ Single storage account + container (example: `backups`) with the following layou
 **File Versioning**
 
 * Each file version gets a **unique blob name** under `/devices/{deviceId}/files/{uniqueFileId}`.
-* The **authoritative mapping** from `relativePath` → `uniqueFileId` lives in the **state store** (Azure Table Storage via Dapr), not in a blob `manifest.json`.
+* Backup target names are logical metadata only. Physical blob names use `uniqueFileId`; they do not include customer/local file paths.
+* The **authoritative mapping** from `logicalPath` → `uniqueFileId` lives in the **state store** (Azure Table Storage via Dapr), not in a blob `manifest.json`.
 * Updated files get new `uniqueFileId`; previous versions are marked `Retired` and their blobs moved to `/devices/{deviceId}/retired/{uniqueFileId}`.
 * v1 keeps only the latest active version per path; older ones are retained only as retired blobs for retention (no rich snapshot history).
 
@@ -145,9 +149,16 @@ sequenceDiagram
     C->>E: Acquire JWT (MSAL)
     E-->>C: JWT
 
+    Note over C,A: Self-service device registration
+
+    C->>A: POST /api/devices (deviceId, displayName)
+    A->>S: Create/read DeviceRegistration(owner=tid/oid)
+    A-->>C: DeviceRegistration
+
     Note over C,A: Start backup run
 
-    C->>A: POST /api/backup/start-run
+    C->>A: POST /api/devices/{deviceId}/backup/start-run
+    A->>S: Authorize device owner
     A->>S: Store BackupRun(started)
     A->>B: Get User Delegation Key
     A-->>C: Directory SAS for staging/deviceId/runId/
@@ -159,7 +170,9 @@ sequenceDiagram
 
     C->>B: Upload run-manifest.json to runs/deviceId/runId/
 
-    C->>A: POST /api/backup/commit-run\n(manifestBlobPath only)
+    C->>A: POST /api/devices/{deviceId}/backup/commit-run\n(runId only)
+    A->>S: Authorize device owner
+    A->>A: Derive manifest path from deviceId/runId
     A->>S: Save CommitJob(status=Queued)
     A->>Q: Publish commit message
     A-->>C: 202 Accepted
@@ -175,7 +188,8 @@ sequenceDiagram
     W->>S: Update manifest state
     W->>S: Mark CommitJob Succeeded
 
-    C->>A: GET /commit-status
+    C->>A: GET /api/devices/{deviceId}/backup/commit-status/{commitId}
+    A->>S: Authorize device owner
     A->>S: Query commit status
     A-->>C: Status {Queued|Processing|Succeeded|Failed}
 ```
@@ -188,7 +202,7 @@ sequenceDiagram
 
 ### 4.2 File Operation Scenarios (client-side delta logic)
 
-The client-side delta logic remains largely the same; what changes is **how** changes are reported (via `/start-run` + `/commit-run`) and how the server commits them (via manifest state + async worker).
+The client-side delta logic remains largely the same; what changes is **how** changes are reported (via device-scoped start/commit endpoints) and how the server commits them (via manifest state + async worker).
 
 ```mermaid
 flowchart TD
@@ -254,19 +268,21 @@ flowchart TD
 
 3. Generate `uniqueFileId`: `{sha256}_{timestamp}_{random}`.
 
-4. Add to **upload queue** and **local mapping**: `relativePath → uniqueFileId`.
+4. Add to **upload queue** and **local mapping**: `logicalPath → uniqueFileId`, where `logicalPath = {targetName}/{relativePath}`.
 
 5. Upload to staging area during this run:
    `staging/{deviceId}/{runId}/{uniqueFileId}` (using directory SAS).
 
-6. Include in `/commit-run` payload as:
+6. Include in `runs/{deviceId}/{runId}/run-manifest.json` as:
 
    ```json
    {
-     "relativePath": "documents/file.txt",
+     "targetName": "documents",
+     "relativePath": "file.txt",
+     "logicalPath": "documents/file.txt",
      "uniqueFileId": "abc123...k8p3m",
      "size": 1024,
-     "lastModified": "2025-09-17T10:30:00Z",
+     "mtime": "2025-09-17T10:30:00Z",
      "sha256": "..."
    }
    ```
@@ -288,7 +304,7 @@ flowchart TD
 3. Generate new `uniqueFileId`.
 4. Upload new version to staging: `staging/{deviceId}/{runId}/{newUniqueFileId}`.
 5. Mark old version in local state as “retired candidate”.
-6. Include in `/commit-run` payload as a `newFile` entry; server:
+6. Include in `run-manifest.json` as a file entry; server:
 
    * Moves staged blob → `/devices/{deviceId}/files/{newUniqueFileId}`.
    * Marks old version as retired in Table Storage.
@@ -306,7 +322,7 @@ flowchart TD
 
 1. Track all files seen this run; previous entries not seen become deletion candidates.
 2. Verify deletion with `File.Exists()` and directory checks.
-3. Add `relativePath` to `deletedFiles[]` in `/commit-run` payload.
+3. Add the file's `logicalPath` to `deleted[]` in `run-manifest.json`.
 4. Update local state DB to remove the file.
 5. Commit worker:
 
@@ -333,21 +349,40 @@ flowchart TD
   * Get User Delegation Keys from Blob storage.
   * Perform blob rename/move operations (`staging` → `files`, `files` → `retired`).
 * **Blob Storage public access disabled**; all access via SAS or Managed Identity from trusted services.
-* **State Store (Azure Table Storage)** is accessed only from Container Apps via:
+* **State stores (Azure Table Storage)** are accessed only from Container Apps via:
 
-  * Dapr state-store component configuration.
-  * Azure Storage connection string / identity stored in Key Vault or ACA secrets.
+  * Separate Dapr state-store component configuration for manifest/run state and device registry state.
+  * Managed Identity in production; local development may use an Azurite connection string from local configuration/secrets.
+* Storage resource names such as `DATA_STORAGE_ACCOUNT` and `DATA_CONTAINER` are non-secret configuration values and may be supplied as Container App environment variables. Actual secrets remain in Dapr secret store / Key Vault.
 * Multi-tenant / multi-device isolation:
 
-  * `deviceId` is bound to the authenticated user/tenant in the API.
+  * `deviceId` is bound to the authenticated user/tenant in a server-side `DeviceRegistration` record.
+  * Device registration is self-service: any authenticated user with the client backup scope may register a new device ID.
+  * First registration wins. If a `deviceId` already belongs to another `(tenantId, userId)`, registration and backup operations return a conflict/forbidden response.
+  * A single user can own multiple devices. Device sharing is intentionally out of scope for v1.
+  * Backup clients use a narrow delegated scope such as `backup.client`; `backup-admin` is reserved for future operator/admin APIs.
   * SAS scope includes `deviceId` + `runId`, ensuring a client cannot write outside its staging area.
+  * Backup routes include `deviceId`; the route value is authoritative and every start/commit/status operation authorizes ownership before touching storage, runs, commits, or SAS.
 * Optional: **Blob index tags** (e.g., `state=retired`, `deviceId={deviceId}`) to refine lifecycle policies.
 
 ---
 
-## 6) State & Manifest Model (Azure Table Storage via Dapr)
+## 6) State & Device Registry Model (Azure Table Storage via Dapr)
 
-The manifest/state is no longer kept in a blob `manifest.json`; instead it resides in Azure Table Storage behind a Dapr state store:
+The manifest/state is no longer kept in a blob `manifest.json`; instead it resides in Azure Table Storage behind Dapr state-store components. Manifest/run state and device registry state are intentionally separated into different Dapr components so they can evolve into different physical stores, retention policies, RBAC boundaries, or UI/query models without mixing concerns.
+
+### Physical state components
+
+* `manifest-state-store`
+
+  * Backing table/container: `manifeststate`.
+  * Contains file mappings, file versions, backup runs, and commit jobs.
+
+* `device-registry-state-store`
+
+  * Backing table/container: `deviceregistry`.
+  * Contains device ownership/registration records and future device-management indexes.
+  * Uses the same storage account for v1, so the extra cost is only the small number of extra table/container transactions and metadata rows.
 
 ### Logical entities
 
@@ -355,16 +390,34 @@ The manifest/state is no longer kept in a blob `manifest.json`; instead it resid
 
 **Files (latest mapping per path)**
 
-* Key: `(deviceId, relativePath)` (or hashed path).
+* Key: `(deviceId, logicalPath)` (or hashed path).
 * Fields:
 
   * `deviceId`
+  * `logicalPath` (`{targetName}/{relativePath}`)
+  * `targetName`
   * `relativePath`
   * `currentVersionId` (uniqueFileId)
   * `size`
   * `lastWriteUtc`
   * `lastBackupRunId`
   * `isDeleted` (bool)
+
+**DeviceRegistrations**
+
+Stored in `device-registry-state-store`.
+
+* Key: `deviceId`
+* Fields:
+
+  * `deviceId`
+  * `tenantId` (`tid` claim)
+  * `userId` (`oid` claim)
+  * `displayName`
+  * `status` = Active | Revoked
+  * `createdAt`
+  * `lastSeenAt`
+  * `revokedAt` (nullable)
 
 **FileVersions (all versions per device/path)**
 
@@ -373,6 +426,8 @@ The manifest/state is no longer kept in a blob `manifest.json`; instead it resid
 
   * `deviceId`
   * `uniqueFileId`
+  * `logicalPath`
+  * `targetName`
   * `relativePath`
   * `sha256`
   * `size`
@@ -404,7 +459,7 @@ The manifest/state is no longer kept in a blob `manifest.json`; instead it resid
   * `error` (nullable)
   * `createdAt`, `updatedAt`
 
-All CRUD against these entities goes through **Dapr state store APIs** from API and worker.
+All CRUD against these entities goes through **Dapr state store APIs** from API and worker. Backup commit processing should use `manifest-state-store`; device registration and ownership checks should use `device-registry-state-store`.
 
 ---
 
@@ -412,14 +467,22 @@ All CRUD against these entities goes through **Dapr state store APIs** from API 
 
 To avoid long-running HTTP calls and timeouts:
 
-* `/api/backup/commit-run` is **async**:
+* `/api/devices/{deviceId}/backup/commit-run` is **async**:
 
+  * Authorizes that the authenticated `(tenantId, userId)` owns `deviceId`.
   * Validates payload shape quickly.
+  * Derives `runs/{deviceId:N}/{runId:N}/run-manifest.json` server-side.
   * Saves a `CommitJob` with `status=Queued`.
   * Publishes a commit message via Dapr Pub/Sub / Queue.
   * Responds `202 Accepted { commitId }`.
 
-* A **Commit Worker** (ACA Job or separate Container App) subscribes to commit messages:
+* A **Commit Worker** subscribes to commit messages as a separate Container App:
+
+  * Uses a dedicated `backup-worker` image built from `src/services/worker`.
+  * Reuses backup processing services and state/storage abstractions through project references.
+  * Has no external ingress.
+  * Scales from zero on the `backup-events` Service Bus topic subscription.
+  * Uses a least-privilege Service Bus Listen connection string only for the Container Apps/KEDA scaler; Dapr pub/sub continues to use managed identity.
 
   * Loads `CommitJob`, `BackupRun`, and file lists from the state store.
   * Verifies staged blobs with HEAD requests (size/hash).
@@ -430,9 +493,9 @@ To avoid long-running HTTP calls and timeouts:
   * Updates `Files` and `FileVersions` state in a consistent way (using batches).
   * Updates `CommitJob.status` and `BackupRun.status` to `Succeeded` or `Failed`.
 
-* Client polls `GET /api/backup/commit-status?commitId=...`:
+* Client polls `GET /api/devices/{deviceId}/backup/commit-status/{commitId}`:
 
-  * API reads `CommitJob` via Dapr and returns current status.
+  * API authorizes device ownership, reads `CommitJob` via Dapr, verifies `CommitJob.deviceId == deviceId`, and returns current status.
 
 This model:
 
@@ -446,9 +509,19 @@ This model:
 
 Dapr is used to abstract infrastructure concerns:
 
-* **State Store (`manifestStore`)**:
+* **State Store (`manifest-state-store`)**:
 
   * Backed by Azure Table Storage for v1.
+  * Stores backup manifest/run/commit state.
+
+* **State Store (`device-registry-state-store`)**:
+
+  * Backed by Azure Table Storage for v1, using a separate table/container from manifest state.
+  * Stores device registration and ownership state.
+  * Keeps the future device-management UI/query model separate from backup commit state.
+
+* Both state components:
+
   * Future: switch to Cosmos DB Table API or SQL-based state store by changing Dapr component config, not app code.
 
 * **Pub/Sub / Queue**:
@@ -508,7 +581,9 @@ Program Files*/
 
 * **Unique File Naming**: generate `uniqueFileId` as `{sha256}_{timestamp}_{random}` before upload.
 
-* Obtain **directory-scoped SAS** for `staging/{deviceId}/{runId}/` via `/start-run`.
+* Register the local `deviceId` with `POST /api/devices` before starting a backup. Registration is idempotent for the same authenticated owner and rejected for a different owner.
+
+* Obtain **directory-scoped SAS** grants for both `staging/{deviceId}/{runId}/` and `runs/{deviceId}/{runId}/` via `/api/devices/{deviceId}/backup/start-run`.
 
 * Upload each changed/new file as:
 
@@ -522,7 +597,7 @@ Program Files*/
 
 * Integrity:
 
-  * Rolling **MD5/CRC64** and/or **SHA-256** per file; send in `/commit-run` payload for server-side verification.
+  * Rolling **MD5/CRC64** and/or **SHA-256** per file; include in `run-manifest.json` for server-side verification.
 
 * Resume:
 
@@ -534,8 +609,8 @@ Program Files*/
 
 * **File Mapping**:
 
-  * Maintain a mapping `relativePath → uniqueFileId` for this run.
-  * This mapping is sent to the server in `/commit-run` and used server-side to update manifest state.
+  * Maintain a mapping `logicalPath → uniqueFileId` for this run.
+  * This mapping is uploaded as `run-manifest.json` and used server-side to update manifest state.
 
 ### After uploading all file blobs, create and upload:
 
@@ -547,11 +622,14 @@ runs/deviceId/runId/run-manifest.json
 
 ```json
 {
+  "schemaVersion": 1,
   "deviceId": "...",
   "runId": "...",
   "files": [
     {
-      "relativePath": "...",
+      "targetName": "documents",
+      "relativePath": "subfolder/file.txt",
+      "logicalPath": "documents/subfolder/file.txt",
       "uniqueFileId": "...",
       "sha256": "...",
       "size": 1234,
@@ -559,8 +637,8 @@ runs/deviceId/runId/run-manifest.json
     }
   ],
   "deleted": [
-    "a/b/c.txt",
-    "x/y/z.jpg"
+    "documents/a/b/c.txt",
+    "photos/x/y/z.jpg"
   ]
 }
 ```
@@ -647,8 +725,9 @@ resource "azurerm_storage_management_policy" "backup_lifecycle" {
 
   * API is mostly control-plane (small JSON).
   * Data plane is direct client → Blob.
-  * Commit workers run only when needed (per commit job).
-* **State store (Azure Table Storage)** is extremely low-cost for v1 (few devices, <1M files).
+  * Commit worker is a separate Container App with `minReplicas = 0`; it only runs when the Service Bus subscription has queued commit messages.
+  * Splitting the worker does not add a second always-on compute bill. The main extra cost is negligible Service Bus scaler polling/operations and worker vCPU/memory only while commits are processed.
+* **State stores (Azure Table Storage)** are extremely low-cost for v1 (few devices, <1M files). Splitting `manifest-state-store` and `device-registry-state-store` into separate tables/containers in the same storage account has negligible cost impact; the extra cost is only tiny metadata storage and low-volume device registration/authorization transactions.
 
 ---
 
@@ -658,7 +737,7 @@ resource "azurerm_storage_management_policy" "backup_lifecycle" {
 
   * `runId` uniquely identifies a backup run.
   * `commitId` uniquely identifies a commit job.
-  * Replays of `/commit-run` with the same `runId` are either deduplicated or mapped to the existing `CommitJob`.
+  * Replays of `/api/devices/{deviceId}/backup/commit-run` with the same `runId` are either deduplicated or mapped to the existing `CommitJob`.
 * **Asynchronous commit** ensures:
 
   * No long-lived HTTP requests.
@@ -692,7 +771,7 @@ resource "azurerm_storage_management_policy" "backup_lifecycle" {
 * **Backup API logs**:
 
   * Request IDs.
-  * `start-run`, `commit-run`, `commit-status` calls.
+  * `POST /api/devices/{deviceId}/backup/start-run`, `POST /api/devices/{deviceId}/backup/commit-run`, and `GET /api/devices/{deviceId}/backup/commit-status/{commitId}` calls.
   * SAS minting events (deviceId, runId).
   * Commit job enqueue operations.
 * **Commit worker logs**:
@@ -742,4 +821,4 @@ resource "azurerm_storage_management_policy" "backup_lifecycle" {
 * **Usability**:
 
   * One-click backup initiation, automated scheduling.
-  * Clear status for each run (In progress, Succeeded, Failed) via `/commit-status`.
+  * Clear status for each run (In progress, Succeeded, Failed) via `GET /api/devices/{deviceId}/backup/commit-status/{commitId}`.

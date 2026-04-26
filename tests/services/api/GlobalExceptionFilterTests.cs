@@ -1,6 +1,7 @@
 using FlorisDeV.BackupApi.Exceptions;
 using FlorisDeV.BackupApi.Filters;
-using FlorisDeV.BackupApi.Models.State;
+using FlorisDeV.BackupContracts.State;
+using FlorisDeV.Logging.ErrorHandling;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Abstractions;

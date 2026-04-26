@@ -55,6 +55,7 @@ var roleStorageBlobDataContributor = subscriptionResourceId('Microsoft.Authoriza
 var roleStorageBlobDelegator       = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'db58b8e5-c6ad-4a2a-8342-4190687cbf4a')
 var roleStorageTableDataContributor = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3')
 var roleServiceBusDataSender       = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '69a216fc-b8fb-44d8-bc22-1f3c2cd27a39')
+var roleServiceBusDataReceiver     = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0')
 var roleAcrPull                    = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')
 var roleKeyVaultSecretsUser        = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e0')
 
@@ -118,6 +119,7 @@ module compute 'modules/compute.bicep' = {
     containerName: storage.outputs.containerName
     keyVaultName: daprInfra.outputs.keyVaultName
     serviceBusNamespaceName: daprInfra.outputs.serviceBusNamespaceName
+    serviceBusScaleConnectionString: daprInfra.outputs.serviceBusScaleConnectionString
     apiKey: apiKey
     imageTag: imageTag
     tags: commonTags
@@ -136,6 +138,17 @@ resource roleAssignStorageContributor 'Microsoft.Authorization/roleAssignments@2
     principalId: compute.outputs.principalId
     principalType: 'ServicePrincipal'
     description: 'Container App – Storage Blob Data Contributor on data storage account'
+  }
+}
+
+resource roleAssignWorkerStorageContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(resourceGroup().id, 'stabackup${nameSuffixStr}', 'ca-${nameSuffix}-worker', 'storage-contributor')
+  scope: resourceGroup()
+  properties: {
+    roleDefinitionId: roleStorageBlobDataContributor
+    principalId: compute.outputs.workerPrincipalId
+    principalType: 'ServicePrincipal'
+    description: 'Worker Container App – Storage Blob Data Contributor on data storage account'
   }
 }
 
@@ -161,6 +174,17 @@ resource roleAssignAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' 
   }
 }
 
+resource roleAssignWorkerAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(resourceGroup().id, 'acr${nameSuffixStr}', 'ca-${nameSuffix}-worker', 'acr-pull')
+  scope: resourceGroup()
+  properties: {
+    roleDefinitionId: roleAcrPull
+    principalId: compute.outputs.workerPrincipalId
+    principalType: 'ServicePrincipal'
+    description: 'Worker Container App – AcrPull on container registry'
+  }
+}
+
 resource roleAssignKeyVaultSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(resourceGroup().id, keyVaultName, 'ca-${nameSuffix}', 'kv-secrets-user')
   scope: resourceGroup()
@@ -169,6 +193,17 @@ resource roleAssignKeyVaultSecretsUser 'Microsoft.Authorization/roleAssignments@
     principalId: compute.outputs.principalId
     principalType: 'ServicePrincipal'
     description: 'Container App - Key Vault Secrets User'
+  }
+}
+
+resource roleAssignWorkerKeyVaultSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(resourceGroup().id, keyVaultName, 'ca-${nameSuffix}-worker', 'kv-secrets-user')
+  scope: resourceGroup()
+  properties: {
+    roleDefinitionId: roleKeyVaultSecretsUser
+    principalId: compute.outputs.workerPrincipalId
+    principalType: 'ServicePrincipal'
+    description: 'Worker Container App - Key Vault Secrets User'
   }
 }
 
@@ -183,6 +218,17 @@ resource roleAssignStorageTableContributor 'Microsoft.Authorization/roleAssignme
   }
 }
 
+resource roleAssignWorkerStorageTableContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(resourceGroup().id, 'stabackup${nameSuffixStr}', 'ca-${nameSuffix}-worker', 'table-contributor')
+  scope: resourceGroup()
+  properties: {
+    roleDefinitionId: roleStorageTableDataContributor
+    principalId: compute.outputs.workerPrincipalId
+    principalType: 'ServicePrincipal'
+    description: 'Worker Container App - Storage Table Data Contributor for Dapr state store'
+  }
+}
+
 resource roleAssignServiceBusDataSender 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(resourceGroup().id, 'sb-${nameSuffix}', 'ca-${nameSuffix}', 'sb-sender')
   scope: resourceGroup()
@@ -191,6 +237,17 @@ resource roleAssignServiceBusDataSender 'Microsoft.Authorization/roleAssignments
     principalId: compute.outputs.principalId
     principalType: 'ServicePrincipal'
     description: 'Container App - Service Bus Data Sender for Dapr pub/sub'
+  }
+}
+
+resource roleAssignWorkerServiceBusDataReceiver 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(resourceGroup().id, 'sb-${nameSuffix}', 'ca-${nameSuffix}-worker', 'sb-receiver')
+  scope: resourceGroup()
+  properties: {
+    roleDefinitionId: roleServiceBusDataReceiver
+    principalId: compute.outputs.workerPrincipalId
+    principalType: 'ServicePrincipal'
+    description: 'Worker Container App - Service Bus Data Receiver for Dapr pub/sub'
   }
 }
 
@@ -211,30 +268,13 @@ resource kvSecretApiKey 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
   dependsOn: [roleAssignKeyVaultSecretsUser]
 }
 
-resource kvSecretStorageAccount 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
-  parent: kvRef
-  name: 'storage-account-name'
-  properties: {
-    value: storage.outputs.dataStorageAccountName
-  }
-  dependsOn: [roleAssignKeyVaultSecretsUser]
-}
-
-resource kvSecretContainerName 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
-  parent: kvRef
-  name: 'data-container'
-  properties: {
-    value: storage.outputs.containerName
-  }
-  dependsOn: [roleAssignKeyVaultSecretsUser]
-}
-
 // ---------------------------------------------------------------------------
 // Outputs
 // ---------------------------------------------------------------------------
 
 output containerAppName string = compute.outputs.containerAppName
 output containerAppUrl string = 'https://${compute.outputs.containerAppFqdn}'
+output workerContainerAppName string = compute.outputs.workerContainerAppName
 output dataStorageAccountName string = storage.outputs.dataStorageAccountName
 output containerName string = storage.outputs.containerName
 output containerRegistryName string = registry.outputs.name

@@ -94,4 +94,14 @@ public class BackupClientOptions
     /// Default is 5 (5%). Set to 100 to always succeed regardless of failures.
     /// </summary>
     public int MaxFailurePercentage { get; init; } = 5;
+
+    /// <summary>
+    /// Interval in seconds between commit status polling attempts.
+    /// </summary>
+    public int CommitStatusPollIntervalSeconds { get; init; } = 2;
+
+    /// <summary>
+    /// Maximum time in seconds to wait for the server-side commit worker to complete.
+    /// </summary>
+    public int CommitStatusTimeoutSeconds { get; init; } = 600;
 }

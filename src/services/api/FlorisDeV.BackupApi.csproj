@@ -20,9 +20,12 @@
     </ItemGroup>
 
     <ItemGroup>
+        <ProjectReference Include="..\..\common\core\FlorisDeV.BackupCore.csproj"/>
+        <ProjectReference Include="..\..\common\contracts\FlorisDeV.BackupContracts.csproj"/>
         <ProjectReference Include="..\..\common\featureflags\FlorisDeV.FeatureFlags.csproj"/>
         <ProjectReference Include="..\..\common\healthchecks\FlorisDeV.HealthChecks.csproj"/>
         <ProjectReference Include="..\..\common\logging\FlorisDeV.Logging.csproj"/>
+        <ProjectReference Include="..\..\common\security\FlorisDeV.Security.csproj"/>
     </ItemGroup>
 
     <ItemGroup>

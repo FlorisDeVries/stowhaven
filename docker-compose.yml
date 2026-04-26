@@ -59,6 +59,64 @@ services:
                     cpus: '0.25'
                     memory: 0.5g
 
+    backup-worker:
+        container_name: backup-worker
+        image: ${DOCKER_REGISTRY-}backup-worker:${IMAGE_TAG:-latest}
+        build:
+            context: .
+            dockerfile: src/services/worker/Dockerfile
+        env_file:
+            - .env
+        environment:
+            - ASPNETCORE_ENVIRONMENT=Development
+            - ASPNETCORE_URLS=http://+:8080
+            - LOG_PATH=/var/log
+        volumes:
+            - ./run/api/data:/var/lib/backup-api
+        user: ${UID}:${GID}
+        depends_on:
+            - azurite
+        logging:
+            driver: "gelf"
+            options:
+                gelf-address: "udp://127.0.0.1:12201"
+                tag: "backup-worker"
+        deploy:
+            resources:
+                limits:
+                    cpus: '0.25'
+                    memory: 0.5g
+
+    backup-worker-dapr:
+        container_name: backup-worker-dapr
+        image: "daprio/daprd:${DAPR_VERSION:-1.13.6}"
+        env_file:
+            - .env
+        command: [
+            "./daprd",
+            "-app-id", "backup-worker",
+            "-app-port", "8080",
+            "-components-path", "/components",
+            "-config", "/configuration/config.yaml"
+        ]
+        volumes:
+            - "./run/components/:/components"
+            - "./run/configuration/:/configuration"
+        depends_on:
+            - backup-worker
+            - azurite
+        network_mode: "service:backup-worker"
+        logging:
+            driver: "gelf"
+            options:
+                gelf-address: "udp://127.0.0.1:12201"
+                tag: "backup-worker-dapr"
+        deploy:
+            resources:
+                limits:
+                    cpus: '0.25'
+                    memory: 0.5g
+
     #
     # Dependencies (Storage, Observability)
     #

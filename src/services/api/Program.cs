@@ -2,11 +2,13 @@ using System.Reflection;
 using FlorisDeV.BackupApi;
 using FlorisDeV.BackupApi.Constants;
 using FlorisDeV.BackupApi.Filters;
+using FlorisDeV.BackupApi.Telemetry;
 using FlorisDeV.FeatureFlags;
 using FlorisDeV.HealthChecks;
 using FlorisDeV.Logging;
 using FlorisDeV.Logging.ErrorHandling;
 using FlorisDeV.Logging.Middleware;
+using FlorisDeV.Security;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Serilog;
 
@@ -15,7 +17,7 @@ var appAssembly = Assembly.GetExecutingAssembly();
 var environment = builder.Environment;
 
 // Add services to the container
-builder.AddOpenTelemetry(Telemetry.ActivitySourceName, environment.IsDevelopment());
+builder.AddOpenTelemetry(TelemetryProvider.SourceName, environment.IsDevelopment());
 builder.AddApplicationInsights();
 builder.AddCustomLogging();
 builder.AddCustomSwagger(appAssembly);

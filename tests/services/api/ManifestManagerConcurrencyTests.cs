@@ -1,9 +1,9 @@
 using Dapr.Client;
-using FlorisDeV.BackupApi.Constants;
 using FlorisDeV.BackupApi.Exceptions;
-using FlorisDeV.BackupApi.Models.State;
 using FlorisDeV.BackupApi.Services;
 using FlorisDeV.BackupApi.Telemetry;
+using FlorisDeV.BackupContracts.Constants;
+using FlorisDeV.BackupContracts.State;
 using Microsoft.Extensions.Logging;
 using Moq;
 using Xunit;

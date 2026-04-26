@@ -1,16 +1,17 @@
 using FluentAssertions;
 using FlorisDeV.BackupApi.Controllers;
-using FlorisDeV.BackupApi.Models.Api.Requests;
-using FlorisDeV.BackupApi.Models.Api.Responses;
-using FlorisDeV.BackupApi.Models.Application;
-using FlorisDeV.BackupApi.Models.Infrastructure;
-using FlorisDeV.BackupApi.Models.State;
 using FlorisDeV.BackupApi.Services;
+using FlorisDeV.BackupContracts.Api.Requests;
+using FlorisDeV.BackupContracts.Api.Responses;
+using FlorisDeV.BackupContracts.Application;
+using FlorisDeV.BackupContracts.Infrastructure;
+using FlorisDeV.BackupContracts.State;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 using Moq;
 using System.Net;
+using System.Security.Claims;
 
 namespace FlorisDeV.BackupApi.Tests;
 
@@ -20,21 +21,33 @@ namespace FlorisDeV.BackupApi.Tests;
 public class BackupControllerTests
 {
     private readonly Mock<IBackupRunService> _backupRunServiceMock;
+    private readonly Mock<IDeviceAuthorizationService> _deviceAuthorizationServiceMock;
     private readonly Mock<ILogger<BackupController>> _loggerMock;
     private readonly BackupController _sut;
 
     public BackupControllerTests()
     {
         _backupRunServiceMock = new Mock<IBackupRunService>();
+        _deviceAuthorizationServiceMock = new Mock<IDeviceAuthorizationService>();
         _loggerMock = new Mock<ILogger<BackupController>>();
+
+        _deviceAuthorizationServiceMock
+            .Setup(x => x.AuthorizeDeviceAsync(It.IsAny<ClaimsPrincipal>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
 
         _sut = new BackupController(
             _backupRunServiceMock.Object,
+            _deviceAuthorizationServiceMock.Object,
             _loggerMock.Object);
 
         // Setup HttpContext with mock connection for RemoteIpAddress
         var mockHttpContext = new DefaultHttpContext();
         mockHttpContext.Connection.RemoteIpAddress = IPAddress.Parse("127.0.0.1");
+        mockHttpContext.User = new ClaimsPrincipal(new ClaimsIdentity(new[]
+        {
+            new Claim("tid", "test-tenant"),
+            new Claim("oid", "test-user")
+        }, "Test"));
         _sut.ControllerContext = new ControllerContext
         {
             HttpContext = mockHttpContext
@@ -51,11 +64,6 @@ public class BackupControllerTests
         var deviceId = Guid.NewGuid();
         var runId = Guid.NewGuid();
         var startedAt = DateTimeOffset.UtcNow;
-
-        var request = new StartBackupRunRequest
-        {
-            DeviceId = deviceId
-        };
 
         var backupRunResult = new BackupRunStartResult
         {
@@ -79,7 +87,7 @@ public class BackupControllerTests
             .ReturnsAsync(backupRunResult);
 
         // Act
-        var result = await _sut.StartBackupRun(request, CancellationToken.None);
+        var result = await _sut.StartBackupRun(deviceId, CancellationToken.None);
 
         // Assert
         result.Should().NotBeNull();
@@ -107,8 +115,6 @@ public class BackupControllerTests
         var sasUrl = new Uri("https://storage.blob.core.windows.net/backups/staging/device/run?sig=token");
         var expiresAt = DateTimeOffset.UtcNow.AddHours(1);
 
-        var request = new StartBackupRunRequest { DeviceId = deviceId };
-
         var backupRunResult = new BackupRunStartResult
         {
             Run = new BackupRun
@@ -131,7 +137,7 @@ public class BackupControllerTests
             .ReturnsAsync(backupRunResult);
 
         // Act
-        var result = await _sut.StartBackupRun(request, CancellationToken.None);
+        var result = await _sut.StartBackupRun(deviceId, CancellationToken.None);
         var okResult = result.Result as OkObjectResult;
         var response = okResult!.Value as StartBackupRunResponse;
 
@@ -147,7 +153,6 @@ public class BackupControllerTests
     {
         // Arrange
         var deviceId = Guid.NewGuid();
-        var request = new StartBackupRunRequest { DeviceId = deviceId };
 
         _backupRunServiceMock
             .Setup(x => x.StartBackupRunAsync(deviceId, It.IsAny<string>(), It.IsAny<CancellationToken>()))
@@ -169,7 +174,7 @@ public class BackupControllerTests
             });
 
         // Act
-        await _sut.StartBackupRun(request, CancellationToken.None);
+        await _sut.StartBackupRun(deviceId, CancellationToken.None);
 
         // Assert
         _backupRunServiceMock.Verify(
@@ -182,16 +187,16 @@ public class BackupControllerTests
     public async Task StartBackupRun_PassesCancellationTokenToService()
     {
         // Arrange
-        var request = new StartBackupRunRequest { DeviceId = Guid.NewGuid() };
+        var deviceId = Guid.NewGuid();
         var cts = new CancellationTokenSource();
 
         _backupRunServiceMock
-            .Setup(x => x.StartBackupRunAsync(It.IsAny<Guid>(), It.IsAny<string>(), cts.Token))
+            .Setup(x => x.StartBackupRunAsync(deviceId, It.IsAny<string>(), cts.Token))
             .ReturnsAsync(new BackupRunStartResult
             {
                 Run = new BackupRun
                 {
-                    DeviceId = request.DeviceId,
+                    DeviceId = deviceId,
                     RunId = Guid.NewGuid(),
                     StartedAt = DateTimeOffset.UtcNow,
                     Status = BackupRunStatus.Queued
@@ -205,11 +210,11 @@ public class BackupControllerTests
             });
 
         // Act
-        await _sut.StartBackupRun(request, cts.Token);
+        await _sut.StartBackupRun(deviceId, cts.Token);
 
         // Assert
         _backupRunServiceMock.Verify(
-            x => x.StartBackupRunAsync(It.IsAny<Guid>(),It.IsAny<string>(),  cts.Token),
+            x => x.StartBackupRunAsync(deviceId,It.IsAny<string>(),  cts.Token),
             Times.Once);
     }
 
@@ -218,7 +223,7 @@ public class BackupControllerTests
     public async Task StartBackupRun_WhenServiceThrows_PropagatesException()
     {
         // Arrange
-        var request = new StartBackupRunRequest { DeviceId = Guid.NewGuid() };
+        var deviceId = Guid.NewGuid();
         var expectedException = new InvalidOperationException("Service error");
 
         _backupRunServiceMock
@@ -226,7 +231,7 @@ public class BackupControllerTests
             .ThrowsAsync(expectedException);
 
         // Act
-        var act = async () => await _sut.StartBackupRun(request, CancellationToken.None);
+        var act = async () => await _sut.StartBackupRun(deviceId, CancellationToken.None);
 
         // Assert
         await act.Should().ThrowAsync<InvalidOperationException>()
@@ -247,7 +252,6 @@ public class BackupControllerTests
 
         var request = new CommitBackupRunRequest
         {
-            DeviceId = deviceId,
             RunId = runId
         };
 
@@ -256,7 +260,7 @@ public class BackupControllerTests
             .ReturnsAsync(new CommitJob
             {
                 CommitId = Guid.NewGuid(),
-                DeviceId = request.DeviceId,
+                DeviceId = deviceId,
                 RunId = request.RunId,
                 Status = CommitJobStatus.Queued,
                 CreatedAt = DateTimeOffset.UtcNow.AddMinutes(-10),
@@ -264,7 +268,7 @@ public class BackupControllerTests
             });
 
         // Act
-        var result = await _sut.CommitBackupRun(request, CancellationToken.None);
+        var result = await _sut.CommitBackupRun(deviceId, request, CancellationToken.None);
 
         // Assert
         result.Should().NotBeNull();
@@ -284,7 +288,6 @@ public class BackupControllerTests
 
         var request = new CommitBackupRunRequest
         {
-            DeviceId = deviceId,
             RunId = runId
         };
 
@@ -293,7 +296,7 @@ public class BackupControllerTests
             .ReturnsAsync(new CommitJob
             {
                 CommitId = Guid.NewGuid(),
-                DeviceId = request.DeviceId,
+                DeviceId = deviceId,
                 RunId = request.RunId,
                 Status = CommitJobStatus.Queued,
                 CreatedAt = DateTimeOffset.UtcNow.AddMinutes(-10),
@@ -301,7 +304,7 @@ public class BackupControllerTests
             });
 
         // Act
-        await _sut.CommitBackupRun(request, CancellationToken.None);
+        await _sut.CommitBackupRun(deviceId, request, CancellationToken.None);
 
         // Assert
         _backupRunServiceMock.Verify(
@@ -314,9 +317,9 @@ public class BackupControllerTests
     public async Task CommitBackupRun_PassesCancellationTokenToService()
     {
         // Arrange
+        var deviceId = Guid.NewGuid();
         var request = new CommitBackupRunRequest
         {
-            DeviceId = Guid.NewGuid(),
             RunId = Guid.NewGuid()
         };
         var cts = new CancellationTokenSource();
@@ -326,7 +329,7 @@ public class BackupControllerTests
             .ReturnsAsync(new CommitJob
             {
                 CommitId = Guid.NewGuid(),
-                DeviceId = request.DeviceId,
+                DeviceId = deviceId,
                 RunId = request.RunId,
                 Status = CommitJobStatus.Queued,
                 CreatedAt = DateTimeOffset.UtcNow.AddMinutes(-10),
@@ -334,7 +337,7 @@ public class BackupControllerTests
             });
 
         // Act
-        await _sut.CommitBackupRun(request, cts.Token);
+        await _sut.CommitBackupRun(deviceId, request, cts.Token);
 
         // Assert
         _backupRunServiceMock.Verify(
@@ -347,9 +350,9 @@ public class BackupControllerTests
     public async Task CommitBackupRun_WhenServiceThrows_PropagatesException()
     {
         // Arrange
+        var deviceId = Guid.NewGuid();
         var request = new CommitBackupRunRequest
         {
-            DeviceId = Guid.NewGuid(),
             RunId = Guid.NewGuid()
         };
         var expectedException = new InvalidOperationException("Commit failed");
@@ -359,7 +362,7 @@ public class BackupControllerTests
             .ThrowsAsync(expectedException);
 
         // Act
-        var act = async () => await _sut.CommitBackupRun(request, CancellationToken.None);
+        var act = async () => await _sut.CommitBackupRun(deviceId, request, CancellationToken.None);
 
         // Assert
         await act.Should().ThrowAsync<InvalidOperationException>()

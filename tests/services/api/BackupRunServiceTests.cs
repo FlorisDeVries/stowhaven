@@ -1,8 +1,9 @@
 using System.Diagnostics;
 using FluentAssertions;
-using FlorisDeV.BackupApi.Models.State;
 using FlorisDeV.BackupApi.Services;
 using FlorisDeV.BackupApi.Telemetry;
+using FlorisDeV.BackupContracts.Infrastructure;
+using FlorisDeV.BackupContracts.State;
 using Moq;
 
 namespace FlorisDeV.BackupApi.Tests;
@@ -66,7 +67,7 @@ public class BackupRunServiceTests
                 It.IsAny<string?>(),
                 60,
                 It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new Models.Infrastructure.SasUrlInfo
+            .ReturnsAsync(new SasUrlInfo
             {
                 Url = new Uri("https://storage.blob.core.windows.net/backups/staging/device/run?sig=token"),
                 ExpiresAt = DateTimeOffset.UtcNow.AddHours(1),
@@ -104,15 +105,15 @@ public class BackupRunServiceTests
             .Setup(x => x.CreateBackupRunAsync(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(backupRun);
 
-        string? capturedPath = null;
+        var capturedPaths = new List<string>();
         _sasUrlServiceMock
             .Setup(x => x.GenerateUploadSasUrlAsync(
                 It.IsAny<string>(),
                 It.IsAny<string?>(),
                 It.IsAny<int?>(),
                 It.IsAny<CancellationToken>()))
-            .Callback<string, string?, int?, CancellationToken>((path, ip, ttl, ct) => capturedPath = path)
-            .ReturnsAsync(new Models.Infrastructure.SasUrlInfo
+            .Callback<string, string?, int?, CancellationToken>((path, ip, ttl, ct) => capturedPaths.Add(path))
+            .ReturnsAsync(new SasUrlInfo
             {
                 Url = new Uri("https://storage.blob.core.windows.net/backups/staging/device/run?sig=token"),
                 ExpiresAt = DateTimeOffset.UtcNow.AddHours(1),
@@ -123,9 +124,9 @@ public class BackupRunServiceTests
         await _sut.StartBackupRunAsync(deviceId);
 
         // Assert
-        capturedPath.Should().NotBeNull();
-        capturedPath.Should().StartWith("staging/");
-        capturedPath.Should().Contain(deviceId.ToString("N"));
+        capturedPaths.Should().Contain(path => path.StartsWith("staging/", StringComparison.Ordinal));
+        capturedPaths.Should().Contain(path => path.StartsWith("runs/", StringComparison.Ordinal));
+        capturedPaths.Should().OnlyContain(path => path.Contains(deviceId.ToString("N")));
     }
 
     [Fact]
@@ -151,7 +152,7 @@ public class BackupRunServiceTests
                 It.IsAny<string?>(),
                 60,
                 It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new Models.Infrastructure.SasUrlInfo
+            .ReturnsAsync(new SasUrlInfo
             {
                 Url = new Uri("https://storage.blob.core.windows.net/backups/staging/device/run?sig=token"),
                 ExpiresAt = DateTimeOffset.UtcNow.AddHours(1),
@@ -168,7 +169,7 @@ public class BackupRunServiceTests
                 It.IsAny<string?>(),
                 60,
                 It.IsAny<CancellationToken>()),
-            Times.Once);
+            Times.Exactly(2));
     }
 
     [Fact]
@@ -194,7 +195,7 @@ public class BackupRunServiceTests
 
         _sasUrlServiceMock
             .Setup(x => x.GenerateUploadSasUrlAsync(It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new Models.Infrastructure.SasUrlInfo
+            .ReturnsAsync(new SasUrlInfo
             {
                 Url = new Uri("https://storage.blob.core.windows.net/backups/staging/device/run?sig=token"),
                 ExpiresAt = DateTimeOffset.UtcNow.AddHours(1),
@@ -297,7 +298,7 @@ public class BackupRunServiceTests
                 It.IsAny<string?>(),
                 It.IsAny<int?>(),
                 cts.Token))
-            .ReturnsAsync(new Models.Infrastructure.SasUrlInfo
+            .ReturnsAsync(new SasUrlInfo
             {
                 Url = new Uri("https://storage.blob.core.windows.net/backups/staging/device/run?sig=token"),
                 ExpiresAt = DateTimeOffset.UtcNow.AddHours(1),
@@ -313,7 +314,7 @@ public class BackupRunServiceTests
             Times.Once);
         _sasUrlServiceMock.Verify(
             x => x.GenerateUploadSasUrlAsync(It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<int?>(), cts.Token),
-            Times.Once);
+            Times.Exactly(2));
     }
 
     #endregion

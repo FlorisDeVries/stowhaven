@@ -1,9 +1,13 @@
 using FlorisDeV.BackupClient.Clients.BackupApi;
-using FlorisDeV.BackupClient.Clients.BackupApi.DTOs;
 using FlorisDeV.BackupClient.Config;
 using FlorisDeV.BackupClient.Models;
 using FlorisDeV.BackupClient.Services;
 using FlorisDeV.BackupClient.Telemetry;
+using FlorisDeV.BackupContracts.Api.Requests;
+using FlorisDeV.BackupContracts.Api.Responses;
+using FlorisDeV.BackupContracts.Infrastructure;
+using FlorisDeV.BackupContracts.Manifest;
+using FlorisDeV.BackupContracts.State;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -38,14 +42,27 @@ public class BackupServiceIntegrationTests : IDisposable
 
     private void SetupMockApiClient()
     {
+        _mockApiClient
+            .Setup(x => x.RegisterDevice(It.IsAny<RegisterDeviceRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((RegisterDeviceRequest req, CancellationToken ct) => new DeviceRegistrationResponse
+            {
+                DeviceId = req.DeviceId ?? Guid.NewGuid(),
+                TenantId = "test-tenant",
+                UserId = "test-user",
+                DisplayName = req.DisplayName,
+                Status = DeviceRegistrationStatus.Active,
+                CreatedAt = DateTimeOffset.UtcNow,
+                LastSeenAt = DateTimeOffset.UtcNow
+            });
+
         // Mock StartBackupRun
         _mockApiClient
-            .Setup(x => x.StartBackupRun(It.IsAny<StartBackupRunRequest>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((StartBackupRunRequest req, CancellationToken ct) =>
+            .Setup(x => x.StartBackupRun(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Guid deviceId, CancellationToken ct) =>
             {
                 return new StartBackupRunResponse
                 {
-                    DeviceId = Guid.NewGuid(),
+                    DeviceId = deviceId,
                     RunId = Guid.NewGuid(),
                     StartedAt = DateTimeOffset.UtcNow,
                     Status = BackupRunStatus.Processing,
@@ -54,14 +71,40 @@ public class BackupServiceIntegrationTests : IDisposable
                         Url = new Uri("https://storage.blob.core.windows.net/backups?sas-token"),
                         ExpiresAt = DateTimeOffset.UtcNow.AddHours(1),
                         TtlMinutes = 60
+                    },
+                    ManifestSasUrlInfo = new SasUrlInfo
+                    {
+                        Url = new Uri("https://storage.blob.core.windows.net/backups?sas-token"),
+                        ExpiresAt = DateTimeOffset.UtcNow.AddHours(1),
+                        TtlMinutes = 60,
+                        BasePath = $"runs/{deviceId:N}/{Guid.NewGuid():N}/"
                     }
                 };
             });
 
         // Mock CommitBackupRun
         _mockApiClient
-            .Setup(x => x.CommitBackupRun(It.IsAny<CommitBackupRunRequest>(), It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
+            .Setup(x => x.CommitBackupRun(It.IsAny<Guid>(), It.IsAny<CommitBackupRunRequest>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Guid deviceId, CommitBackupRunRequest req, CancellationToken ct) => new CommitBackupRunResponse
+            {
+                CommitId = Guid.NewGuid(),
+                DeviceId = deviceId,
+                RunId = req.RunId,
+                Status = CommitJobStatus.Queued,
+                CreatedAt = DateTimeOffset.UtcNow
+            });
+
+        _mockApiClient
+            .Setup(x => x.GetCommitStatus(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Guid deviceId, Guid commitId, CancellationToken ct) => new CommitStatusResponse
+            {
+                DeviceId = deviceId,
+                CommitId = commitId,
+                Status = CommitJobStatus.Succeeded,
+                CreatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = DateTimeOffset.UtcNow,
+                CompletedAt = DateTimeOffset.UtcNow
+            });
     }
 
     /// <summary>
@@ -70,10 +113,24 @@ public class BackupServiceIntegrationTests : IDisposable
     private class TestFileUploader : IFileUploader
     {
         public List<string> UploadedPaths { get; } = new();
+        public List<string> UploadedManifests { get; } = new();
 
-        public void SetBasePath(string? basePath)
+        public void SetBasePath(string? basePath, bool isPathEmbedded = false)
         {
 
+        }
+
+        public Task UploadRunManifestAsync(
+            BlobContainerClient containerClient,
+            RunManifest manifest,
+            string? basePath,
+            bool isPathEmbedded,
+            CancellationToken cancellationToken)
+        {
+            UploadedManifests.Add(isPathEmbedded || string.IsNullOrWhiteSpace(basePath)
+                ? "run-manifest.json"
+                : $"{basePath.TrimEnd('/')}/run-manifest.json");
+            return Task.CompletedTask;
         }
 
         public Task<IReadOnlyList<TaggedFile>> UploadFilesAsync(
@@ -159,10 +216,11 @@ public class BackupServiceIntegrationTests : IDisposable
         _testUploader.UploadedPaths.Should().Contain(path => path.Contains("file3.txt"));
 
         _mockApiClient.Verify(x => x.StartBackupRun(
-            It.IsAny<StartBackupRunRequest>(),
+            It.IsAny<Guid>(),
             It.IsAny<CancellationToken>()), Times.Once);
 
         _mockApiClient.Verify(x => x.CommitBackupRun(
+            It.IsAny<Guid>(),
             It.IsAny<CommitBackupRunRequest>(),
             It.IsAny<CancellationToken>()), Times.Once);
     }
@@ -196,10 +254,11 @@ public class BackupServiceIntegrationTests : IDisposable
         _testUploader.UploadedPaths.Should().BeEmpty("no files should be uploaded when nothing changed");
 
         _mockApiClient.Verify(x => x.StartBackupRun(
-            It.IsAny<StartBackupRunRequest>(),
+            It.IsAny<Guid>(),
             It.IsAny<CancellationToken>()), Times.Never);
 
         _mockApiClient.Verify(x => x.CommitBackupRun(
+            It.IsAny<Guid>(),
             It.IsAny<CommitBackupRunRequest>(),
             It.IsAny<CancellationToken>()), Times.Never);
     }
@@ -307,14 +366,15 @@ public class BackupServiceIntegrationTests : IDisposable
         result.Should().BeTrue();
         _testUploader.UploadedPaths.Should().BeEmpty("deleted files should not be uploaded");
 
-        // Verify that cleanup was triggered (StartBackupRun and CommitBackupRun should be called)
+        // Verify that both the initial upload run and the deletion-only run were committed
         _mockApiClient.Verify(x => x.StartBackupRun(
-            It.IsAny<StartBackupRunRequest>(),
-            It.IsAny<CancellationToken>()), Times.Once);
+            It.IsAny<Guid>(),
+            It.IsAny<CancellationToken>()), Times.Exactly(2));
 
         _mockApiClient.Verify(x => x.CommitBackupRun(
+            It.IsAny<Guid>(),
             It.IsAny<CommitBackupRunRequest>(),
-            It.IsAny<CancellationToken>()), Times.Once);
+            It.IsAny<CancellationToken>()), Times.Exactly(2));
     }
 
     [Fact]

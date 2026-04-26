@@ -2,9 +2,9 @@ using System.Security;
 using Azure.Storage.Blobs;
 using Azure.Storage.Blobs.Models;
 using FluentAssertions;
-using FlorisDeV.BackupApi.Models.Infrastructure;
 using FlorisDeV.BackupApi.Services;
 using FlorisDeV.BackupApi.Telemetry;
+using FlorisDeV.BackupContracts.Infrastructure;
 using Microsoft.Extensions.Logging;
 using Moq;
 

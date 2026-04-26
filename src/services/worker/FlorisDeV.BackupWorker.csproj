@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+    <PropertyGroup>
+        <TargetFramework>net10.0</TargetFramework>
+        <Nullable>enable</Nullable>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <DockerDefaultTargetOS>Linux</DockerDefaultTargetOS>
+        <RootNamespace>FlorisDeV.BackupWorker</RootNamespace>
+        <AssemblyName>FlorisDeV.BackupWorker</AssemblyName>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\..\common\core\FlorisDeV.BackupCore.csproj" />
+        <ProjectReference Include="..\..\common\contracts\FlorisDeV.BackupContracts.csproj" />
+        <ProjectReference Include="..\..\common\featureflags\FlorisDeV.FeatureFlags.csproj" />
+        <ProjectReference Include="..\..\common\healthchecks\FlorisDeV.HealthChecks.csproj" />
+        <ProjectReference Include="..\..\common\logging\FlorisDeV.Logging.csproj" />
+        <ProjectReference Include="..\..\common\security\FlorisDeV.Security.csproj" />
+    </ItemGroup>
+
+</Project>

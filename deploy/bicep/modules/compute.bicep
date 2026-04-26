@@ -28,6 +28,10 @@ param keyVaultName string
 @description('Service Bus namespace name for Dapr pub/sub component')
 param serviceBusNamespaceName string
 
+@description('Least-privilege Service Bus Listen connection string used only by the Container Apps scaler')
+@secure()
+param serviceBusScaleConnectionString string
+
 @description('API key secret value (stored as a Container App secret)')
 @secure()
 param apiKey string
@@ -78,10 +82,10 @@ resource daprSecretStore 'Microsoft.App/managedEnvironments/daprComponents@2023-
 }
 
 // ---------------------------------------------------------------------------
-// Dapr component: state-store (Azure Table Storage via managed identity)
+// Dapr component: manifest state-store (Azure Table Storage via managed identity)
 // ---------------------------------------------------------------------------
 
-resource daprStateStore 'Microsoft.App/managedEnvironments/daprComponents@2023-05-01' = {
+resource daprManifestStateStore 'Microsoft.App/managedEnvironments/daprComponents@2023-05-01' = {
   parent: containerAppEnv
   name: 'manifest-state-store'
   properties: {
@@ -95,6 +99,29 @@ resource daprStateStore 'Microsoft.App/managedEnvironments/daprComponents@2023-0
       {
         name: 'tableName'
         value: 'manifeststate'
+      }
+    ]
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Dapr component: device registry state-store (Azure Table Storage via managed identity)
+// ---------------------------------------------------------------------------
+
+resource daprDeviceRegistryStateStore 'Microsoft.App/managedEnvironments/daprComponents@2023-05-01' = {
+  parent: containerAppEnv
+  name: 'device-registry-state-store'
+  properties: {
+    componentType: 'state.azure.tablestorage'
+    version: 'v1'
+    metadata: [
+      {
+        name: 'accountName'
+        value: dataStorageAccountName
+      }
+      {
+        name: 'tableName'
+        value: 'deviceregistry'
       }
     ]
   }
@@ -117,7 +144,7 @@ resource daprPubSub 'Microsoft.App/managedEnvironments/daprComponents@2023-05-01
       }
       {
         name: 'consumerID'
-        value: 'backup-api'
+        value: 'backup-worker'
       }
       {
         name: 'maxConcurrentHandlers'
@@ -221,6 +248,100 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
   tags: tags
 }
 
+resource workerContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
+  name: 'ca-${nameSuffix}-worker'
+  location: location
+  identity: {
+    type: 'SystemAssigned'
+  }
+  properties: {
+    managedEnvironmentId: containerAppEnv.id
+    configuration: {
+      activeRevisionsMode: 'Single'
+      dapr: {
+        enabled: true
+        appId: 'backup-worker'
+        appPort: 8080
+        appProtocol: 'http'
+      }
+      registries: [
+        {
+          server: registryLoginServer
+          identity: 'system'
+        }
+      ]
+      secrets: [
+        {
+          name: 'api-key'
+          value: apiKey
+        }
+        {
+          name: 'servicebus-scale-connection-string'
+          value: serviceBusScaleConnectionString
+        }
+      ]
+    }
+    template: {
+      scale: {
+        minReplicas: 0
+        maxReplicas: 3
+        rules: [
+          {
+            name: 'backup-events'
+            custom: {
+              type: 'azure-servicebus'
+              metadata: {
+                topicName: 'backup-events'
+                subscriptionName: 'backup-worker'
+                messageCount: '1'
+              }
+              auth: [
+                {
+                  secretRef: 'servicebus-scale-connection-string'
+                  triggerParameter: 'connection'
+                }
+              ]
+            }
+          }
+        ]
+      }
+      containers: [
+        {
+          name: 'backup-worker'
+          image: '${registryLoginServer}/backup-worker:${imageTag}'
+          resources: {
+            cpu: 1
+            memory: '0.5Gi'
+          }
+          env: [
+            {
+              name: 'DATA_STORAGE_ACCOUNT'
+              value: dataStorageAccountName
+            }
+            {
+              name: 'DATA_CONTAINER'
+              value: containerName
+            }
+            {
+              name: 'API_KEY'
+              secretRef: 'api-key'
+            }
+            {
+              name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
+              value: appInsightsConnectionString
+            }
+            {
+              name: 'ASPNETCORE_ENVIRONMENT'
+              value: 'Production'
+            }
+          ]
+        }
+      ]
+    }
+  }
+  tags: tags
+}
+
 // ---------------------------------------------------------------------------
 // Outputs
 // ---------------------------------------------------------------------------
@@ -228,3 +349,5 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
 output containerAppName string = containerApp.name
 output containerAppFqdn string = containerApp.properties.configuration.ingress.fqdn
 output principalId string = containerApp.identity.principalId
+output workerContainerAppName string = workerContainerApp.name
+output workerPrincipalId string = workerContainerApp.identity.principalId

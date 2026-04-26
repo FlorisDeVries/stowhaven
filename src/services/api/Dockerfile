@@ -49,9 +49,12 @@ RUN \
     )
 
 COPY ["src/services/api/FlorisDeV.BackupApi.csproj", "src/services/api/"]
+COPY ["src/common/core/FlorisDeV.BackupCore.csproj", "src/common/core/"]
+COPY ["src/common/contracts/FlorisDeV.BackupContracts.csproj", "src/common/contracts/"]
 COPY ["src/common/featureflags/FlorisDeV.FeatureFlags.csproj", "src/common/featureflags/"]
 COPY ["src/common/healthchecks/FlorisDeV.HealthChecks.csproj", "src/common/healthchecks/"]
 COPY ["src/common/logging/FlorisDeV.Logging.csproj", "src/common/logging/"]
+COPY ["src/common/security/FlorisDeV.Security.csproj", "src/common/security/"]
 
 # restore all dependencies
 RUN --mount=type=cache,id=nuget_manager,target=/root/.nuget/packages \
