@@ -110,6 +110,20 @@ public class BackupClientOptions
     /// ClientAndServer mode encrypts files locally and writes a generated recovery phrase to disk for the user to store offline.
     /// </summary>
     public BackupEncryptionOptions Encryption { get; init; } = new();
+
+    /// <summary>
+    /// Restore command configuration used when running the client in restore mode.
+    /// </summary>
+    public BackupRestoreOptions Restore { get; init; } = new();
+}
+
+public sealed class BackupRestoreOptions
+{
+    public Guid? DeviceId { get; init; }
+    public string? DestinationPath { get; init; }
+    public string[] LogicalPaths { get; init; } = [];
+    public int ListPageSize { get; init; } = 500;
+    public bool OverwriteExisting { get; init; }
 }
 
 public sealed class BackupEncryptionOptions

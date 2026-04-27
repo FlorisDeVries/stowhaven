@@ -12,6 +12,12 @@ namespace FlorisDeV.BackupClient.Services;
 public interface IBackupEncryptionService
 {
     Task<PreparedUpload> PrepareUploadAsync(TaggedFile file, CancellationToken cancellationToken = default);
+
+    Task DecryptFileAsync(
+        string encryptedFilePath,
+        string destinationFilePath,
+        FileEncryptionMetadata encryption,
+        CancellationToken cancellationToken = default);
 }
 
 public sealed class PreparedUpload(Stream content, TaggedFile file, string? temporaryFilePath = null) : IAsyncDisposable
@@ -104,6 +110,53 @@ public partial class BackupEncryptionService(
         return new PreparedUpload(encryptedStream, encryptedFile, tempPath);
     }
 
+    public async Task DecryptFileAsync(
+        string encryptedFilePath,
+        string destinationFilePath,
+        FileEncryptionMetadata encryption,
+        CancellationToken cancellationToken = default)
+    {
+        if (!string.Equals(encryption.Mode, BackupEncryptionMode.ClientAndServer.ToString(), StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException($"Unsupported encryption mode '{encryption.Mode}' for restore.");
+        }
+
+        if (!string.Equals(encryption.Algorithm, "AES-256-CBC-HMAC-SHA256", StringComparison.Ordinal) ||
+            !string.Equals(encryption.KeyWrapAlgorithm, "AES-256-GCM", StringComparison.Ordinal) ||
+            !string.Equals(encryption.Kdf, "PBKDF2-SHA256", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("Unsupported encryption metadata for restore.");
+        }
+
+        var material = await GetExistingRecoveryMaterialAsync(encryption, cancellationToken).ConfigureAwait(false);
+        var masterKey = DeriveMasterKey(material.RecoveryPhrase, material.KdfSalt, material.KdfIterations);
+        var fileKey = UnwrapFileKey(masterKey, encryption.WrappedKey);
+        var aesKey = fileKey[..AesKeyBytes];
+        var hmacKey = fileKey[AesKeyBytes..];
+        var iv = Convert.FromBase64String(encryption.Iv);
+
+        try
+        {
+            await VerifyFileHmacAsync(encryptedFilePath, iv, hmacKey, Convert.FromBase64String(encryption.AuthenticationTag), cancellationToken).ConfigureAwait(false);
+            await DecryptFileContentsAsync(encryptedFilePath, destinationFilePath, aesKey, iv, cancellationToken).ConfigureAwait(false);
+
+            if (!string.IsNullOrWhiteSpace(encryption.PlaintextSha256))
+            {
+                var plaintextSha256 = await ComputeFileSha256Async(destinationFilePath, cancellationToken).ConfigureAwait(false);
+                if (!string.Equals(plaintextSha256, encryption.PlaintextSha256, StringComparison.OrdinalIgnoreCase))
+                {
+                    File.Delete(destinationFilePath);
+                    throw new CryptographicException("Restored plaintext SHA-256 verification failed.");
+                }
+            }
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(masterKey);
+            CryptographicOperations.ZeroMemory(fileKey);
+        }
+    }
+
     private async Task<RecoveryMaterial> GetRecoveryMaterialAsync(CancellationToken cancellationToken)
     {
         if (_recoveryMaterial != null)
@@ -148,6 +201,33 @@ public partial class BackupEncryptionService(
 
         LogRecoveryPhraseCreated(logger, phrasePath);
         _recoveryMaterial = new RecoveryMaterial(phrase, kdfSalt, phraseFile.KdfIterations);
+        return _recoveryMaterial;
+    }
+
+    private async Task<RecoveryMaterial> GetExistingRecoveryMaterialAsync(FileEncryptionMetadata encryption, CancellationToken cancellationToken)
+    {
+        if (_recoveryMaterial != null)
+        {
+            return _recoveryMaterial;
+        }
+
+        var phrasePath = GetRecoveryPhraseFilePath();
+        if (!File.Exists(phrasePath))
+        {
+            throw new FileNotFoundException(
+                "Recovery phrase file was not found. Encrypted backups cannot be restored without the recovery phrase.",
+                phrasePath);
+        }
+
+        await using var existingStream = new FileStream(phrasePath, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize: 4096, useAsync: true);
+        var existing = await JsonSerializer.DeserializeAsync<RecoveryPhraseFile>(existingStream, JsonOptions, cancellationToken).ConfigureAwait(false)
+                       ?? throw new InvalidOperationException($"Recovery phrase file '{phrasePath}' is empty or invalid.");
+
+        _recoveryMaterial = new RecoveryMaterial(
+            NormalizeRecoveryPhrase(existing.RecoveryPhrase),
+            Convert.FromBase64String(encryption.KdfSalt),
+            encryption.KdfIterations);
+
         return _recoveryMaterial;
     }
 
@@ -222,6 +302,57 @@ public partial class BackupEncryptionService(
         aesGcm.Encrypt(nonce, fileKey, ciphertext, tag);
 
         return $"{Convert.ToBase64String(nonce)}.{Convert.ToBase64String(ciphertext)}.{Convert.ToBase64String(tag)}";
+    }
+
+    private static byte[] UnwrapFileKey(byte[] masterKey, string wrappedKey)
+    {
+        var parts = wrappedKey.Split('.', 3);
+        if (parts.Length != 3)
+        {
+            throw new InvalidOperationException("Invalid wrapped file key format.");
+        }
+
+        var nonce = Convert.FromBase64String(parts[0]);
+        var ciphertext = Convert.FromBase64String(parts[1]);
+        var tag = Convert.FromBase64String(parts[2]);
+        var fileKey = new byte[ciphertext.Length];
+
+        using var aesGcm = new AesGcm(masterKey, AesGcmTagBytes);
+        aesGcm.Decrypt(nonce, ciphertext, tag, fileKey);
+        return fileKey;
+    }
+
+    private static async Task VerifyFileHmacAsync(string filePath, byte[] iv, byte[] hmacKey, byte[] expectedHmac, CancellationToken cancellationToken)
+    {
+        var (_, _, actualHmac) = await HashAndMacAsync(filePath, iv, hmacKey, cancellationToken).ConfigureAwait(false);
+        if (!CryptographicOperations.FixedTimeEquals(actualHmac, expectedHmac))
+        {
+            throw new CryptographicException("Encrypted file HMAC verification failed.");
+        }
+    }
+
+    private static async Task DecryptFileContentsAsync(string encryptedFilePath, string destinationFilePath, byte[] aesKey, byte[] iv, CancellationToken cancellationToken)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(destinationFilePath) ?? AppContext.BaseDirectory);
+
+        await using var source = new FileStream(encryptedFilePath, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize: 1024 * 128, useAsync: true);
+        await using var destination = new FileStream(destinationFilePath, FileMode.CreateNew, FileAccess.Write, FileShare.None, bufferSize: 1024 * 128, useAsync: true);
+        using var aes = Aes.Create();
+        aes.KeySize = 256;
+        aes.Mode = CipherMode.CBC;
+        aes.Padding = PaddingMode.PKCS7;
+        aes.Key = aesKey;
+        aes.IV = iv;
+
+        await using var cryptoStream = new CryptoStream(source, aes.CreateDecryptor(), CryptoStreamMode.Read);
+        await cryptoStream.CopyToAsync(destination, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task<string> ComputeFileSha256Async(string filePath, CancellationToken cancellationToken)
+    {
+        await using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize: 1024 * 128, useAsync: true);
+        var hash = await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false);
+        return Convert.ToHexString(hash).ToLowerInvariant();
     }
 
     private static byte[] DeriveMasterKey(string recoveryPhrase, byte[] salt, int iterations)

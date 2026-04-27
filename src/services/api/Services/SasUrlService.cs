@@ -13,6 +13,9 @@ public interface ISasUrlService
 {
     Task<SasUrlInfo> GenerateUploadSasUrlAsync(string path, string? clientIp = null, int? ttlMinutes = null,
         CancellationToken cancellationToken = default);
+
+    Task<SasUrlInfo> GenerateReadSasUrlAsync(string path, string? clientIp = null, int? ttlMinutes = null,
+        CancellationToken cancellationToken = default);
 }
 
 public partial class SasUrlService(
@@ -159,6 +162,112 @@ public partial class SasUrlService(
         }
     }
 
+    public async Task<SasUrlInfo> GenerateReadSasUrlAsync(string path, string? clientIp = null, int? ttlMinutes = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+
+        using var activity = telemetry.ActivitySource.StartActivity("GenerateReadSasUrl");
+        var stopwatch = Stopwatch.StartNew();
+
+        path = ValidateReadPath(path);
+        activity?.SetTag(ActivityAttributes.SasUrlPath, path);
+
+        var ttl = ttlMinutes ?? 60;
+        var expiresAt = DateTimeOffset.UtcNow.AddMinutes(ttl);
+        var metricTags = new TagList { { "operation", "generate_read_sas" } };
+
+        try
+        {
+            var blobServiceClient = await blobStorageService.GetBlobServiceClientAsync(cancellationToken);
+            var storageAccount = await blobStorageService.GetStorageAccountNameAsync(cancellationToken);
+            var containerName = await blobStorageService.GetContainerNameAsync(cancellationToken);
+            var isAzurite = await blobStorageService.IsUsingAzuriteAsync(cancellationToken);
+
+            string sasToken;
+            Uri sasUrl;
+
+            if (isAzurite)
+            {
+                var containerSasBuilder = new BlobSasBuilder
+                {
+                    BlobContainerName = containerName,
+                    Resource          = "c",
+                    ExpiresOn         = expiresAt,
+                    StartsOn          = DateTimeOffset.UtcNow.AddMinutes(-5),
+                    Protocol          = SasProtocol.HttpsAndHttp
+                };
+                containerSasBuilder.SetPermissions(BlobContainerSasPermissions.Read);
+
+                if (!string.IsNullOrEmpty(clientIp))
+                {
+                    containerSasBuilder.IPRange = new SasIPRange(System.Net.IPAddress.Parse(clientIp));
+                    LogSasWithIpRestriction(logger, clientIp);
+                }
+
+                var containerClient = blobServiceClient.GetBlobContainerClient(containerName);
+                sasToken = containerClient.GenerateSasUri(containerSasBuilder).Query;
+                sasUrl = new Uri($"{blobServiceClient.Uri}/{containerName}?{sasToken}");
+            }
+            else
+            {
+                var dirSasBuilder = new BlobSasBuilder
+                {
+                    BlobContainerName = containerName,
+                    BlobName          = path,
+                    Resource          = "d",
+                    ExpiresOn         = expiresAt,
+                    StartsOn          = DateTimeOffset.UtcNow.AddMinutes(-5),
+                    Protocol          = SasProtocol.Https
+                };
+                dirSasBuilder.SetPermissions(BlobSasPermissions.Read);
+
+                if (!string.IsNullOrEmpty(clientIp))
+                {
+                    dirSasBuilder.IPRange = new SasIPRange(System.Net.IPAddress.Parse(clientIp));
+                    LogSasWithIpRestriction(logger, clientIp);
+                }
+
+                var key = await blobStorageService.GetUserDelegationKeyAsync(expiresAt, cancellationToken);
+                sasToken = dirSasBuilder.ToSasQueryParameters(key, storageAccount).ToString();
+                sasUrl = new Uri($"{blobServiceClient.Uri}/{containerName}/{path}?{sasToken}");
+            }
+
+            var result = new SasUrlInfo
+            {
+                Url = sasUrl,
+                ExpiresAt = expiresAt,
+                TtlMinutes = ttl,
+                BasePath = path,
+                IsPathEmbedded = !isAzurite
+            };
+
+            stopwatch.Stop();
+            telemetry.SasUrlsGenerated.Add(1, metricTags);
+            telemetry.SasUrlTtl.Record(ttl, metricTags);
+            telemetry.OperationDuration.Record(stopwatch.ElapsedMilliseconds, metricTags);
+            activity?.SetTag(ActivityAttributes.OperationStatus, "success");
+
+            return result;
+        }
+        catch (Exception ex)
+        {
+            stopwatch.Stop();
+            telemetry.OperationDuration.Record(stopwatch.ElapsedMilliseconds, new TagList
+            {
+                { "operation", "generate_read_sas" },
+                { "error.type", ex.GetType().Name }
+            });
+
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.SetTag(ActivityAttributes.OperationStatus, "error");
+            activity?.AddException(ex);
+
+            LogErrorGeneratingSasUrl(logger, path, ex);
+            throw;
+        }
+    }
+
     private string ValidatePath(string path)
     {
         if (string.IsNullOrWhiteSpace(path))
@@ -175,6 +284,25 @@ public partial class SasUrlService(
 
         if (path.Contains('.', StringComparison.Ordinal))
             throw new SecurityException("Upload SAS must target a directory, not a blob");
+
+        return path;
+    }
+
+    private static string ValidateReadPath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            throw new ArgumentException("Path cannot be null or whitespace", nameof(path));
+
+        path = path.Trim('/');
+
+        if (path.Contains("..", StringComparison.Ordinal))
+            throw new SecurityException("Invalid path traversal");
+
+        if (!path.StartsWith("devices/", StringComparison.Ordinal))
+            throw new SecurityException("Read SAS may only target devices/");
+
+        if (!path.EndsWith("/files", StringComparison.Ordinal))
+            throw new SecurityException("Read SAS must target a device files directory");
 
         return path;
     }

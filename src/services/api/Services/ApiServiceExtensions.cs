@@ -13,6 +13,7 @@ public static class ApiServiceExtensions
             builder.Services.AddScoped<ISasUrlService, SasUrlService>();
             builder.Services.AddScoped<IBackupRunService, BackupRunService>();
             builder.Services.AddScoped<IBackupEventPublisher, BackupEventPublisher>();
+            builder.Services.AddScoped<IRestoreService, RestoreService>();
             builder.Services.AddScoped<IDeviceRegistryService, DeviceRegistryService>();
             builder.Services.AddScoped<IDeviceAuthorizationService, DeviceAuthorizationService>();
         }

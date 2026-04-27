@@ -36,12 +36,12 @@ try
     // Log startup configuration for troubleshooting
     host.LogStartupConfiguration();
 
-    // Application Code - no scope needed with Transient services
     var tokenSource = new CancellationTokenSource();
-    var backupService = host.Services.GetRequiredService<IBackupService>();
-    var result = await backupService.Backup(tokenSource.Token);
+    var result = args.FirstOrDefault()?.Equals("restore", StringComparison.OrdinalIgnoreCase) == true
+        ? await host.Services.GetRequiredService<IRestoreService>().RestoreAsync(tokenSource.Token)
+        : await host.Services.GetRequiredService<IBackupService>().Backup(tokenSource.Token);
 
-    logger.LogInformation("Backup completed with result: {Result}", result);
+    logger.LogInformation("Operation completed with result: {Result}", result);
 }
 catch (Exception e)
 {

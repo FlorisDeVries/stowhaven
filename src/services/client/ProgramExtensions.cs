@@ -27,6 +27,7 @@ public static class ProgramExtensions
         services.AddSingleton<IBackupEncryptionService, BackupEncryptionService>();
         services.AddSingleton<IFileUploader, FileUploader>();
         services.AddTransient<IBackupService, BackupService>();
+        services.AddTransient<IRestoreService, RestoreService>();
     }
 
     public static void AddApplicationConfigurations(this IServiceCollection services, IConfiguration configuration, IHostEnvironment environment)

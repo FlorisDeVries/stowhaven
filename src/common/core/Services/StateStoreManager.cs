@@ -1,4 +1,5 @@
 ﻿using System.Diagnostics;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using Dapr.Client;
@@ -46,6 +47,9 @@ public interface IManifestManager
     Task SaveFileVersionAsync(FileVersion fileVersion, CancellationToken cancellationToken = default);
     
     Task<List<FileEntry>> GetAllFileEntriesAsync(Guid deviceId, CancellationToken cancellationToken = default);
+
+    Task<FileEntryPage> GetFileEntriesPageAsync(Guid deviceId, int pageSize, string? continuationToken = null,
+        CancellationToken cancellationToken = default);
 }
 
 public partial class ManifestManager(
@@ -497,6 +501,7 @@ public partial class ManifestManager(
         }
 
         telemetry.StateOperations.Add(1, new TagList { { "operation", "save" }, { "store", "manifest" }, { "entity", "fileentry" } });
+        await AddFileEntryToIndexAsync(fileEntry.DeviceId, fileEntry.RelativePath, cancellationToken);
         LogFileEntrySaved(logger, fileEntry.RelativePath, fileEntry.DeviceId);
     }
 
@@ -567,14 +572,162 @@ public partial class ManifestManager(
 
     public async Task<List<FileEntry>> GetAllFileEntriesAsync(Guid deviceId, CancellationToken cancellationToken = default)
     {
+        var entries = new List<FileEntry>();
+        string? continuationToken = null;
+
+        do
+        {
+            var page = await GetFileEntriesPageAsync(deviceId, pageSize: 500, continuationToken, cancellationToken);
+            entries.AddRange(page.Entries);
+            continuationToken = page.NextContinuationToken;
+        }
+        while (!string.IsNullOrWhiteSpace(continuationToken));
+
+        return entries;
+    }
+
+    public async Task<FileEntryPage> GetFileEntriesPageAsync(Guid deviceId, int pageSize, string? continuationToken = null,
+        CancellationToken cancellationToken = default)
+    {
         using var activity = telemetry.ActivitySource.StartActivity("GetAllFileEntries");
         activity?.SetTag(ActivityAttributes.DeviceId, deviceId.ToString());
+        activity?.SetTag("state.page_size", pageSize);
 
-        // Note: This is a simplified implementation. In production, you'd want to use Dapr's
-        // query API or implement pagination for large result sets.
-        // For now, we'll return an empty list and rely on individual file lookups.
+        if (pageSize < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(pageSize), "Page size must be greater than zero.");
+        }
+
+        var indexKey = GetFileEntryIndexKey(deviceId);
+        var index = await daprClient.GetStateAsync<FileEntryIndex>(
+            DaprComponents.ManifestStateStore,
+            indexKey,
+            cancellationToken: cancellationToken);
+
+        if (index == null || index.RelativePaths.Count == 0)
+        {
+            LogFileEntriesQueried(logger, deviceId);
+            return new FileEntryPage
+            {
+                Entries = [],
+                PageSize = pageSize,
+                ContinuationToken = continuationToken,
+                NextContinuationToken = null
+            };
+        }
+
+        var offset = DecodeContinuationToken(continuationToken);
+        if (offset >= index.RelativePaths.Count)
+        {
+            LogFileEntriesQueried(logger, deviceId);
+            return new FileEntryPage
+            {
+                Entries = [],
+                PageSize = pageSize,
+                ContinuationToken = continuationToken,
+                NextContinuationToken = null
+            };
+        }
+
+        var relativePaths = index.RelativePaths
+            .Order(StringComparer.OrdinalIgnoreCase)
+            .Skip(offset)
+            .Take(pageSize)
+            .ToArray();
+
+        var entries = new List<FileEntry>(relativePaths.Length);
+        foreach (var relativePath in relativePaths)
+        {
+            var entry = await GetFileEntryAsync(deviceId, relativePath, cancellationToken);
+            if (entry != null)
+            {
+                entries.Add(entry);
+            }
+        }
+
+        var nextOffset = offset + relativePaths.Length;
         LogFileEntriesQueried(logger, deviceId);
-        return new List<FileEntry>();
+        return new FileEntryPage
+        {
+            Entries = entries,
+            PageSize = pageSize,
+            ContinuationToken = continuationToken,
+            NextContinuationToken = nextOffset < index.RelativePaths.Count ? EncodeContinuationToken(nextOffset) : null
+        };
+    }
+
+    private async Task AddFileEntryToIndexAsync(Guid deviceId, string relativePath, CancellationToken cancellationToken)
+    {
+        var indexKey = GetFileEntryIndexKey(deviceId);
+        var (index, etag) = await daprClient.GetStateAndETagAsync<FileEntryIndex>(
+            DaprComponents.ManifestStateStore,
+            indexKey,
+            cancellationToken: cancellationToken);
+
+        index ??= new FileEntryIndex
+        {
+            DeviceId = deviceId,
+            RelativePaths = []
+        };
+
+        if (index.RelativePaths.Contains(relativePath, StringComparer.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        index.RelativePaths.Add(relativePath);
+        index.RelativePaths.Sort(StringComparer.OrdinalIgnoreCase);
+
+        if (!string.IsNullOrEmpty(etag))
+        {
+            var success = await daprClient.TrySaveStateAsync(
+                DaprComponents.ManifestStateStore,
+                indexKey,
+                index,
+                etag,
+                cancellationToken: cancellationToken);
+
+            if (!success)
+            {
+                throw new InvalidOperationException($"Concurrent update detected for file entry index of device {deviceId}");
+            }
+        }
+        else
+        {
+            await daprClient.SaveStateAsync(
+                DaprComponents.ManifestStateStore,
+                indexKey,
+                index,
+                cancellationToken: cancellationToken);
+        }
+    }
+
+    private static string GetFileEntryIndexKey(Guid deviceId) => $"{deviceId}/files/_index";
+
+    private static string EncodeContinuationToken(int offset)
+        => Convert.ToBase64String(Encoding.UTF8.GetBytes(offset.ToString(CultureInfo.InvariantCulture)));
+
+    private static int DecodeContinuationToken(string? continuationToken)
+    {
+        if (string.IsNullOrWhiteSpace(continuationToken))
+        {
+            return 0;
+        }
+
+        try
+        {
+            var tokenBytes = Convert.FromBase64String(continuationToken);
+            var tokenText = Encoding.UTF8.GetString(tokenBytes);
+            if (int.TryParse(tokenText, NumberStyles.None, CultureInfo.InvariantCulture, out var offset) && offset >= 0)
+            {
+                return offset;
+            }
+        }
+        catch (FormatException)
+        {
+        }
+
+        throw new ArgumentException("Invalid continuation token.", nameof(continuationToken));
     }
 
     #region Logging

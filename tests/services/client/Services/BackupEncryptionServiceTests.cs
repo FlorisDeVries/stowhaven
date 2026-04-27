@@ -110,6 +110,34 @@ public class BackupEncryptionServiceTests : IDisposable
         currentPhraseFile.Should().Be(originalPhraseFile);
     }
 
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task DecryptFileAsync_WithPreparedClientAndServerUpload_ShouldRestorePlaintext()
+    {
+        // Arrange
+        var fileBytes = Encoding.UTF8.GetBytes("secret document to restore");
+        var taggedFile = CreateTaggedFile("restore-source.txt", fileBytes);
+        var phraseFilePath = Path.Combine(_tempDirectory, "recovery-phrase.json");
+        var encryptedPath = Path.Combine(_tempDirectory, "encrypted.bin");
+        var restoredPath = Path.Combine(_tempDirectory, "restored.txt");
+        var sut = CreateSut(BackupEncryptionMode.ClientAndServer, phraseFilePath);
+
+        await using (var prepared = await sut.PrepareUploadAsync(taggedFile, CancellationToken.None))
+        {
+            await using (var encryptedFile = File.Create(encryptedPath))
+            {
+                await prepared.Content.CopyToAsync(encryptedFile);
+            }
+
+            // Act
+            await sut.DecryptFileAsync(encryptedPath, restoredPath, prepared.File.Encryption!, CancellationToken.None);
+        }
+
+        // Assert
+        var restoredBytes = await File.ReadAllBytesAsync(restoredPath);
+        restoredBytes.Should().Equal(fileBytes);
+    }
+
     private BackupEncryptionService CreateSut(BackupEncryptionMode mode, string phraseFilePath) => new(
         _fileSystem.Object,
         Options.Create(new BackupClientOptions

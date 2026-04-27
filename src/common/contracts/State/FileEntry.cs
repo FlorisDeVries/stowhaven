@@ -41,3 +41,19 @@ public enum FileVersionState
     Active,
     Retired
 }
+
+public sealed record FileEntryIndex
+{
+    public required Guid DeviceId { get; init; }
+    public required List<string> RelativePaths { get; init; }
+    public string? ETag { get; set; }
+}
+
+public sealed record FileEntryPage
+{
+    public required IReadOnlyList<FileEntry> Entries { get; init; }
+    public required int PageSize { get; init; }
+    public string? ContinuationToken { get; init; }
+    public string? NextContinuationToken { get; init; }
+    public bool HasMore => !string.IsNullOrWhiteSpace(NextContinuationToken);
+}

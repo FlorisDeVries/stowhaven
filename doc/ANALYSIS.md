@@ -4,7 +4,7 @@ The project is still not production-ready yet outside CI/CD, but the original hi
 Validation run:
 
 dotnet test FlorisDeV.BackupApi.sln --no-restore --verbosity minimal
-Result: 400 tests passed, 0 failed
+Result: 411 tests passed, 0 failed
 Bicep validation was skipped because Azure CLI is not available in the environment.
 P0 production blockers
 1. Client and API backup protocol are incompatible — addressed
@@ -304,13 +304,13 @@ Client productionization
 - VSS/shadow-copy strategy for locked and actively written files. Current direct reads can skip locked files; PRD needs a deterministic policy for snapshotting, retrying, or explicitly reporting skipped files.
 - Active/locked file read behavior. `FileShare.Read` can still miss files being written or locked; PRD needs either VSS-based reads or clear skipped-file reporting that affects backup health.
 - Remove or integrate `BackupDeltaComputer`. It is registered but appears unused by the current scan/upload path. Dead delta code should not remain in a PRD client.
-- Restore/decryption for `ClientAndServer` encryption. Backup upload encryption is implemented, but PRD cannot offer encrypted backups without a tested way to restore using the recovery phrase.
+- Restore UX/packaging for `ClientAndServer` encryption. The client can now decrypt restored encrypted files with the recovery phrase file, but PRD still needs polished restore command behavior, manual phrase entry/UX, and broader end-to-end restore validation.
 
 Restore and operations
 
-- Restore/download flow. PRD needs at least list current files for a device, select files, mint download SAS URLs, download, decrypt when needed, and verify plaintext hashes.
-- Queryable state/index model for restore/list/status. The current key/value state model is insufficient for efficient listing and restore UX.
-- Implement `GetAllFileEntriesAsync()` or replace it with explicit indexed query APIs. The current stub blocks restore/list workflows.
+- Restore/download flow is partially implemented. The API can list restore files with pagination, start a restore, mint read-only SAS URLs, and the client can download, verify, decrypt when needed, and write files to a configured destination. PRD still needs filtering/search, CLI/UX hardening, and end-to-end Azurite/Azure integration tests.
+- Queryable state/index model for restore/list/status is partially implemented with a simple paginated per-device file-entry index. PRD still needs a formal scalable table/index strategy.
+- `GetAllFileEntriesAsync()` is no longer a stub for newly saved file entries; it reads the per-device file-entry index. Existing state created before the index is introduced will need migration/rebuild if it must be restorable through listing.
 - Formal Azure Table partition/row key strategy. PRD needs defined partitioning for device file listings, file versions, commit jobs, and future operational queries.
 - Poison-message reporting and operational endpoint. Failed commit messages need visibility and a safe operator workflow.
 - Reconciliation/repair job. PRD needs a way to compare state, staged blobs, committed blobs, retired blobs, and commit progress records after partial failures.
@@ -346,9 +346,9 @@ Already addressed or no longer a PRD blocker
 - Commit idempotency, atomic claim, and per-file commit progress are implemented.
 - API/worker split is implemented.
 - Device ownership enforcement for backup routes is implemented.
-- Backup upload encryption is implemented for `ClientAndServer` mode; only restore/decryption remains.
+- Backup upload encryption and restore/decryption are implemented for `ClientAndServer` mode; restore UX and operational hardening remain.
 Summary
 The project has a good architecture direction and a stronger codebase foundation than the initial review. The client/API integration now follows the target-aware staging/manifest/commit design, server-side validation and idempotent commit processing are in place, device ownership is enforced, and optional zero-knowledge backup encryption exists for uploads.
 
 Current state: solid alpha.
-Production readiness: not ready yet; restore, operations, reconciliation, SaaS administration, durable resume, and production deployment validation remain the main gaps.
+Production readiness: not ready yet; restore UX/scale hardening, operations, reconciliation, SaaS administration, durable resume, and production deployment validation remain the main gaps.

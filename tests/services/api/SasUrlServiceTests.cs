@@ -120,6 +120,38 @@ public class SasUrlServiceTests
         result.ExpiresAt.Should().BeCloseTo(DateTimeOffset.UtcNow.AddMinutes(ttl), TimeSpan.FromSeconds(5));
     }
 
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task GenerateReadSasUrlAsync_WithValidDeviceFilesPath_Succeeds()
+    {
+        // Arrange
+        var deviceId = Guid.NewGuid();
+        var path = $"devices/{deviceId:N}/files";
+
+        // Act
+        var result = await _sut.GenerateReadSasUrlAsync(path);
+
+        // Assert
+        result.Should().NotBeNull();
+        result.BasePath.Should().Be(path);
+        result.ExpiresAt.Should().BeAfter(DateTimeOffset.UtcNow);
+    }
+
+    [Theory]
+    [InlineData("devices/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/retired")]
+    [InlineData("staging/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/run")]
+    [InlineData("devices/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/files/blob.txt")]
+    [Trait("Category", "Unit")]
+    [Trait("Category", "Security")]
+    public async Task GenerateReadSasUrlAsync_WithInvalidReadPath_ThrowsSecurityException(string path)
+    {
+        // Act
+        var act = async () => await _sut.GenerateReadSasUrlAsync(path);
+
+        // Assert
+        await act.Should().ThrowAsync<SecurityException>();
+    }
+
     #endregion
 
     #region Security Tests - Path Traversal

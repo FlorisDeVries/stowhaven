@@ -229,7 +229,39 @@ Current implementation details:
 * The manifest stores the ciphertext SHA-256 and ciphertext size so server-side staged-blob validation continues to validate the exact uploaded bytes.
 * The manifest/state also stores plaintext hash/size and decryption metadata needed for a future restore/decrypt flow.
 
-Restore/decryption is intentionally not a UI feature yet. The restore path must require the locally stored or manually re-entered recovery phrase, unwrap each file key, verify HMAC, decrypt, and verify the plaintext SHA-256 before writing restored files.
+Restore/decryption is implemented in the client service layer but is intentionally not a UI feature yet. The restore path requires the locally stored recovery phrase file, unwraps each file key, verifies HMAC, decrypts, and verifies the plaintext SHA-256 before writing restored files. Manual recovery phrase entry is future UI/CLI work.
+
+---
+
+### 4.1.2 Restore/download flow
+
+Restore uses the same installed client application as backup, but with a separate restore command/service path.
+
+1. The client resolves the source `deviceId` from `BackupClient:Restore:DeviceId` or the local device state.
+2. If no logical paths are configured, the client calls `GET /api/devices/{deviceId}/restore/files` to list active files page-by-page.
+3. The client calls `POST /api/devices/{deviceId}/restore/start` with selected logical paths.
+4. The API authorizes device ownership, resolves each logical path to its active `FileEntry`/`FileVersion`, and returns a short-lived read-only SAS for `devices/{deviceId}/files` plus per-file metadata.
+5. The client downloads each selected blob directly from Blob Storage into a temporary file.
+6. The client verifies downloaded ciphertext/plaintext bytes against the restore metadata SHA-256 and size.
+7. If the file has `ClientAndServer` encryption metadata, the client decrypts locally with the recovery phrase file, verifies HMAC and plaintext SHA-256, and writes the plaintext to the restore destination.
+8. If the file has no encryption metadata, the verified downloaded bytes are moved directly to the restore destination.
+
+The API never receives recovery phrases, plaintext file keys, or decrypted file bytes. It only returns authorized read access and stored restore metadata.
+
+Current restore endpoints:
+
+* `GET /api/devices/{deviceId}/restore/files?pageSize={pageSize}&continuationToken={token}`
+* `POST /api/devices/{deviceId}/restore/start`
+
+Restore file listing is paginated with an opaque `nextContinuationToken` in the response. The default page size is 100, the server clamps page size to 1000, and the client uses `BackupClient:Restore:ListPageSize` when it needs to enumerate all files before restore.
+
+Current client restore configuration:
+
+* `BackupClient:Restore:DeviceId` — optional source device; defaults to local device state.
+* `BackupClient:Restore:DestinationPath` — required restore root.
+* `BackupClient:Restore:LogicalPaths` — optional selected paths; empty means restore all currently listed files.
+* `BackupClient:Restore:ListPageSize` — page size used when enumerating all restore files; defaults to 500.
+* `BackupClient:Restore:OverwriteExisting` — defaults to `false`.
 
 ---
 
