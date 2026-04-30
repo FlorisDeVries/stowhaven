@@ -146,19 +146,23 @@ public partial class FileUploader(
             var uploadFile = preparedUpload.File;
             var uploadSize = uploadFile.GetUploadSizeBytes();
 
-            if (uploadSize >= _options.LargeFileThresholdBytes)
+            try
             {
-                // Track progress for large files
-                var progress = new Progress<long>(bytesTransferred =>
+                Progress<long>? progress = null;
+                if (uploadSize >= _options.LargeFileThresholdBytes)
                 {
-                    var percentage = uploadSize > 0
-                        ? (int)((bytesTransferred * 100) / uploadSize)
-                        : 0;
-                    LogLargeFileProgress(taggedFile.Metadata.FilePath, bytesTransferred,
-                        uploadSize, percentage);
-                });
+                    // Track progress for large files
+                    progress = new Progress<long>(bytesTransferred =>
+                    {
+                        var percentage = uploadSize > 0
+                            ? (int)((bytesTransferred * 100) / uploadSize)
+                            : 0;
+                        LogLargeFileProgress(taggedFile.Metadata.FilePath, bytesTransferred,
+                            uploadSize, percentage);
+                    });
+                }
 
-                var uploadOptions = new Azure.Storage.Blobs.Models.BlobUploadOptions
+                var uploadOptions = new BlobUploadOptions
                 {
                     ProgressHandler = progress,
                     Metadata = CreateBackupMetadata(uploadFile),
@@ -166,19 +170,13 @@ public partial class FileUploader(
                 };
 
                 await blobClient.UploadAsync(preparedUpload.Content, uploadOptions, timeoutCts.Token);
-                uploadedFile = uploadFile;
             }
-            else
+            catch (RequestFailedException ex) when (IsAlreadyExistsResponse(ex))
             {
-                var uploadOptions = new BlobUploadOptions
-                {
-                    Metadata = CreateBackupMetadata(uploadFile),
-                    Conditions = new BlobRequestConditions { IfNoneMatch = ETag.All }
-                };
-
-                await blobClient.UploadAsync(preparedUpload.Content, uploadOptions, timeoutCts.Token);
-                uploadedFile = uploadFile;
+                LogBlobAlreadyExists(taggedFile.Metadata.FilePath, blobPath);
             }
+
+            uploadedFile = uploadFile;
         }, cancellationToken);
 
         return uploadedFile ?? throw new InvalidOperationException($"Upload did not produce metadata for {taggedFile.GetStoragePath()}");
@@ -228,10 +226,20 @@ public partial class FileUploader(
         });
 
         await using var stream = new MemoryStream(Encoding.UTF8.GetBytes(json));
-        await blobClient.UploadAsync(stream, new BlobUploadOptions
+        try
         {
-            HttpHeaders = new BlobHttpHeaders { ContentType = "application/json" },
-            Conditions = new BlobRequestConditions { IfNoneMatch = ETag.All }
-        }, cancellationToken);
+            await blobClient.UploadAsync(stream, new BlobUploadOptions
+            {
+                HttpHeaders = new BlobHttpHeaders { ContentType = "application/json" },
+                Conditions = new BlobRequestConditions { IfNoneMatch = ETag.All }
+            }, cancellationToken);
+        }
+        catch (RequestFailedException ex) when (IsAlreadyExistsResponse(ex))
+        {
+            LogRunManifestAlreadyExists(blobName);
+        }
     }
+
+    private static bool IsAlreadyExistsResponse(RequestFailedException ex)
+        => ex.Status is 409 or 412;
 }

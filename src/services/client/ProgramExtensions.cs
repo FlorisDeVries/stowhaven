@@ -22,7 +22,6 @@ public static class ProgramExtensions
         services.AddSingleton<ResiliencePipelineProvider>();
         services.AddSingleton<IFileSystemService, FileSystemService>();
         services.AddSingleton<IBackupStateService, BackupStateService>();
-        services.AddSingleton<BackupDeltaComputer>();
         services.AddSingleton<IBackupScanner, BackupScanner>();
         services.AddSingleton<IBackupEncryptionService, BackupEncryptionService>();
         services.AddSingleton<IFileUploader, FileUploader>();
@@ -35,7 +34,13 @@ public static class ProgramExtensions
         services.AddOptions<BackupClientOptions>()
             .Bind(configuration.GetSection(BackupClientOptions.SectionName))
             .Validate(o => o.BackupTargets.Count > 0, "BackupClient:BackupTargets must contain at least one target")
+            .Validate(o => o.Schedule.IntervalMinutes > 0, "BackupClient:Schedule:IntervalMinutes must be greater than zero")
             .ValidateOnStart();
+
+        if (configuration.GetValue<bool>($"{BackupClientOptions.SectionName}:Schedule:Enabled"))
+        {
+            services.AddHostedService<ScheduledBackupWorker>();
+        }
 
         services.AddOptions<DatabaseOptions>()
             .Bind(configuration.GetSection(DatabaseOptions.SectionName))

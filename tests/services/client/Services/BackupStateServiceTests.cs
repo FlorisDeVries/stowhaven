@@ -2,6 +2,7 @@ using FluentAssertions;
 using FlorisDeV.BackupClient.Config;
 using FlorisDeV.BackupClient.Models;
 using FlorisDeV.BackupClient.Services;
+using FlorisDeV.BackupContracts.Infrastructure;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -563,6 +564,79 @@ public class BackupStateServiceTests : IDisposable
 
     #endregion
 
+    #region PendingBackupRun Tests
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task PendingBackupRun_WhenSaved_CanBeLoaded()
+    {
+        // Arrange
+        var deviceId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var pendingRun = CreatePendingRun(deviceId, runId);
+
+        // Act
+        await _sut.SavePendingBackupRunAsync(pendingRun);
+        var result = await _sut.GetPendingBackupRunAsync(deviceId);
+
+        // Assert
+        result.Should().NotBeNull();
+        result!.DeviceId.Should().Be(deviceId);
+        result.RunId.Should().Be(runId);
+        result.UploadedChangedFiles.Should().HaveCount(1);
+        result.UploadedChangedFiles[0].UniqueFileId.Should().Be("unique-file-1");
+        result.ManifestUploaded.Should().BeFalse();
+        result.CommitId.Should().BeNull();
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task PendingBackupRun_WhenSavedAgain_UpdatesExistingDeviceRun()
+    {
+        // Arrange
+        var deviceId = Guid.NewGuid();
+        var firstRun = CreatePendingRun(deviceId, Guid.NewGuid());
+        var secondRunId = Guid.NewGuid();
+        var secondRun = CreatePendingRun(deviceId, secondRunId) with
+        {
+            ManifestUploaded = true,
+            CommitId = Guid.NewGuid()
+        };
+
+        // Act
+        await _sut.SavePendingBackupRunAsync(firstRun);
+        await _sut.SavePendingBackupRunAsync(secondRun);
+        var result = await _sut.GetPendingBackupRunAsync(deviceId);
+
+        // Assert
+        result.Should().NotBeNull();
+        result!.RunId.Should().Be(secondRunId);
+        result.ManifestUploaded.Should().BeTrue();
+        result.CommitId.Should().Be(secondRun.CommitId);
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task ClearPendingBackupRunAsync_RemovesOnlyMatchingRun()
+    {
+        // Arrange
+        var deviceId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        await _sut.SavePendingBackupRunAsync(CreatePendingRun(deviceId, runId));
+
+        // Act
+        await _sut.ClearPendingBackupRunAsync(deviceId, Guid.NewGuid());
+        var stillPresent = await _sut.GetPendingBackupRunAsync(deviceId);
+        await _sut.ClearPendingBackupRunAsync(deviceId, runId);
+        var cleared = await _sut.GetPendingBackupRunAsync(deviceId);
+
+        // Assert
+        stillPresent.Should().NotBeNull();
+        cleared.Should().BeNull();
+    }
+
+    #endregion
+
     #region Helper Methods
 
     /// <summary>
@@ -595,6 +669,46 @@ public class BackupStateServiceTests : IDisposable
         var runId = Guid.NewGuid();
         var commitId = $"commit-{runId:N}";
         await _sut.SaveBackupSuccessAsync(runId, commitId, files);
+    }
+
+    private static PendingBackupRun CreatePendingRun(Guid deviceId, Guid runId)
+    {
+        var now = DateTimeOffset.UtcNow;
+        return new PendingBackupRun
+        {
+            DeviceId = deviceId,
+            RunId = runId,
+            StartedAt = now,
+            UploadSasUrlInfo = new SasUrlInfo
+            {
+                Url = new Uri("https://storage.example.test/backups?sig=upload"),
+                ExpiresAt = now.AddHours(1),
+                TtlMinutes = 60,
+                BasePath = "staging/device/run",
+                IsPathEmbedded = false
+            },
+            ManifestSasUrlInfo = new SasUrlInfo
+            {
+                Url = new Uri("https://storage.example.test/backups?sig=manifest"),
+                ExpiresAt = now.AddHours(1),
+                TtlMinutes = 60,
+                BasePath = "runs/device/run",
+                IsPathEmbedded = false
+            },
+            UploadedChangedFiles =
+            [
+                new TaggedFile(
+                    "documents",
+                    "/source",
+                    new FileMetadata("/source/file.txt", 5, now, now, "hash-1"))
+                {
+                    UniqueFileId = "unique-file-1",
+                    UploadSha256 = "hash-1",
+                    UploadSizeBytes = 5
+                }
+            ],
+            DeletedFiles = ["documents/deleted.txt"]
+        };
     }
 
     #endregion

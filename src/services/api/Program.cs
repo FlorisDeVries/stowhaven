@@ -2,6 +2,8 @@ using System.Reflection;
 using FlorisDeV.BackupApi;
 using FlorisDeV.BackupApi.Constants;
 using FlorisDeV.BackupApi.Filters;
+using FlorisDeV.BackupApi.Options;
+using FlorisDeV.BackupApi.Services;
 using FlorisDeV.BackupApi.Telemetry;
 using FlorisDeV.FeatureFlags;
 using FlorisDeV.HealthChecks;
@@ -10,7 +12,9 @@ using FlorisDeV.Logging.ErrorHandling;
 using FlorisDeV.Logging.Middleware;
 using FlorisDeV.Security;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Options;
 using Serilog;
+using System.Net;
 
 var builder = WebApplication.CreateBuilder(args);
 var appAssembly = Assembly.GetExecutingAssembly();
@@ -66,6 +70,28 @@ app.UseUserContextEnrichment();
 
 app.UseAuthorization();
 app.UseRateLimiter();
+
+app.MapPost("/cleanup-staging-cron", async (
+    HttpContext httpContext,
+    IOperationalService operationalService,
+    IOptions<StaleStagingCleanupOptions> cleanupOptions,
+    CancellationToken cancellationToken) =>
+{
+    if (httpContext.Connection.RemoteIpAddress is not { } remoteIpAddress || !IPAddress.IsLoopback(remoteIpAddress))
+    {
+        return Results.NotFound();
+    }
+
+    var options = cleanupOptions.Value;
+    var result = await operationalService.CleanupStaleStagingAsync(
+        new StaleStagingCleanupRequest(options.OlderThanHours, options.DryRun, options.MaxDeletes),
+        cancellationToken);
+
+    return Results.Ok(result);
+})
+.WithName("RunScheduledStaleStagingCleanup")
+.ExcludeFromDescription()
+.AllowAnonymous();
 
 // Map controllers - RequireAuthorization applies authentication
 // In development, anonymous auth handler allows all requests

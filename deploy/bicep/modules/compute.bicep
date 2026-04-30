@@ -41,6 +41,21 @@ param allowCopyDeleteFallback bool = false
 @description('Restrict upload SAS URLs to the API-observed client IP. Keep false for SaaS clients unless proxy/client IP behavior has been validated.')
 param enableSasIpRestriction bool = false
 
+@description('Dapr cron schedule for automatic stale staging cleanup. Use @every syntax or a cron expression supported by the Dapr cron binding.')
+param staleStagingCleanupCronSchedule string = '@every 24h'
+
+@description('Delete staging blobs older than this many hours during scheduled cleanup.')
+param staleStagingCleanupOlderThanHours int = 24
+
+@description('Maximum number of stale staging blobs deleted by one scheduled cleanup invocation.')
+param staleStagingCleanupMaxDeletes int = 500
+
+@description('Run scheduled stale staging cleanup as a dry run instead of deleting blobs.')
+param staleStagingCleanupDryRun bool = false
+
+@description('Minimum API replicas. Keep at least 1 when Dapr cron bindings must fire without external traffic.')
+param apiMinReplicas int = 1
+
 @description('Optional Azure client ID for a user-assigned managed identity used by Dapr Azure components. Leave empty for system-assigned Container App identities.')
 param daprAzureClientId string = ''
 
@@ -175,6 +190,28 @@ resource daprPubSub 'Microsoft.App/managedEnvironments/daprComponents@2023-05-01
 }
 
 // ---------------------------------------------------------------------------
+// Dapr component: scheduled stale staging cleanup trigger
+// ---------------------------------------------------------------------------
+
+resource daprStaleStagingCleanupCron 'Microsoft.App/managedEnvironments/daprComponents@2023-05-01' = {
+  parent: containerAppEnv
+  name: 'cleanup-staging-cron'
+  properties: {
+    componentType: 'bindings.cron'
+    version: 'v1'
+    metadata: [
+      {
+        name: 'schedule'
+        value: staleStagingCleanupCronSchedule
+      }
+    ]
+    scopes: [
+      'backup-api'
+    ]
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Container App
 // ---------------------------------------------------------------------------
 
@@ -214,7 +251,7 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
     }
     template: {
       scale: {
-        minReplicas: 0
+        minReplicas: apiMinReplicas
         maxReplicas: 10
       }
       containers: [
@@ -241,6 +278,18 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
             {
               name: 'Backup__Sas__EnableIpRestriction'
               value: string(enableSasIpRestriction)
+            }
+            {
+              name: 'Operations__StaleStagingCleanup__OlderThanHours'
+              value: string(staleStagingCleanupOlderThanHours)
+            }
+            {
+              name: 'Operations__StaleStagingCleanup__MaxDeletes'
+              value: string(staleStagingCleanupMaxDeletes)
+            }
+            {
+              name: 'Operations__StaleStagingCleanup__DryRun'
+              value: string(staleStagingCleanupDryRun)
             }
             {
               name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'

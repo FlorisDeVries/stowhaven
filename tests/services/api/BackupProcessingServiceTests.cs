@@ -10,6 +10,7 @@ using FlorisDeV.BackupContracts.Infrastructure;
 using FlorisDeV.BackupContracts.Manifest;
 using FlorisDeV.BackupContracts.State;
 using FlorisDeV.BackupWorker.Services;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Moq;
 using System.Text;
@@ -43,6 +44,7 @@ public class BackupProcessingServiceTests
             _loggerMock.Object,
             _blobStorageServiceMock.Object,
             _manifestManagerMock.Object,
+            new ConfigurationBuilder().Build(),
             _telemetryMock.Object);
 
         // Default setup

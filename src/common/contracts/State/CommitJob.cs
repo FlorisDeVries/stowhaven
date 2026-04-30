@@ -14,6 +14,11 @@ public class CommitJob
     public DateTimeOffset UpdatedAt { get; set; }
     public DateTimeOffset? CompletedAt { get; set; }
     public int FilesProcessed { get; set; }
+    public int AttemptCount { get; set; }
+    public string? FailureCategory { get; set; }
+    public DateTimeOffset? LastErrorAt { get; set; }
+    public DateTimeOffset? NextRetryAt { get; set; }
+    public DateTimeOffset? DeadLetteredAt { get; set; }
     public string? ETag { get; set; }
 }
 

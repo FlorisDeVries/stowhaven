@@ -4,6 +4,8 @@ using FlorisDeV.BackupClient.Models;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace FlorisDeV.BackupClient.Services;
 
@@ -13,6 +15,11 @@ namespace FlorisDeV.BackupClient.Services;
 /// </summary>
 public partial class BackupStateService : IBackupStateService, IDisposable
 {
+    private static readonly JsonSerializerOptions PendingRunJsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        Converters = { new JsonStringEnumConverter() }
+    };
+
     private readonly string _connectionString;
     private readonly ILogger<BackupStateService> _logger;
     private readonly SemaphoreSlim _dbLock = new(1, 1);
@@ -309,6 +316,76 @@ public partial class BackupStateService : IBackupStateService, IDisposable
                 await transaction.RollbackAsync(cancellationToken);
                 throw;
             }
+        }
+        finally
+        {
+            _dbLock.Release();
+        }
+    }
+
+    public async Task<PendingBackupRun?> GetPendingBackupRunAsync(Guid deviceId, CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken);
+
+        await _dbLock.WaitAsync(cancellationToken);
+        try
+        {
+            await using var connection = new SqliteConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+
+            await using var command = new SqliteCommand(BackupStateSql.SelectPendingBackupRunQuery, connection);
+            command.Parameters.AddWithValue("@DeviceId", deviceId.ToString());
+
+            var payload = (string?)await command.ExecuteScalarAsync(cancellationToken);
+            return string.IsNullOrWhiteSpace(payload)
+                ? null
+                : JsonSerializer.Deserialize<PendingBackupRun>(payload, PendingRunJsonOptions);
+        }
+        finally
+        {
+            _dbLock.Release();
+        }
+    }
+
+    public async Task SavePendingBackupRunAsync(PendingBackupRun pendingRun, CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken);
+
+        await _dbLock.WaitAsync(cancellationToken);
+        try
+        {
+            await using var connection = new SqliteConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+
+            await using var command = new SqliteCommand(BackupStateSql.UpsertPendingBackupRunQuery, connection);
+            command.Parameters.AddWithValue("@DeviceId", pendingRun.DeviceId.ToString());
+            command.Parameters.AddWithValue("@RunId", pendingRun.RunId.ToString());
+            command.Parameters.AddWithValue("@PayloadJson", JsonSerializer.Serialize(pendingRun, PendingRunJsonOptions));
+            command.Parameters.AddWithValue("@UpdatedAt", DateTimeOffset.UtcNow.ToString("O"));
+
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        finally
+        {
+            _dbLock.Release();
+        }
+    }
+
+    public async Task ClearPendingBackupRunAsync(Guid deviceId, Guid runId, CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken);
+
+        await _dbLock.WaitAsync(cancellationToken);
+        try
+        {
+            await using var connection = new SqliteConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+
+            await using var command = new SqliteCommand(BackupStateSql.DeletePendingBackupRunQuery, connection);
+            command.Parameters.AddWithValue("@DeviceId", deviceId.ToString());
+            command.Parameters.AddWithValue("@RunId", runId.ToString());
+
+            await command.ExecuteNonQueryAsync(cancellationToken);
         }
         finally
         {

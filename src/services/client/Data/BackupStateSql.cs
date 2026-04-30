@@ -41,6 +41,14 @@ internal static class BackupStateSql
             UniqueFileId TEXT
         );
 
+        -- Durable in-flight backup run journal. One active run is kept per device.
+        CREATE TABLE IF NOT EXISTS PendingBackupRuns (
+            DeviceId TEXT PRIMARY KEY,
+            RunId TEXT NOT NULL,
+            PayloadJson TEXT NOT NULL,
+            UpdatedAt TEXT NOT NULL
+        );
+
         -- Indexes for performance
         CREATE INDEX IF NOT EXISTS idx_backupfiles_hash ON BackupFiles(Sha256Hash);
         CREATE INDEX IF NOT EXISTS idx_backupfiles_runid ON BackupFiles(BackupRunId);
@@ -105,4 +113,18 @@ internal static class BackupStateSql
     /// </summary>
     internal const string DeleteFileByPathQuery = 
         "DELETE FROM BackupFiles WHERE RelativePath = @RelativePath COLLATE NOCASE";
+
+    internal const string SelectPendingBackupRunQuery =
+        "SELECT PayloadJson FROM PendingBackupRuns WHERE DeviceId = @DeviceId";
+
+    internal const string UpsertPendingBackupRunQuery = @"
+        INSERT INTO PendingBackupRuns (DeviceId, RunId, PayloadJson, UpdatedAt)
+        VALUES (@DeviceId, @RunId, @PayloadJson, @UpdatedAt)
+        ON CONFLICT(DeviceId) DO UPDATE SET
+            RunId = excluded.RunId,
+            PayloadJson = excluded.PayloadJson,
+            UpdatedAt = excluded.UpdatedAt";
+
+    internal const string DeletePendingBackupRunQuery =
+        "DELETE FROM PendingBackupRuns WHERE DeviceId = @DeviceId AND RunId = @RunId";
 }

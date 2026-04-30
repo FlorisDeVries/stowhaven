@@ -48,4 +48,16 @@ public partial class FileUploader
         Level = LogLevel.Warning,
         Message = "Large file may exceed timeout: {FilePath} ({SizeBytes} bytes, estimated {EstimatedSeconds}s upload, timeout {TimeoutSeconds}s). Consider increasing BlobUploadTimeoutSeconds.")]
     private partial void LogLargeFileTimeoutWarning(string filePath, long sizeBytes, long estimatedSeconds, int timeoutSeconds);
+
+    [LoggerMessage(
+        EventId = 8,
+        Level = LogLevel.Information,
+        Message = "Blob already exists for {FilePath} at {BlobPath}; treating upload as resumed.")]
+    private partial void LogBlobAlreadyExists(string filePath, string blobPath);
+
+    [LoggerMessage(
+        EventId = 9,
+        Level = LogLevel.Information,
+        Message = "Run manifest already exists at {BlobPath}; treating manifest upload as resumed.")]
+    private partial void LogRunManifestAlreadyExists(string blobPath);
 }

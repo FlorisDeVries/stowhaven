@@ -151,6 +151,82 @@ Create `.backupignore` in your backup target directory:
 
 ---
 
+### Run in Production
+
+The client can be run in two production-friendly modes:
+
+1. **Windows Task Scheduler**: keep `BackupClient:Schedule:Enabled` set to `false` and create a daily task that runs the client executable once.
+2. **Windows Service**: set `BackupClient:Schedule:Enabled` to `true`. The executable uses Windows service hosting when installed as a service and runs backups on the configured interval.
+
+Example daily service schedule:
+
+```json
+{
+  "BackupClient": {
+    "Schedule": {
+      "Enabled": true,
+      "RunOnStartup": true,
+      "IntervalMinutes": 1440
+    }
+  }
+}
+```
+
+The one-shot CLI mode remains the default because it works well with Windows Task Scheduler and avoids a long-running process.
+
+---
+
+### Interrupted Upload and Commit Resume
+
+The client stores a local pending-run journal in the SQLite state database. If the process stops after a run starts, the next invocation resumes the same run while its SAS URLs are still usable:
+
+- already uploaded blobs are reused instead of uploaded again;
+- `run-manifest.json` upload is idempotent;
+- `commit-run` can be replayed and the client resumes polling commit status;
+- local file state is updated only after the server-side commit succeeds.
+
+If the pending run's SAS URLs expire before the next invocation, the journal is cleared and a new run starts. Any old staged blobs become harmless server-side cleanup candidates.
+
+---
+
+### Locked Files and VSS Policy
+
+The client does not create VSS/shadow-copy snapshots yet. The default policy is explicit and safe: locked or inaccessible files are skipped and logged.
+
+```json
+{
+  "BackupClient": {
+    "LockedFilePolicy": "SkipLocked"
+  }
+}
+```
+
+For applications that allow shared reads while writing, you can opt into best-effort reads:
+
+```json
+{
+  "BackupClient": {
+    "LockedFilePolicy": "ReadThroughSharedWrites"
+  }
+}
+```
+
+Use `ReadThroughSharedWrites` only when application-level consistency is acceptable; it is not equivalent to VSS.
+
+---
+
+### Encrypted Restore
+
+When `BackupClient:Encryption:Mode` is `ClientAndServer`, restore mode downloads ciphertext, verifies the uploaded hash, unwraps the file key with the local recovery phrase file, verifies the HMAC, decrypts locally, and verifies the plaintext SHA-256 before writing the destination file.
+
+```bash
+dotnet run --project src/services/client -- restore
+```
+
+Configure `BackupClient:Restore:DestinationPath` before running restore mode. Encrypted backups cannot be restored if the recovery phrase file and written-down phrase are both lost.
+
+---
+
 ## Configuration Reference
 
 ### Essential Properties
@@ -160,6 +236,9 @@ Create `.backupignore` in your backup target directory:
 | `BackupTargets` | **(Required)** | Directories to backup. Key = name, Value = path |
 | `MaxParallelUploads` | `4` | Number of concurrent file uploads (1-20) |
 | `IgnoreFilePath` | `null` | Path to global `.backupignore` file |
+| `LockedFilePolicy` | `SkipLocked` | Locked-file behavior: `SkipLocked` or `ReadThroughSharedWrites` |
+| `Schedule:Enabled` | `false` | Enables long-running scheduled service mode |
+| `Schedule:IntervalMinutes` | `1440` | Interval between scheduled service backups |
 
 ### Complete Example
 

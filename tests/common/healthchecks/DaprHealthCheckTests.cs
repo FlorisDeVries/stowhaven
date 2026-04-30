@@ -2,6 +2,7 @@ using Dapr.Client;
 using FluentAssertions;
 using FlorisDeV.HealthChecks;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Options;
 using Moq;
 
 namespace FlorisDeV.HealthChecks.Tests;
@@ -17,7 +18,11 @@ public class DaprHealthCheckTests
     public DaprHealthCheckTests()
     {
         _mockDaprClient = new Mock<DaprClient>();
-        _sut = new DaprHealthCheck(_mockDaprClient.Object);
+        _sut = new DaprHealthCheck(_mockDaprClient.Object, Options.Create(new DaprHealthCheckOptions
+        {
+            EnableStateStoreProbes = false,
+            EnablePubSubProbe = false
+        }));
     }
 
     [Fact]
@@ -43,7 +48,7 @@ public class DaprHealthCheckTests
 
         // Assert
         result.Status.Should().Be(HealthStatus.Healthy);
-        result.Description.Should().Be("Dapr sidecar is healthy.");
+        result.Description.Should().Be("Dapr sidecar and configured components are healthy.");
     }
 
     [Fact]
@@ -243,7 +248,7 @@ public class DaprHealthCheckTests
 
     [Fact]
     [Trait("Category", "Unit")]
-    public async Task CheckHealthAsync_DoesNotIncludeDataInResult()
+    public async Task CheckHealthAsync_IncludesSidecarDataInResult()
     {
         // Arrange
         _mockDaprClient
@@ -263,7 +268,8 @@ public class DaprHealthCheckTests
         var result = await _sut.CheckHealthAsync(context);
 
         // Assert
-        result.Data.Should().BeEmpty("Dapr health check doesn't include additional data");
+        result.Data.Should().ContainKey("sidecar");
+        result.Data["sidecar"].Should().Be("healthy");
     }
 
     [Fact]

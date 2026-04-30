@@ -51,6 +51,9 @@ public partial class BackupEncryptionService(
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
 
     private readonly BackupClientOptions _options = options.Value;
+    private readonly FileShare _readShareMode = options.Value.LockedFilePolicy == LockedFilePolicy.ReadThroughSharedWrites
+        ? FileShare.ReadWrite | FileShare.Delete
+        : FileShare.Read;
     private RecoveryMaterial? _recoveryMaterial;
 
     public async Task<PreparedUpload> PrepareUploadAsync(TaggedFile file, CancellationToken cancellationToken = default)
@@ -79,7 +82,7 @@ public partial class BackupEncryptionService(
         var iv = RandomNumberGenerator.GetBytes(AesBlockBytes);
         var tempPath = Path.Combine(Path.GetTempPath(), $"backup-encrypted-{Guid.NewGuid():N}.bin");
 
-        await EncryptFileToTemporaryFileAsync(file.Metadata.FilePath, tempPath, aesKey, iv, cancellationToken).ConfigureAwait(false);
+        await EncryptFileToTemporaryFileAsync(file.Metadata.FilePath, tempPath, aesKey, iv, _readShareMode, cancellationToken).ConfigureAwait(false);
         var (ciphertextSha256, ciphertextSize, hmac) = await HashAndMacAsync(tempPath, iv, hmacKey, cancellationToken).ConfigureAwait(false);
         var wrappedKey = WrapFileKey(masterKey, fileKey);
 
@@ -247,9 +250,9 @@ public partial class BackupEncryptionService(
         return Path.Combine(appData, "FlorisDeV", "BackupClient", "recovery-phrase.json");
     }
 
-    private static async Task EncryptFileToTemporaryFileAsync(string sourcePath, string tempPath, byte[] aesKey, byte[] iv, CancellationToken cancellationToken)
+    private static async Task EncryptFileToTemporaryFileAsync(string sourcePath, string tempPath, byte[] aesKey, byte[] iv, FileShare readShareMode, CancellationToken cancellationToken)
     {
-        await using var source = new FileStream(sourcePath, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize: 1024 * 128, useAsync: true);
+        await using var source = new FileStream(sourcePath, FileMode.Open, FileAccess.Read, readShareMode, bufferSize: 1024 * 128, useAsync: true);
         await using var destination = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, bufferSize: 1024 * 128, useAsync: true);
         using var aes = Aes.Create();
         aes.KeySize = 256;

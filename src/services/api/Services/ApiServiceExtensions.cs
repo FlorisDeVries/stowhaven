@@ -10,12 +10,14 @@ public static class ApiServiceExtensions
         public void AddBackupApiServices()
         {
             builder.Services.Configure<SasSecurityOptions>(builder.Configuration.GetSection(SasSecurityOptions.SectionName));
+            builder.Services.Configure<StaleStagingCleanupOptions>(builder.Configuration.GetSection(StaleStagingCleanupOptions.SectionName));
             builder.Services.AddScoped<ISasUrlService, SasUrlService>();
             builder.Services.AddScoped<IBackupRunService, BackupRunService>();
             builder.Services.AddScoped<IBackupEventPublisher, BackupEventPublisher>();
             builder.Services.AddScoped<IRestoreService, RestoreService>();
             builder.Services.AddScoped<IDeviceRegistryService, DeviceRegistryService>();
             builder.Services.AddScoped<IDeviceAuthorizationService, DeviceAuthorizationService>();
+            builder.Services.AddScoped<IOperationalService, OperationalService>();
         }
     }
 }

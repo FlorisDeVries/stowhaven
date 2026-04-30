@@ -106,6 +106,18 @@ public class BackupClientOptions
     public int CommitStatusTimeoutSeconds { get; init; } = 600;
 
     /// <summary>
+    /// Policy for files that may be open by other processes while the backup runs.
+    /// SkipLocked uses strict read sharing and skips files locked by writers.
+    /// ReadThroughSharedWrites allows reading files opened with write/delete sharing; it does not provide VSS consistency.
+    /// </summary>
+    public LockedFilePolicy LockedFilePolicy { get; init; } = LockedFilePolicy.SkipLocked;
+
+    /// <summary>
+    /// Optional long-running service schedule. Keep disabled for normal one-shot CLI execution or Windows Task Scheduler.
+    /// </summary>
+    public BackupScheduleOptions Schedule { get; init; } = new();
+
+    /// <summary>
     /// Optional client-side encryption configuration. ServerSideOnly mode uploads plaintext and relies on Azure Storage encryption at rest.
     /// ClientAndServer mode encrypts files locally and writes a generated recovery phrase to disk for the user to store offline.
     /// </summary>
@@ -146,4 +158,17 @@ public enum BackupEncryptionMode
 {
     ServerSideOnly,
     ClientAndServer
+}
+
+public enum LockedFilePolicy
+{
+    SkipLocked,
+    ReadThroughSharedWrites
+}
+
+public sealed class BackupScheduleOptions
+{
+    public bool Enabled { get; init; }
+    public bool RunOnStartup { get; init; } = true;
+    public int IntervalMinutes { get; init; } = 1440;
 }

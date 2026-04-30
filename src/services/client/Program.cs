@@ -10,6 +10,10 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
 var host = Host.CreateDefaultBuilder(args)
+    .UseWindowsService(options =>
+    {
+        options.ServiceName = "FlorisDeV Backup Client";
+    })
     .ConfigureAppConfiguration((context, configuration) =>
     {
         configuration.AddUserSecrets(Assembly.GetExecutingAssembly());
@@ -25,6 +29,15 @@ var host = Host.CreateDefaultBuilder(args)
         TelemetryProvider.SourceName,
         TelemetryProvider.SourceName)
     .Build();
+
+var scheduleEnabled = host.Services.GetRequiredService<IConfiguration>()
+    .GetValue<bool>($"{FlorisDeV.BackupClient.Config.BackupClientOptions.SectionName}:Schedule:Enabled");
+
+if (scheduleEnabled)
+{
+    await host.RunAsync();
+    return;
+}
 
 await host.StartAsync();
 

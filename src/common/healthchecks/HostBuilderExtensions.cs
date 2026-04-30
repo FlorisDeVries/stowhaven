@@ -18,6 +18,8 @@ public static class HostBuilderExtensions
     {
         var services = builder.Services;
 
+        services.Configure<DaprHealthCheckOptions>(builder.Configuration.GetSection(DaprHealthCheckOptions.SectionName));
+
         var healthChecksBuilder = services.AddHealthChecks()
             .AddCheck("self", () => HealthCheckResult.Healthy(), tags: new[] { "self", "ready" })
             .AddCheck<DaprHealthCheck>("dapr", tags: new[] { "dapr", "ready" });

@@ -1,7 +1,9 @@
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
+using FlorisDeV.BackupClient.Config;
 using Microsoft.Extensions.FileSystemGlobbing;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace FlorisDeV.BackupClient.Services;
 
@@ -134,8 +136,12 @@ public record FileMetadata(
     DateTimeOffset Created,
     string? Hash = null);
 
-public partial class FileSystemService(ILogger<FileSystemService> logger) : IFileSystemService
+public partial class FileSystemService(ILogger<FileSystemService> logger, IOptions<BackupClientOptions>? options = null) : IFileSystemService
 {
+    private readonly FileShare _readShareMode = options?.Value.LockedFilePolicy == LockedFilePolicy.ReadThroughSharedWrites
+        ? FileShare.ReadWrite | FileShare.Delete
+        : FileShare.Read;
+
     public async Task<IReadOnlyList<FileMetadata>> ScanDirectoryAsync(
         string directoryPath,
         string[]? excludePatterns = null,
@@ -300,7 +306,7 @@ public partial class FileSystemService(ILogger<FileSystemService> logger) : IFil
                 filePath,
                 FileMode.Open,
                 FileAccess.Read,
-                FileShare.Read,
+                _readShareMode,
                 bufferSize: 81920, // 80KB buffer for better performance
                 useAsync: true);
 
@@ -326,7 +332,7 @@ public partial class FileSystemService(ILogger<FileSystemService> logger) : IFil
                 filePath,
                 FileMode.Open,
                 FileAccess.Read,
-                FileShare.Read,
+                _readShareMode,
                 bufferSize: 81920,
                 useAsync: true);
 

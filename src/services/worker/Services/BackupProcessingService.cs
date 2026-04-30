@@ -22,9 +22,11 @@ public partial class BackupProcessingService(
     ILogger<BackupProcessingService> logger,
     IBlobStorageService blobStorageService,
     IManifestManager manifestManager,
+    IConfiguration configuration,
     TelemetryProvider telemetry
 ) : IBackupProcessingService
 {
+    private readonly int _maxCommitAttempts = Math.Max(1, configuration.GetValue("CommitProcessing:MaxAttempts", 5));
 
     public async Task ProcessBackupRunAsync(BackupRunCommittedEvent backupEvent, CancellationToken cancellationToken = default)
     {
@@ -158,6 +160,14 @@ public partial class BackupProcessingService(
                 var commitJob = await manifestManager.GetCommitJobAsync(backupEvent.CommitId, cancellationToken);
                 commitJob.Status = CommitJobStatus.Failed;
                 commitJob.Error = ex.Message;
+                commitJob.FailureCategory = ClassifyFailure(ex);
+                commitJob.LastErrorAt = DateTimeOffset.UtcNow;
+                commitJob.NextRetryAt = commitJob.AttemptCount < _maxCommitAttempts
+                    ? DateTimeOffset.UtcNow.AddMinutes(Math.Min(60, Math.Pow(2, Math.Max(0, commitJob.AttemptCount))))
+                    : null;
+                commitJob.DeadLetteredAt = commitJob.AttemptCount >= _maxCommitAttempts
+                    ? DateTimeOffset.UtcNow
+                    : null;
                 commitJob.CompletedAt = DateTimeOffset.UtcNow;
                 await manifestManager.UpdateCommitJobAsync(commitJob, cancellationToken);
             }
@@ -169,6 +179,17 @@ public partial class BackupProcessingService(
             throw;
         }
     }
+
+    private static string ClassifyFailure(Exception ex)
+        => ex switch
+        {
+            JsonException => "ManifestInvalid",
+            RequestFailedException requestFailedException when requestFailedException.Status is 408 or 429 or >= 500 => "TransientStorage",
+            RequestFailedException requestFailedException when requestFailedException.Status is 404 => "MissingBlob",
+            InvalidOperationException invalidOperationException when invalidOperationException.Message.Contains("manifest", StringComparison.OrdinalIgnoreCase) => "ManifestInvalid",
+            InvalidOperationException invalidOperationException when invalidOperationException.Message.Contains("Staged blob", StringComparison.OrdinalIgnoreCase) => "StagedBlobInvalid",
+            _ => ex.GetType().Name
+        };
 
     private async Task<RunManifest?> DownloadManifestAsync(string manifestPath, CancellationToken cancellationToken)
     {

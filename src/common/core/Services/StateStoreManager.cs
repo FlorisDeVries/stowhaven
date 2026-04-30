@@ -279,6 +279,7 @@ public partial class ManifestManager(
         }
 
         commitJob.Status = CommitJobStatus.Processing;
+        commitJob.AttemptCount++;
         commitJob.UpdatedAt = DateTimeOffset.UtcNow;
 
         var success = await daprClient.TrySaveStateAsync(

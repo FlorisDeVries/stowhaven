@@ -154,7 +154,12 @@ public partial class BackupController(
             CreatedAt = commitJob.CreatedAt,
             UpdatedAt = commitJob.UpdatedAt,
             CompletedAt = commitJob.CompletedAt,
-            FilesProcessed = commitJob.Status == CommitJobStatus.Succeeded ? commitJob.FilesProcessed : null
+            FilesProcessed = commitJob.Status == CommitJobStatus.Succeeded ? commitJob.FilesProcessed : null,
+            AttemptCount = commitJob.AttemptCount,
+            FailureCategory = commitJob.FailureCategory,
+            LastErrorAt = commitJob.LastErrorAt,
+            NextRetryAt = commitJob.NextRetryAt,
+            DeadLetteredAt = commitJob.DeadLetteredAt
         };
 
         LogCommitStatusRetrieved(logger, commitId, commitJob.Status);

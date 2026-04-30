@@ -50,4 +50,19 @@ public interface IBackupStateService
         IReadOnlyList<TaggedFile> taggedFiles,
         Guid runId,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Gets the locally persisted in-flight backup run, if one exists for the device.
+    /// </summary>
+    Task<PendingBackupRun?> GetPendingBackupRunAsync(Guid deviceId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Saves the locally persisted in-flight backup run journal.
+    /// </summary>
+    Task SavePendingBackupRunAsync(PendingBackupRun pendingRun, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Clears the in-flight backup run after the run is committed and local state is updated.
+    /// </summary>
+    Task ClearPendingBackupRunAsync(Guid deviceId, Guid runId, CancellationToken cancellationToken = default);
 }

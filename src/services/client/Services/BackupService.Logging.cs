@@ -132,4 +132,28 @@ public partial class BackupService
         Level = LogLevel.Debug,
         Message = "Scan progress: {Scanned} files processed ({NeedsBackup} to upload, {Unchanged} unchanged, {Skipped} skipped)")]
     partial void LogScanProgress(int scanned, int needsBackup, int unchanged, int skipped);
+
+    [LoggerMessage(
+        EventId = 32,
+        Level = LogLevel.Information,
+        Message = "Resuming pending backup run {RunId}; {UploadedCount} files already uploaded")]
+    partial void LogPendingBackupRunResumed(Guid runId, int uploadedCount);
+
+    [LoggerMessage(
+        EventId = 33,
+        Level = LogLevel.Warning,
+        Message = "Pending backup run {RunId} expired at {ExpiresAt}; starting a new run")]
+    partial void LogPendingBackupRunExpired(Guid runId, DateTimeOffset expiresAt);
+
+    [LoggerMessage(
+        EventId = 34,
+        Level = LogLevel.Information,
+        Message = "Finalized pending backup run {RunId} with commit {CommitId}")]
+    partial void LogPendingBackupRunFinalized(Guid runId, Guid commitId);
+
+    [LoggerMessage(
+        EventId = 35,
+        Level = LogLevel.Warning,
+        Message = "Backup completed with {SkippedCount} skipped files under locked-file policy {LockedFilePolicy}. Treat this backup as degraded and review skipped-file warnings.")]
+    partial void LogBackupCompletedWithSkippedFiles(int skippedCount, string lockedFilePolicy);
 }
