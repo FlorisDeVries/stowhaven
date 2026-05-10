@@ -16,9 +16,11 @@ targetScope = 'resourceGroup'
 param location string = 'westeurope'
 
 @description('Suffix for resource names (with dashes)')
+@minLength(1)
 param nameSuffix string = 'fdev-weu-prd'
 
 @description('Suffix for storage-account-style names (no dashes)')
+@minLength(2)
 param nameSuffixStr string = 'fdevweuprd'
 
 @description('Days after which blobs are moved to archive tier')
@@ -32,6 +34,9 @@ param logAnalyticsDailyQuotaGb int = 1
 
 @description('Container image tag to deploy')
 param imageTag string = 'latest'
+
+@description('Deploy Container Apps and their runtime role assignments. Set false for first-phase infrastructure bootstrap before images exist in ACR.')
+param deployContainerApps bool = true
 
 @description('Explicitly allow copy/delete fallback when ADLS Gen2 rename fails. Keep false in production unless early deletion cost and partial-failure risks are accepted.')
 param allowCopyDeleteFallback bool = false
@@ -54,14 +59,21 @@ param staleStagingCleanupDryRun bool = false
 @description('Minimum API replicas. Keep at least 1 when Dapr cron bindings must fire without external traffic.')
 param apiMinReplicas int = 1
 
-@description('Name of the existing, manually created Cosmos DB account used by the production manifest-state-store Dapr component. Leave empty to derive from the deployment name suffix.')
+@description('Name of the existing, manually created Cosmos DB account used by the production Dapr state-store components. Leave empty to derive from the deployment name suffix.')
 param cosmosAccountName string = ''
 
 @description('Cosmos DB SQL database name for Dapr state.')
 param cosmosDatabaseName string = 'backup-state'
 
+@description('Cosmos DB shared database throughput in RU/s for the Dapr state containers. Use 400 for the lowest provisioned throughput tier/free-tier-friendly setup.')
+@minValue(400)
+param cosmosDatabaseThroughput int = 400
+
 @description('Cosmos DB SQL container name for manifest-state-store.')
 param cosmosManifestContainerName string = 'manifest-state'
+
+@description('Cosmos DB SQL container name for device-registry-state-store.')
+param cosmosDeviceRegistryContainerName string = 'device-registry'
 
 @description('Optional Azure client ID for a user-assigned managed identity used by Dapr Azure components. Leave empty for system-assigned Container App identities.')
 param daprAzureClientId string = ''
@@ -90,7 +102,6 @@ var cosmosAccountNameEffective = empty(cosmosAccountName) ? 'cosmos-${nameSuffix
 // Role definition IDs (built-in)
 var roleStorageBlobDataContributor = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
 var roleStorageBlobDelegator       = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'db58b8e5-c6ad-4a2a-8342-4190687cbf4a')
-var roleStorageTableDataContributor = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3')
 var roleServiceBusDataSender       = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '69a216fc-b8fb-44d8-bc22-1f3c2cd27a39')
 var roleServiceBusDataReceiver     = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0')
 var roleAcrPull                    = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')
@@ -148,8 +159,85 @@ resource cosmosAccount 'Microsoft.DocumentDB/databaseAccounts@2024-05-15' existi
   name: cosmosAccountNameEffective
 }
 
+resource dataStorageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' existing = {
+  name: 'stabackup${nameSuffixStr}'
+}
+
+resource containerRegistry 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = {
+  name: 'acr${nameSuffixStr}'
+}
+
+resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
+  name: keyVaultName
+}
+
+resource registryPullIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: 'id-acrpull-${nameSuffix}'
+  location: location
+  tags: commonTags
+}
+
+resource cosmosDatabase 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases@2024-05-15' = {
+  parent: cosmosAccount
+  name: cosmosDatabaseName
+  properties: {
+    resource: {
+      id: cosmosDatabaseName
+    }
+    options: {
+      throughput: cosmosDatabaseThroughput
+    }
+  }
+}
+
+resource cosmosManifestContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-05-15' = {
+  parent: cosmosDatabase
+  name: cosmosManifestContainerName
+  properties: {
+    resource: {
+      id: cosmosManifestContainerName
+      partitionKey: {
+        paths: [
+          '/partitionKey'
+        ]
+        kind: 'Hash'
+      }
+    }
+  }
+}
+
+resource cosmosDeviceRegistryContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-05-15' = {
+  parent: cosmosDatabase
+  name: cosmosDeviceRegistryContainerName
+  properties: {
+    resource: {
+      id: cosmosDeviceRegistryContainerName
+      partitionKey: {
+        paths: [
+          '/partitionKey'
+        ]
+        kind: 'Hash'
+      }
+    }
+  }
+}
+
+resource roleAssignRegistryPullIdentityAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(containerRegistry.id, registryPullIdentity.name, 'acr-pull')
+  scope: containerRegistry
+  properties: {
+    roleDefinitionId: roleAcrPull
+    principalId: registryPullIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
+    description: 'Container Apps registry pull identity - AcrPull on container registry'
+  }
+  dependsOn: [
+    registry
+  ]
+}
+
 // Deploy Container App after monitoring, registry, storage, and dapr-infra.
-module compute 'modules/compute.bicep' = {
+module compute 'modules/compute.bicep' = if (deployContainerApps) {
   name: 'compute'
   params: {
     location: location
@@ -157,6 +245,7 @@ module compute 'modules/compute.bicep' = {
     logAnalyticsWorkspaceId: monitoring.outputs.workspaceId
     appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
     registryLoginServer: registry.outputs.loginServer
+    registryPullIdentityId: registryPullIdentity.id
     dataStorageAccountName: storage.outputs.dataStorageAccountName
     containerName: storage.outputs.containerName
     keyVaultName: daprInfra.outputs.keyVaultName
@@ -173,9 +262,15 @@ module compute 'modules/compute.bicep' = {
     cosmosAccountEndpoint: cosmosAccount.properties.documentEndpoint
     cosmosDatabaseName: cosmosDatabaseName
     cosmosManifestContainerName: cosmosManifestContainerName
+    cosmosDeviceRegistryContainerName: cosmosDeviceRegistryContainerName
     daprAzureClientId: daprAzureClientId
     tags: commonTags
   }
+  dependsOn: [
+    cosmosManifestContainer
+    cosmosDeviceRegistryContainer
+    roleAssignRegistryPullIdentityAcrPull
+  ]
 }
 
 resource serviceBusNamespace 'Microsoft.ServiceBus/namespaces@2022-10-01-preview' existing = {
@@ -187,8 +282,9 @@ resource serviceBusNamespace 'Microsoft.ServiceBus/namespaces@2022-10-01-preview
 // ---------------------------------------------------------------------------
 
 resource roleAssignStorageContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(resourceGroup().id, 'stabackup${nameSuffixStr}', 'ca-${nameSuffix}', 'storage-contributor')
-  scope: resourceGroup()
+  if (deployContainerApps)
+  name: guid(dataStorageAccount.id, 'ca-${nameSuffix}', 'storage-contributor')
+  scope: dataStorageAccount
   properties: {
     roleDefinitionId: roleStorageBlobDataContributor
     principalId: compute.outputs.principalId
@@ -198,8 +294,9 @@ resource roleAssignStorageContributor 'Microsoft.Authorization/roleAssignments@2
 }
 
 resource roleAssignWorkerStorageContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(resourceGroup().id, 'stabackup${nameSuffixStr}', 'ca-${nameSuffix}-worker', 'storage-contributor')
-  scope: resourceGroup()
+  if (deployContainerApps)
+  name: guid(dataStorageAccount.id, 'ca-${nameSuffix}-worker', 'storage-contributor')
+  scope: dataStorageAccount
   properties: {
     roleDefinitionId: roleStorageBlobDataContributor
     principalId: compute.outputs.workerPrincipalId
@@ -209,8 +306,9 @@ resource roleAssignWorkerStorageContributor 'Microsoft.Authorization/roleAssignm
 }
 
 resource roleAssignStorageDelegator 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(resourceGroup().id, 'stabackup${nameSuffixStr}', 'ca-${nameSuffix}', 'storage-delegator')
-  scope: resourceGroup()
+  if (deployContainerApps)
+  name: guid(dataStorageAccount.id, 'ca-${nameSuffix}', 'storage-delegator')
+  scope: dataStorageAccount
   properties: {
     roleDefinitionId: roleStorageBlobDelegator
     principalId: compute.outputs.principalId
@@ -219,31 +317,10 @@ resource roleAssignStorageDelegator 'Microsoft.Authorization/roleAssignments@202
   }
 }
 
-resource roleAssignAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(resourceGroup().id, 'acr${nameSuffixStr}', 'ca-${nameSuffix}', 'acr-pull')
-  scope: resourceGroup()
-  properties: {
-    roleDefinitionId: roleAcrPull
-    principalId: compute.outputs.principalId
-    principalType: 'ServicePrincipal'
-    description: 'Container App – AcrPull on container registry'
-  }
-}
-
-resource roleAssignWorkerAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(resourceGroup().id, 'acr${nameSuffixStr}', 'ca-${nameSuffix}-worker', 'acr-pull')
-  scope: resourceGroup()
-  properties: {
-    roleDefinitionId: roleAcrPull
-    principalId: compute.outputs.workerPrincipalId
-    principalType: 'ServicePrincipal'
-    description: 'Worker Container App – AcrPull on container registry'
-  }
-}
-
 resource roleAssignKeyVaultSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(resourceGroup().id, keyVaultName, 'ca-${nameSuffix}', 'kv-secrets-user')
-  scope: resourceGroup()
+  if (deployContainerApps)
+  name: guid(keyVault.id, 'ca-${nameSuffix}', 'kv-secrets-user')
+  scope: keyVault
   properties: {
     roleDefinitionId: roleKeyVaultSecretsUser
     principalId: compute.outputs.principalId
@@ -253,8 +330,9 @@ resource roleAssignKeyVaultSecretsUser 'Microsoft.Authorization/roleAssignments@
 }
 
 resource roleAssignWorkerKeyVaultSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(resourceGroup().id, keyVaultName, 'ca-${nameSuffix}-worker', 'kv-secrets-user')
-  scope: resourceGroup()
+  if (deployContainerApps)
+  name: guid(keyVault.id, 'ca-${nameSuffix}-worker', 'kv-secrets-user')
+  scope: keyVault
   properties: {
     roleDefinitionId: roleKeyVaultSecretsUser
     principalId: compute.outputs.workerPrincipalId
@@ -263,29 +341,8 @@ resource roleAssignWorkerKeyVaultSecretsUser 'Microsoft.Authorization/roleAssign
   }
 }
 
-resource roleAssignStorageTableContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(resourceGroup().id, 'stabackup${nameSuffixStr}', 'ca-${nameSuffix}', 'table-contributor')
-  scope: resourceGroup()
-  properties: {
-    roleDefinitionId: roleStorageTableDataContributor
-    principalId: compute.outputs.principalId
-    principalType: 'ServicePrincipal'
-    description: 'Container App - Storage Table Data Contributor for Dapr state store'
-  }
-}
-
-resource roleAssignWorkerStorageTableContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(resourceGroup().id, 'stabackup${nameSuffixStr}', 'ca-${nameSuffix}-worker', 'table-contributor')
-  scope: resourceGroup()
-  properties: {
-    roleDefinitionId: roleStorageTableDataContributor
-    principalId: compute.outputs.workerPrincipalId
-    principalType: 'ServicePrincipal'
-    description: 'Worker Container App - Storage Table Data Contributor for Dapr state store'
-  }
-}
-
 resource roleAssignServiceBusDataSender 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  if (deployContainerApps)
   name: guid(serviceBusNamespace.id, 'ca-${nameSuffix}', 'sb-sender')
   scope: serviceBusNamespace
   properties: {
@@ -297,6 +354,7 @@ resource roleAssignServiceBusDataSender 'Microsoft.Authorization/roleAssignments
 }
 
 resource roleAssignWorkerServiceBusDataReceiver 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  if (deployContainerApps)
   name: guid(serviceBusNamespace.id, 'ca-${nameSuffix}-worker', 'sb-receiver')
   scope: serviceBusNamespace
   properties: {
@@ -308,6 +366,7 @@ resource roleAssignWorkerServiceBusDataReceiver 'Microsoft.Authorization/roleAss
 }
 
 resource roleAssignCosmosDataContributor 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-05-15' = {
+  if (deployContainerApps)
   name: guid(resourceGroup().id, cosmosAccount.name, 'ca-${nameSuffix}', 'cosmos-data-contributor')
   parent: cosmosAccount
   properties: {
@@ -318,6 +377,7 @@ resource roleAssignCosmosDataContributor 'Microsoft.DocumentDB/databaseAccounts/
 }
 
 resource roleAssignWorkerCosmosDataContributor 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-05-15' = {
+  if (deployContainerApps)
   name: guid(resourceGroup().id, cosmosAccount.name, 'ca-${nameSuffix}-worker', 'cosmos-data-contributor')
   parent: cosmosAccount
   properties: {
@@ -331,9 +391,9 @@ resource roleAssignWorkerCosmosDataContributor 'Microsoft.DocumentDB/databaseAcc
 // Outputs
 // ---------------------------------------------------------------------------
 
-output containerAppName string = compute.outputs.containerAppName
-output containerAppUrl string = 'https://${compute.outputs.containerAppFqdn}'
-output workerContainerAppName string = compute.outputs.workerContainerAppName
+output containerAppName string = deployContainerApps ? compute.outputs.containerAppName : ''
+output containerAppUrl string = deployContainerApps ? 'https://${compute.outputs.containerAppFqdn}' : ''
+output workerContainerAppName string = deployContainerApps ? compute.outputs.workerContainerAppName : ''
 output dataStorageAccountName string = storage.outputs.dataStorageAccountName
 output containerName string = storage.outputs.containerName
 output containerRegistryName string = registry.outputs.name

@@ -16,6 +16,9 @@ param appInsightsConnectionString string
 @description('Container registry login server')
 param registryLoginServer string
 
+@description('Resource ID of the user-assigned managed identity used by Container Apps to pull images from ACR')
+param registryPullIdentityId string
+
 @description('Storage account name for data blobs')
 param dataStorageAccountName string
 
@@ -64,6 +67,9 @@ param cosmosDatabaseName string = 'backup-state'
 
 @description('Cosmos DB SQL container name for manifest-state-store.')
 param cosmosManifestContainerName string = 'manifest-state'
+
+@description('Cosmos DB SQL container name for device-registry-state-store.')
+param cosmosDeviceRegistryContainerName string = 'device-registry'
 
 @description('Optional Azure client ID for a user-assigned managed identity used by Dapr Azure components. Leave empty for system-assigned Container App identities.')
 param daprAzureClientId string = ''
@@ -150,23 +156,32 @@ resource daprManifestStateStore 'Microsoft.App/managedEnvironments/daprComponent
 }
 
 // ---------------------------------------------------------------------------
-// Dapr component: device registry state-store (Azure Table Storage via managed identity)
+// Dapr component: device registry state-store (Azure Cosmos DB for NoSQL via managed identity)
 // ---------------------------------------------------------------------------
 
 resource daprDeviceRegistryStateStore 'Microsoft.App/managedEnvironments/daprComponents@2023-05-01' = {
   parent: containerAppEnv
   name: 'device-registry-state-store'
   properties: {
-    componentType: 'state.azure.tablestorage'
+    componentType: 'state.azure.cosmosdb'
     version: 'v1'
+    initTimeout: '5m'
     metadata: concat([
       {
-        name: 'accountName'
-        value: dataStorageAccountName
+        name: 'url'
+        value: cosmosAccountEndpoint
       }
       {
-        name: 'tableName'
-        value: 'deviceregistry'
+        name: 'database'
+        value: cosmosDatabaseName
+      }
+      {
+        name: 'collection'
+        value: cosmosDeviceRegistryContainerName
+      }
+      {
+        name: 'partitionKey'
+        value: 'partitionKey'
       }
     ], daprAzureIdentityMetadata)
   }
@@ -237,7 +252,10 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
   name: 'ca-${nameSuffix}'
   location: location
   identity: {
-    type: 'SystemAssigned'
+    type: 'SystemAssigned, UserAssigned'
+    userAssignedIdentities: {
+      '${registryPullIdentityId}': {}
+    }
   }
   properties: {
     managedEnvironmentId: containerAppEnv.id
@@ -263,7 +281,7 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
       registries: [
         {
           server: registryLoginServer
-          identity: 'system' // Use system-assigned managed identity for ACR pull
+          identity: registryPullIdentityId
         }
       ]
     }
@@ -329,7 +347,10 @@ resource workerContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
   name: 'ca-${nameSuffix}-worker'
   location: location
   identity: {
-    type: 'SystemAssigned'
+    type: 'SystemAssigned, UserAssigned'
+    userAssignedIdentities: {
+      '${registryPullIdentityId}': {}
+    }
   }
   properties: {
     managedEnvironmentId: containerAppEnv.id
@@ -344,7 +365,7 @@ resource workerContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
       registries: [
         {
           server: registryLoginServer
-          identity: 'system'
+          identity: registryPullIdentityId
         }
       ]
       secrets: [

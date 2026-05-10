@@ -6,7 +6,7 @@
 * Zero exposure of account keys; clients get **time-boxed, least-privilege** write access only via SAS URLs.
 * **Incremental multi-file sync** (upload only new/changed files).
 * Leverage existing .NET Azure Container Apps infrastructure with Bicep IaC and GitHub Actions CI/CD.
-* Centralize **backup manifest/state in a cloud state store** (Azure Table Storage via Dapr) for consistency, restore, and observability.
+* Centralize **backup manifest/state in a cloud state store** (Azure Cosmos DB for NoSQL via Dapr) for consistency, restore, and observability.
 
 **Non-Goals**
 
@@ -17,7 +17,7 @@
 **Assumptions**
 
 * All clients are Windows.
-* Azure Subscription available with: Azure Container Apps, Azure Blob Storage (GPv2 with HNS ON), Microsoft Entra ID, Azure Table Storage.
+* Azure Subscription available with: Azure Container Apps, Azure Blob Storage (GPv2 with HNS ON), Microsoft Entra ID, and Azure Cosmos DB for NoSQL.
 * Encryption mode is explicit: `ServerSideOnly` uploads plaintext bytes and relies on Azure Storage encryption at rest; `ClientAndServer` adds zero-knowledge client-side encryption before upload.
 * Existing Bicep infrastructure can be extended for backup-specific resources.
 * Dapr sidecars are enabled for all Container Apps to abstract state and messaging.
@@ -32,7 +32,7 @@ flowchart TD
     EntraID[Entra ID]
 
     API[Backup API\nACA + Dapr]
-    State[State Store\nAzure Table Storage]
+    State[State Store\nAzure Cosmos DB]
     Queue[Commit Queue\nPubSub]
     Worker[Commit Worker\nACA Job]
 
@@ -75,7 +75,7 @@ Key ideas:
 * The **Windows client** authenticates to the Backup API (Azure Container App) via Entra ID (MSAL).
 * The Backup API uses its **Managed Identity** + **Storage Blob Delegator** role to mint **User Delegation SAS** (UD-SAS) for a **staging directory** per backup run.
 * The client uploads **directly to Blob** using a short-lived directory-scoped SAS (write/create only), minimizing Container App traffic and costs.
-* The API and commit worker use **Dapr state store** (backed by Azure Table Storage) as the **authoritative manifest/state**.
+* The API and commit worker use **Dapr state stores** (backed by Azure Cosmos DB for NoSQL) as the **authoritative manifest/device state**.
 * A background **commit worker** runs as a separate scale-to-zero Container App from a dedicated worker project/image. The API project exposes public backup/device endpoints; the worker project exposes only the Dapr commit-event endpoint. The worker processes commit jobs asynchronously: verifies staged blobs, moves them to `files/`, retires old versions, and updates manifest state.
 
 ---
@@ -119,14 +119,14 @@ Single storage account + container (example: `backups`) with the following layou
 * Each file version gets a **unique blob name** under `/devices/{deviceId}/files/{uniqueFileId}`.
 * In recovery-phrase encryption mode, each blob contains encrypted bytes. The server stores encryption metadata but never receives the recovery phrase or plaintext file key.
 * Backup target names are logical metadata only. Physical blob names use `uniqueFileId`; they do not include customer/local file paths.
-* The **authoritative mapping** from `logicalPath` → `uniqueFileId` lives in the **state store** (Azure Table Storage via Dapr), not in a blob `manifest.json`.
+* The **authoritative mapping** from `logicalPath` → `uniqueFileId` lives in the **state store** (Azure Cosmos DB for NoSQL via Dapr), not in a blob `manifest.json`.
 * Updated files get new `uniqueFileId`; previous versions are marked `Retired` and their blobs moved to `/devices/{deviceId}/retired/{uniqueFileId}`.
 * v1 keeps only the latest active version per path; older ones are retained only as retired blobs for retention (no rich snapshot history).
 
 **Tiering**
 
-* Choose **Cold** for initial uploads (90-day minimum retention).
-* After 30 days, lifecycle policies promote to **Archive** for long-term storage (180-day minimum).
+* Uploads may start in the storage account default **Cool** tier; lifecycle management promotes committed files under `devices/` to **Cold** as soon as the policy runs.
+* After 30 days, lifecycle policies promote committed files to **Archive** for long-term storage (180-day minimum).
 * Tiering and deletion are driven by **Blob lifecycle management** based on prefixes and/or tags (e.g., `state=retired`).
 
 ---
@@ -352,7 +352,7 @@ flowchart TD
    }
    ```
 
-7. Server (commit worker) moves blob to `/devices/{deviceId}/files/{uniqueFileId}` and updates manifest state in Table Storage.
+7. Server (commit worker) moves blob to `/devices/{deviceId}/files/{uniqueFileId}` and updates manifest state in Cosmos DB via Dapr.
 
 #### 4.2.2 File Changed
 
@@ -372,7 +372,7 @@ flowchart TD
 6. Include in `run-manifest.json` as a file entry; server:
 
    * Moves staged blob → `/devices/{deviceId}/files/{newUniqueFileId}`.
-   * Marks old version as retired in Table Storage.
+  * Marks old version as retired in Cosmos DB via Dapr.
    * Moves old blob → `/devices/{deviceId}/retired/{oldUniqueFileId}`.
 7. Lifecycle management eventually deletes retired blobs per retention policy.
 
@@ -391,10 +391,10 @@ flowchart TD
 4. Update local state DB to remove the file.
 5. Commit worker:
 
-   * Removes mapping from `Files` table (or marks as deleted).
+    * Removes mapping from the `Files` state records (or marks it as deleted).
    * Marks corresponding FileVersion as retired.
    * Moves blob `/devices/{deviceId}/files/{uniqueFileId}` → `/devices/{deviceId}/retired/{uniqueFileId}`.
-6. Lifecycle management handles eventual deletion from Archive/Cold tier.
+6. Lifecycle management handles eventual deletion of retired blobs from Archive/Cold tier.
 
 > Note: actual blob deletion is deferred to lifecycle policies to avoid early deletion fees and to provide recovery opportunities.
 
@@ -415,14 +415,14 @@ flowchart TD
   * Perform blob rename/move operations (`staging` → `files`, `files` → `retired`).
   * Fail the move if ADLS Gen2 rename fails, unless `ALLOW_COPY_DELETE_FALLBACK=true` is explicitly configured for a deployment that accepts early deletion cost and partial-failure risk.
 * **Blob Storage public access disabled**; all access via SAS or Managed Identity from trusted services.
-* **State stores (Azure Table Storage)** are accessed only from Container Apps via:
+* **State stores (Azure Cosmos DB for NoSQL)** are accessed only from Container Apps via:
 
   * Separate Dapr state-store component configuration for manifest/run state and device registry state.
   * Managed Identity in production; local development may use an Azurite connection string from local configuration/secrets.
-  * System-assigned Container App identities are the default. If a deployment switches Dapr components to a user-assigned managed identity, `daprAzureClientId` is set and emitted as `azureClientId` metadata on the Key Vault, Table Storage, and Service Bus Dapr components.
+  * System-assigned Container App identities are the default. If a deployment switches Dapr components to a user-assigned managed identity, `daprAzureClientId` is set and emitted as `azureClientId` metadata on the Key Vault, Cosmos DB, and Service Bus Dapr components.
 * Storage resource names such as `DATA_STORAGE_ACCOUNT` and `DATA_CONTAINER` are non-secret configuration values and may be supplied as Container App environment variables. Actual secrets remain in Dapr secret store / Key Vault.
 * Key Vault uses RBAC authorization. Its network ACL default action is configurable through `keyVaultNetworkDefaultAction`; it remains `Allow` until Container Apps/Dapr access through private networking is available, then should be changed to `Deny`.
-* Redis is intentionally not provisioned for v1. Dapr state is backed by Azure Table Storage; Service Bus is used for pub/sub.
+* Redis is intentionally not provisioned for production v1. Dapr state is backed by Azure Cosmos DB for NoSQL; Service Bus is used for pub/sub.
 * Multi-tenant / multi-device isolation:
 
   * `deviceId` is bound to the authenticated user/tenant in a server-side `DeviceRegistration` record.
@@ -439,26 +439,26 @@ flowchart TD
 
 ---
 
-## 6) State & Device Registry Model (Azure Table Storage via Dapr)
+## 6) State & Device Registry Model (Azure Cosmos DB for NoSQL via Dapr)
 
-The manifest/state is no longer kept in a blob `manifest.json`; instead it resides in Azure Table Storage behind Dapr state-store components. Manifest/run state and device registry state are intentionally separated into different Dapr components so they can evolve into different physical stores, retention policies, RBAC boundaries, or UI/query models without mixing concerns.
+The manifest/state is no longer kept in a blob `manifest.json`; instead it resides in Azure Cosmos DB for NoSQL behind Dapr state-store components. Manifest/run state and device registry state are intentionally separated into different Dapr components and containers so they can evolve into different physical stores, retention policies, RBAC boundaries, or UI/query models without mixing concerns.
 
 ### Physical state components
 
 * `manifest-state-store`
 
-  * Backing table/container: `manifeststate`.
+  * Backing database/container: `backup-state` / `manifest-state`.
   * Contains file mappings, file versions, backup runs, and commit jobs.
 
 * `device-registry-state-store`
 
-  * Backing table/container: `deviceregistry`.
+  * Backing database/container: `backup-state` / `device-registry`.
   * Contains device ownership/registration records and future device-management indexes.
-  * Uses the same storage account for v1, so the extra cost is only the small number of extra table/container transactions and metadata rows.
+  * Uses the same Cosmos DB account and shared-throughput database for v1, so both Dapr state stores fit within the free-tier-friendly 400 RU/s baseline for low-volume deployments.
 
 ### Logical entities
 
-> Exact physical schema can be backed by Azure Table Storage (v1) and later migrated to Cosmos DB Table API with minimal changes.
+> The production Bicep creates the Cosmos DB SQL database and containers in the existing manually created Cosmos account. Dapr consumes those containers; it should not be relied on to provision databases/containers on first run.
 
 **Files (latest mapping per path)**
 
@@ -587,23 +587,23 @@ Dapr is used to abstract infrastructure concerns:
 
 * **State Store (`manifest-state-store`)**:
 
-  * Backed by Azure Table Storage for v1.
+  * Backed by Azure Cosmos DB for NoSQL for production v1.
   * Stores backup manifest/run/commit state.
 
 * **State Store (`device-registry-state-store`)**:
 
-  * Backed by Azure Table Storage for v1, using a separate table/container from manifest state.
+  * Backed by Azure Cosmos DB for NoSQL for production v1, using a separate container from manifest state.
   * Stores device registration and ownership state.
   * Keeps the future device-management UI/query model separate from backup commit state.
 
 * Both state components:
 
-  * Future: switch to Cosmos DB Table API or SQL-based state store by changing Dapr component config, not app code.
+  * Use Dapr state-store APIs so the backing component can still be changed later with limited app-code impact.
 
 * **Pub/Sub / Queue**:
 
   * Used for commit job dispatch from API to worker.
-  * Backed by Azure Storage Queue / Service Bus / other.
+  * Backed by Azure Service Bus Topics in production.
 
 * **Output bindings (optional)**:
 
@@ -614,7 +614,7 @@ Application code:
 * Talks to `daprClient.SaveStateAsync()` / `GetStateAsync()` / `QueryStateAsync()`.
 * Talks to `daprClient.PublishEventAsync()` for commit jobs.
 
-Backend changes (Table → Cosmos, Queue type, etc.) are handled by **Dapr component YAML**, keeping the design future-proof.
+Backend changes (state store component, queue type, etc.) are handled by **Dapr component YAML/Bicep**, keeping the design future-proof.
 
 ---
 
@@ -668,7 +668,7 @@ Program Files*/
 * Headers:
 
   * `x-ms-blob-type: BlockBlob`
-  * `x-ms-access-tier: Cold|Cool|Archive` (set at upload time, typically Cold for v1).
+  * `x-ms-access-tier: Cold|Cool|Archive` (optional; current production can omit this and let lifecycle rules move committed files from Cool to Cold/Archive).
   * `If-None-Match: *` (create-only).
 
 * Integrity:
@@ -740,15 +740,15 @@ In `ServerSideOnly` mode, `encryption` is omitted and `sha256`/`size` describe t
 
 ### 10.1 Storage Tier Strategy & 30-Day Rule
 
-**Initial Upload Tier: Cold Storage**
+**Initial Upload Tier: Cool, then Cold by lifecycle**
 
-* All files uploaded initially to **Cold tier** (90-day minimum retention).
-* Good balance: cheaper than Cool, still accessible for early corrections.
-* Cost: ~€0.0152/GB/month vs Cool (€0.018/GB/month).
+* Files are uploaded with the storage account default **Cool** tier unless the client explicitly sets an access tier.
+* Lifecycle Management moves committed backup files under `backups/devices/` to **Cold** when the policy runs.
+* This keeps upload implementation simple while still converging to the cheaper Cold tier for retained backup data.
 
 **30-Day Promotion to Archive**
 
-* Lifecycle Management automatically promotes Cold → **Archive** after 30 days.
+* Lifecycle Management automatically promotes committed files to **Archive** after 30 days.
 * Archive tier: ~€0.00099/GB/month.
 * 180-day minimum retention in Archive; files are assumed to be rarely accessed after 30 days.
 
@@ -785,7 +785,6 @@ resource lifecyclePolicy 'Microsoft.Storage/storageAccounts/managementPolicies@2
             actions: {
               baseBlob: {
                 tierToArchive: { daysAfterModificationGreaterThan: 30 }
-                delete: { daysAfterModificationGreaterThan: 210 }
               }
             }
           }
@@ -825,7 +824,7 @@ resource lifecyclePolicy 'Microsoft.Storage/storageAccounts/managementPolicies@2
   * Data plane is direct client → Blob.
   * Commit worker is a separate Container App with `minReplicas = 0`; it only runs when the Service Bus subscription has queued commit messages.
   * Splitting the worker does not add a second always-on compute bill. The main extra cost is negligible Service Bus scaler polling/operations and worker vCPU/memory only while commits are processed.
-* **State stores (Azure Table Storage)** are extremely low-cost for v1 (few devices, <1M files). Splitting `manifest-state-store` and `device-registry-state-store` into separate tables/containers in the same storage account has negligible cost impact; the extra cost is only tiny metadata storage and low-volume device registration/authorization transactions.
+* **State stores (Azure Cosmos DB for NoSQL)** are kept low-cost by using a manually created free-tier Cosmos account and a shared-throughput `backup-state` database with separate `manifest-state` and `device-registry` containers.
 
 ---
 

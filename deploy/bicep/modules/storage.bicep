@@ -46,6 +46,8 @@ resource backupsContainer 'Microsoft.Storage/storageAccounts/blobServices/contai
   }
 }
 
+var backupsContainerPrefix = '${backupsContainer.name}/'
+
 resource lifecyclePolicy 'Microsoft.Storage/storageAccounts/managementPolicies@2023-01-01' = {
   parent: dataStorageAccount
   name: 'default'
@@ -58,7 +60,7 @@ resource lifecyclePolicy 'Microsoft.Storage/storageAccounts/managementPolicies@2
           type: 'Lifecycle'
           definition: {
             filters: {
-              prefixMatch: ['devices/']
+              prefixMatch: ['${backupsContainerPrefix}devices/']
               blobTypes: ['blockBlob']
             }
             actions: {
@@ -76,16 +78,13 @@ resource lifecyclePolicy 'Microsoft.Storage/storageAccounts/managementPolicies@2
           type: 'Lifecycle'
           definition: {
             filters: {
-              prefixMatch: ['devices/']
+              prefixMatch: ['${backupsContainerPrefix}devices/']
               blobTypes: ['blockBlob']
             }
             actions: {
               baseBlob: {
                 tierToArchive: {
                   daysAfterCreationGreaterThan: lifecycleArchiveAfterDays
-                }
-                delete: {
-                  daysAfterCreationGreaterThan: 210  // 180 (archive min) + 30 (grace)
                 }
               }
             }
@@ -97,7 +96,7 @@ resource lifecyclePolicy 'Microsoft.Storage/storageAccounts/managementPolicies@2
           type: 'Lifecycle'
           definition: {
             filters: {
-              prefixMatch: ['devices/']
+              prefixMatch: ['${backupsContainerPrefix}devices/']
               blobIndexMatch: [
                 {
                   name: 'state'
@@ -122,7 +121,7 @@ resource lifecyclePolicy 'Microsoft.Storage/storageAccounts/managementPolicies@2
           type: 'Lifecycle'
           definition: {
             filters: {
-              prefixMatch: ['staging/']
+              prefixMatch: ['${backupsContainerPrefix}staging/']
               blobTypes: ['blockBlob']
             }
             actions: {
