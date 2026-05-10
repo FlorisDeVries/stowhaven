@@ -65,6 +65,27 @@ az ad app federated-credential create \
   --parameters "{\"name\":\"production-environment\",\"issuer\":\"https://token.actions.githubusercontent.com\",\"subject\":\"repo:${GITHUB_ORG}/${GITHUB_REPO}:environment:production\",\"audiences\":[\"api://AzureADTokenExchange\"]}"
 ```
 
+Register the Azure resource providers used by the Bicep template. This is a one-time subscription setup step and must be run by an identity with subscription-level provider registration permissions:
+
+```bash
+for namespace in \
+  Microsoft.App \
+  Microsoft.ContainerRegistry \
+  Microsoft.DocumentDB \
+  Microsoft.Insights \
+  Microsoft.KeyVault \
+  Microsoft.ManagedIdentity \
+  Microsoft.OperationalInsights \
+  Microsoft.ServiceBus \
+  Microsoft.Storage; do
+  az provider register --namespace "$namespace" --wait
+done
+
+az provider list \
+  --query "[?namespace=='Microsoft.App' || namespace=='Microsoft.ContainerRegistry' || namespace=='Microsoft.DocumentDB' || namespace=='Microsoft.Insights' || namespace=='Microsoft.KeyVault' || namespace=='Microsoft.ManagedIdentity' || namespace=='Microsoft.OperationalInsights' || namespace=='Microsoft.ServiceBus' || namespace=='Microsoft.Storage'].{namespace:namespace,state:registrationState}" \
+  --output table
+```
+
 Assign Azure roles at resource-group scope:
 
 ```bash

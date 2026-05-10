@@ -64,6 +64,30 @@ jobs:
           tenant-id: ${{ env.AZURE_TENANT_ID }}
           subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Check Azure resource providers
+        run: |
+          missing=0
+          for namespace in \
+            Microsoft.App \
+            Microsoft.ContainerRegistry \
+            Microsoft.DocumentDB \
+            Microsoft.Insights \
+            Microsoft.KeyVault \
+            Microsoft.ManagedIdentity \
+            Microsoft.OperationalInsights \
+            Microsoft.ServiceBus \
+            Microsoft.Storage; do
+            state=$(az provider show --namespace "$namespace" --query registrationState --output tsv 2>/dev/null || echo "NotRegistered")
+            echo "$namespace: $state"
+            if [ "$state" != "Registered" ]; then
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "One or more Azure resource providers are not registered. Register them once from a subscription-level Azure CLI session, then rerun the workflow." >&2
+            exit 1
+          fi
+
       - name: Build Bicep
         run: |
           az bicep build --file "$TEMPLATE_FILE" --stdout >/tmp/main.json
