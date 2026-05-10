@@ -281,108 +281,99 @@ resource serviceBusNamespace 'Microsoft.ServiceBus/namespaces@2022-10-01-preview
 // Role assignments (after compute provides the managed identity principal ID)
 // ---------------------------------------------------------------------------
 
-resource roleAssignStorageContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  if (deployContainerApps)
+resource roleAssignStorageContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployContainerApps) {
   name: guid(dataStorageAccount.id, 'ca-${nameSuffix}', 'storage-contributor')
   scope: dataStorageAccount
   properties: {
     roleDefinitionId: roleStorageBlobDataContributor
-    principalId: compute.outputs.principalId
+    principalId: compute!.outputs.principalId
     principalType: 'ServicePrincipal'
     description: 'Container App – Storage Blob Data Contributor on data storage account'
   }
 }
 
-resource roleAssignWorkerStorageContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  if (deployContainerApps)
+resource roleAssignWorkerStorageContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployContainerApps) {
   name: guid(dataStorageAccount.id, 'ca-${nameSuffix}-worker', 'storage-contributor')
   scope: dataStorageAccount
   properties: {
     roleDefinitionId: roleStorageBlobDataContributor
-    principalId: compute.outputs.workerPrincipalId
+    principalId: compute!.outputs.workerPrincipalId
     principalType: 'ServicePrincipal'
     description: 'Worker Container App – Storage Blob Data Contributor on data storage account'
   }
 }
 
-resource roleAssignStorageDelegator 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  if (deployContainerApps)
+resource roleAssignStorageDelegator 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployContainerApps) {
   name: guid(dataStorageAccount.id, 'ca-${nameSuffix}', 'storage-delegator')
   scope: dataStorageAccount
   properties: {
     roleDefinitionId: roleStorageBlobDelegator
-    principalId: compute.outputs.principalId
+    principalId: compute!.outputs.principalId
     principalType: 'ServicePrincipal'
     description: 'Container App – Storage Blob Delegator on data storage account'
   }
 }
 
-resource roleAssignKeyVaultSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  if (deployContainerApps)
+resource roleAssignKeyVaultSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployContainerApps) {
   name: guid(keyVault.id, 'ca-${nameSuffix}', 'kv-secrets-user')
   scope: keyVault
   properties: {
     roleDefinitionId: roleKeyVaultSecretsUser
-    principalId: compute.outputs.principalId
+    principalId: compute!.outputs.principalId
     principalType: 'ServicePrincipal'
     description: 'Container App - Key Vault Secrets User'
   }
 }
 
-resource roleAssignWorkerKeyVaultSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  if (deployContainerApps)
+resource roleAssignWorkerKeyVaultSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployContainerApps) {
   name: guid(keyVault.id, 'ca-${nameSuffix}-worker', 'kv-secrets-user')
   scope: keyVault
   properties: {
     roleDefinitionId: roleKeyVaultSecretsUser
-    principalId: compute.outputs.workerPrincipalId
+    principalId: compute!.outputs.workerPrincipalId
     principalType: 'ServicePrincipal'
     description: 'Worker Container App - Key Vault Secrets User'
   }
 }
 
-resource roleAssignServiceBusDataSender 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  if (deployContainerApps)
+resource roleAssignServiceBusDataSender 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployContainerApps) {
   name: guid(serviceBusNamespace.id, 'ca-${nameSuffix}', 'sb-sender')
   scope: serviceBusNamespace
   properties: {
     roleDefinitionId: roleServiceBusDataSender
-    principalId: compute.outputs.principalId
+    principalId: compute!.outputs.principalId
     principalType: 'ServicePrincipal'
     description: 'API Container App - Service Bus Data Sender for Dapr pub/sub publishing'
   }
 }
 
-resource roleAssignWorkerServiceBusDataReceiver 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  if (deployContainerApps)
+resource roleAssignWorkerServiceBusDataReceiver 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployContainerApps) {
   name: guid(serviceBusNamespace.id, 'ca-${nameSuffix}-worker', 'sb-receiver')
   scope: serviceBusNamespace
   properties: {
     roleDefinitionId: roleServiceBusDataReceiver
-    principalId: compute.outputs.workerPrincipalId
+    principalId: compute!.outputs.workerPrincipalId
     principalType: 'ServicePrincipal'
     description: 'Worker Container App - Service Bus Data Receiver for Dapr pub/sub subscription'
   }
 }
 
-resource roleAssignCosmosDataContributor 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-05-15' = {
-  if (deployContainerApps)
+resource roleAssignCosmosDataContributor 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-05-15' = if (deployContainerApps) {
   name: guid(resourceGroup().id, cosmosAccount.name, 'ca-${nameSuffix}', 'cosmos-data-contributor')
   parent: cosmosAccount
   properties: {
     roleDefinitionId: resourceId('Microsoft.DocumentDB/databaseAccounts/sqlRoleDefinitions', cosmosAccount.name, '00000000-0000-0000-0000-000000000002')
-    principalId: compute.outputs.principalId
+    principalId: compute!.outputs.principalId
     scope: cosmosAccount.id
   }
 }
 
-resource roleAssignWorkerCosmosDataContributor 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-05-15' = {
-  if (deployContainerApps)
+resource roleAssignWorkerCosmosDataContributor 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-05-15' = if (deployContainerApps) {
   name: guid(resourceGroup().id, cosmosAccount.name, 'ca-${nameSuffix}-worker', 'cosmos-data-contributor')
   parent: cosmosAccount
   properties: {
     roleDefinitionId: resourceId('Microsoft.DocumentDB/databaseAccounts/sqlRoleDefinitions', cosmosAccount.name, '00000000-0000-0000-0000-000000000002')
-    principalId: compute.outputs.workerPrincipalId
+    principalId: compute!.outputs.workerPrincipalId
     scope: cosmosAccount.id
   }
 }
@@ -391,9 +382,9 @@ resource roleAssignWorkerCosmosDataContributor 'Microsoft.DocumentDB/databaseAcc
 // Outputs
 // ---------------------------------------------------------------------------
 
-output containerAppName string = deployContainerApps ? compute.outputs.containerAppName : ''
-output containerAppUrl string = deployContainerApps ? 'https://${compute.outputs.containerAppFqdn}' : ''
-output workerContainerAppName string = deployContainerApps ? compute.outputs.workerContainerAppName : ''
+output containerAppName string = deployContainerApps ? compute!.outputs.containerAppName : ''
+output containerAppUrl string = deployContainerApps ? 'https://${compute!.outputs.containerAppFqdn}' : ''
+output workerContainerAppName string = deployContainerApps ? compute!.outputs.workerContainerAppName : ''
 output dataStorageAccountName string = storage.outputs.dataStorageAccountName
 output containerName string = storage.outputs.containerName
 output containerRegistryName string = registry.outputs.name

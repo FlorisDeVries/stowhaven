@@ -1,0 +1,204 @@
+name: Deploy Backup API
+
+on:
+  workflow_dispatch:
+    inputs:
+      imageTag:
+        description: 'Container image tag to deploy. Defaults to the commit SHA.'
+        required: false
+        type: string
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/deploy.yml'
+      - 'deploy/bicep/**'
+      - 'src/**'
+      - 'Dockerfile'
+      - '.dockerignore'
+
+env:
+  AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+  TEMPLATE_FILE: deploy/bicep/main.bicep
+  PARAMETERS_FILE: deploy/bicep/main.bicepparam
+  API_IMAGE_NAME: backup-api
+  WORKER_IMAGE_NAME: backup-worker
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate Bicep
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Build Bicep
+        run: |
+          az bicep build --file "$TEMPLATE_FILE" --stdout >/tmp/main.json
+          az bicep build-params --file "$PARAMETERS_FILE" --stdout >/tmp/main.parameters.json
+
+      - name: Validate foundation phase
+        run: |
+          az deployment group validate \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --template-file "$TEMPLATE_FILE" \
+            --parameters "$PARAMETERS_FILE" \
+            --parameters deployContainerApps=false \
+            --output none
+
+      - name: Validate full deployment phase
+        run: |
+          IMAGE_TAG="${{ github.event.inputs.imageTag || github.sha }}"
+          az deployment group validate \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --template-file "$TEMPLATE_FILE" \
+            --parameters "$PARAMETERS_FILE" \
+            --parameters imageTag="$IMAGE_TAG" deployContainerApps=true \
+            --output none
+
+  deploy-foundation:
+    name: Deploy foundation
+    runs-on: ubuntu-latest
+    needs: validate
+    environment: production
+    outputs:
+      acr_login_server: ${{ steps.deploy.outputs.acr_login_server }}
+      image_tag: ${{ steps.deploy.outputs.image_tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy foundation resources
+        id: deploy
+        run: |
+          DEPLOYMENT_NAME="foundation-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          IMAGE_TAG="${{ github.event.inputs.imageTag || github.sha }}"
+
+          az deployment group create \
+            --name "$DEPLOYMENT_NAME" \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --template-file "$TEMPLATE_FILE" \
+            --parameters "$PARAMETERS_FILE" \
+            --parameters imageTag="$IMAGE_TAG" deployContainerApps=false \
+            --output none
+
+          ACR_LOGIN_SERVER=$(az deployment group show \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$DEPLOYMENT_NAME" \
+            --query "properties.outputs.containerRegistryLoginServer.value" \
+            --output tsv)
+
+          echo "acr_login_server=$ACR_LOGIN_SERVER" >> "$GITHUB_OUTPUT"
+          echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+
+  build-and-push:
+    name: Build and push images
+    runs-on: ubuntu-latest
+    needs: deploy-foundation
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Docker login to ACR
+        run: |
+          ACR_LOGIN_SERVER="${{ needs.deploy-foundation.outputs.acr_login_server }}"
+          ACR_NAME="${ACR_LOGIN_SERVER%%.azurecr.io}"
+          az acr login --name "$ACR_NAME"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: src/services/api/Dockerfile
+          push: true
+          tags: |
+            ${{ needs.deploy-foundation.outputs.acr_login_server }}/${{ env.API_IMAGE_NAME }}:${{ needs.deploy-foundation.outputs.image_tag }}
+            ${{ needs.deploy-foundation.outputs.acr_login_server }}/${{ env.API_IMAGE_NAME }}:latest
+          build-args: |
+            BUILD_VERSION=${{ needs.deploy-foundation.outputs.image_tag }}
+          cache-from: type=gha,scope=backup-api
+          cache-to: type=gha,mode=max,scope=backup-api
+
+      - name: Build and push worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: src/services/worker/Dockerfile
+          push: true
+          tags: |
+            ${{ needs.deploy-foundation.outputs.acr_login_server }}/${{ env.WORKER_IMAGE_NAME }}:${{ needs.deploy-foundation.outputs.image_tag }}
+            ${{ needs.deploy-foundation.outputs.acr_login_server }}/${{ env.WORKER_IMAGE_NAME }}:latest
+          build-args: |
+            BUILD_VERSION=${{ needs.deploy-foundation.outputs.image_tag }}
+          cache-from: type=gha,scope=backup-worker
+          cache-to: type=gha,mode=max,scope=backup-worker
+
+  deploy-apps:
+    name: Deploy Container Apps
+    runs-on: ubuntu-latest
+    needs:
+      - deploy-foundation
+      - build-and-push
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy full stack
+        run: |
+          DEPLOYMENT_NAME="apps-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          IMAGE_TAG="${{ needs.deploy-foundation.outputs.image_tag }}"
+
+          az deployment group create \
+            --name "$DEPLOYMENT_NAME" \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --template-file "$TEMPLATE_FILE" \
+            --parameters "$PARAMETERS_FILE" \
+            --parameters imageTag="$IMAGE_TAG" deployContainerApps=true \
+            --output table
+
+      - name: Show Container App URL
+        run: |
+          az deployment group show \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "apps-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --query "properties.outputs.{apiUrl:containerAppUrl.value,apiName:containerAppName.value,workerName:workerContainerAppName.value}" \
+            --output table
