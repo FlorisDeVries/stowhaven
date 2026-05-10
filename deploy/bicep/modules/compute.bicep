@@ -295,8 +295,8 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
           name: 'backup-api'
           image: '${registryLoginServer}/backup-api:${imageTag}'
           resources: {
-            cpu: 1
-            memory: '0.5Gi'
+            cpu: json('0.5')
+            memory: '1Gi'
           }
           env: [
             {
@@ -404,8 +404,8 @@ resource workerContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
           name: 'backup-worker'
           image: '${registryLoginServer}/backup-worker:${imageTag}'
           resources: {
-            cpu: 1
-            memory: '0.5Gi'
+            cpu: json('0.5')
+            memory: '1Gi'
           }
           env: [
             {
