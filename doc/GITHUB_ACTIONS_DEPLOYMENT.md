@@ -98,9 +98,10 @@ Why these roles:
 - `Role Based Access Control Administrator`: lets the workflow create managed-identity role assignments declared in Bicep.
 - `AcrPush`: lets the workflow push Docker images to ACR after the foundation phase creates it.
 
-## GitHub repository variables
+## GitHub repository variables or secrets
 
-Create these repository variables under **Settings → Secrets and variables → Actions → Variables**:
+Create these as **repository-level** variables under **Settings → Secrets and variables → Actions → Variables**.
+
 
 | Variable | Value |
 | --- | --- |
