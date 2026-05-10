@@ -34,7 +34,7 @@ flowchart TD
     API[Backup API\nACA + Dapr]
     State[State Store\nAzure Cosmos DB]
     Queue[Commit Queue\nPubSub]
-    Worker[Commit Worker\nACA Job]
+    Worker[Commit Worker\nACA]
 
     Blob[Azure Blob Storage\nADLS Gen2]
 

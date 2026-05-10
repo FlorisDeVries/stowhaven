@@ -35,15 +35,15 @@ sequenceDiagram
         MSAL->>MSAL: Load from cache
     end
     
-    MSAL-->>Client: Access token (scope: backup.admin)
-    Client->>API: POST /start-run<br/>(Authorization: Bearer <token>)
+    MSAL-->>Client: Access token (scope: backup.client or backup-admin)
+    Client->>API: POST /api/devices/{deviceId}/backup/start-run<br/>(Authorization: Bearer <token>)
     API->>API: Validate JWT<br/>(audience, issuer, scope)
     API->>Blob: Request User Delegation Key (Managed Identity)
     Blob-->>API: Delegation key
     API->>API: Generate SAS URL for staging/
     API-->>Client: SAS URL (write-only, time-limited)
     Client->>Blob: Upload files directly (using SAS)
-    Client->>API: POST /commit-run
+    Client->>API: POST /api/devices/{deviceId}/backup/commit-run
     API-->>Client: 202 Accepted
 ```
 
@@ -74,7 +74,7 @@ Key features:
 2. Click **Add a permission** → **My APIs**
 3. Select your Backup API (the one with ClientId `46f1d4c9-d546-47a5-9e65-fb1fa2c15665`)
 4. Select **Delegated permissions**
-5. Check `backup.admin`
+5. Check `backup.client` for normal backup clients. Use `backup-admin` only for trusted administrative/operator clients.
 6. Click **Add permissions**
 7. **Optional**: Click **Grant admin consent** (if you want to pre-approve for all users)
 
@@ -94,7 +94,7 @@ The API also needs to accept tokens from the client app:
 2. Go to **Expose an API**
 3. Under **Authorized client applications**, click **Add a client application**
 4. Enter the **Client App ID** from step 1.5
-5. Check the `backup.admin` scope
+5. Check the `backup.client` scope for the client app. Add `backup-admin` only for trusted administrative clients.
 6. Click **Add application**
 
 ## Client Configuration
@@ -109,8 +109,8 @@ Update your client's `appsettings.json`:
     "ClientId": "YOUR_CLIENT_APP_ID_FROM_STEP_1.5"
   },
   "BackupApiClient": {
-    "ApiUrl": "https://your-api-url.azurewebsites.net",
-    "AuthenticationScope": "api://46f1d4c9-d546-47a5-9e65-fb1fa2c15665/backup.admin",
+    "ApiUrl": "https://your-container-app-url.azurecontainerapps.io",
+    "AuthenticationScope": "api://46f1d4c9-d546-47a5-9e65-fb1fa2c15665/backup.client",
     "AuthenticationTenant": "cf8adfe1-bb3b-4ef0-8ba9-44dcddb8ecb9",
     "RetryOptions": {
       "MaxRetryAttempts": 3,
@@ -160,7 +160,7 @@ Tokens are stored securely per platform:
 - **Token caching**: Encrypted at rest using OS-provided secure storage
 - **Short-lived tokens**: Access tokens expire (typically 1 hour)
 - **Refresh tokens**: Longer-lived but revocable by admin
-- **Scope-based access**: Client only gets `backup.admin` scope, nothing else
+- **Scope-based access**: normal clients use the narrow `backup.client` delegated scope; `backup-admin` is reserved for trusted operator/admin scenarios
 - **Per-user authentication**: Each user authenticates with their own account
 
 ### ⚠️ Important Notes
@@ -175,19 +175,18 @@ The API validates:
 1. Token signature (from Entra ID)
 2. Audience (`api://46f1d4c9-d546-47a5-9e65-fb1fa2c15665`)
 3. Issuer (correct tenant)
-4. Required scope (`backup.admin`)
+4. Required scope (`backup.client` or `backup-admin`)
 5. Token expiry
 
-See [JwtBearerAuthenticationHandler.cs](../src/services/api/Authentication/JwtBearerAuthenticationHandler.cs)
+See [JwtBearerAuthenticationHandler.cs](../src/common/security/Authentication/JwtBearerAuthenticationHandler.cs)
 
 ## Development vs Production
 
 ### Development Mode
 
-- Uses `DefaultAzureCredential`
-- Works with Azure CLI (`az login`)
-- Works with Visual Studio authentication
-- No MSAL setup needed
+- Uses `NoOpTokenCredential` in the client
+- Requires the local API to explicitly set `ALLOW_DEVELOPMENT_ANONYMOUS_AUTHENTICATION=true`
+- No MSAL setup needed for the local Docker Compose flow
 - Ideal for local API testing
 
 ### Production Mode

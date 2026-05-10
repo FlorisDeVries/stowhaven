@@ -377,7 +377,7 @@ Adjust log levels in `appsettings.json`:
 
 ### Telemetry & Metrics
 
-The client exports OpenTelemetry metrics to Application Insights:
+The client can export OpenTelemetry traces and metrics to the configured exporters. Local development typically uses Zipkin and/or the Aspire dashboard; production API and worker telemetry goes to Application Insights through the Azure deployment configuration.
 
 **Key metrics**:
 - `backup.operation.duration`: Total backup time
@@ -395,16 +395,13 @@ The client exports OpenTelemetry metrics to Application Insights:
 
 ### Health Checks
 
-The client provides health check endpoints (when hosted):
+The public health endpoints belong to the API service:
 
-- `/health`: Overall health
-- `/health/ready`: Ready to accept requests
-- `/health/live`: Service is alive
+- `/api/health`: Overall health
+- `/api/health/ready`: Ready to accept requests
+- `/api/health/alive`: Service is alive
 
-**Health checks include**:
-- Azure Blob Storage connectivity
-- Dapr state store connectivity
-- Database accessibility
+**Health checks include** configured dependencies such as Azure Blob Storage and Dapr where applicable. The backup client itself is a console/Windows-service-style process and does not expose HTTP health endpoints.
 
 ---
 

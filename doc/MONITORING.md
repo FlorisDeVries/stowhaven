@@ -1,77 +1,65 @@
 # Monitoring and Observability
 
-This project uses OpenTelemetry for distributed tracing and observability, with multiple backend options.
+This project uses structured logging, OpenTelemetry instrumentation, health checks, and Azure monitoring resources to make the API, worker, and client observable in local and production environments.
 
-## Available Monitoring Services
+## Observability model
 
-### 1. Zipkin (Distributed Tracing)
-- **URL**: http://localhost:9411
-- **Purpose**: Visualize distributed traces across services
-- **Protocol**: Zipkin HTTP API
+| Environment | Primary tools | Configuration |
+| --- | --- | --- |
+| Local Docker Compose | Console logs, Zipkin, Aspire dashboard | `appsettings.Development.json` points OTLP/Zipkin exporters to local services. |
+| Production Azure | Console logs, Log Analytics, Application Insights | Container Apps receive `APPLICATIONINSIGHTS_CONNECTION_STRING`; local OTLP/Zipkin endpoints stay empty. |
+| Client development | Console logs, optional local OTLP/Zipkin | Client appsettings can point to localhost exporters when local tracing is wanted. |
 
-### 2. Aspire Dashboard (OTLP)
-- **Dashboard URL**: http://localhost:18888
-- **OTLP Endpoint**: http://localhost:4317
-- **Purpose**: Modern .NET observability dashboard with traces, metrics, and logs
-- **Protocol**: OpenTelemetry Protocol (OTLP)
+Production should not use Docker Compose hostnames such as `dev-dashboard` or `zipkin`. Those endpoints are development-only.
 
-### 3. Azure Monitor (Optional)
-- **Purpose**: Production monitoring in Azure
-- **Protocol**: Azure Monitor exporter
-- **Configuration**: Set `OTEL_EXPORTER_AZURE_MONITOR_CONNECTION` with your connection string
+## Local monitoring services
 
-## Starting Monitoring Services
+Docker Compose starts the development observability stack together with the API and worker:
 
-### Start all services:
+- `zipkin` for distributed trace visualization.
+- `dev-dashboard` for the .NET Aspire dashboard and OTLP ingestion.
+- `backup-api` and `backup-worker` with Dapr sidecars.
+- `azurite` and `redis` for local Dapr components.
+
+Start the stack:
+
 ```bash
 docker compose up -d
 ```
 
-This will start:
-- `zipkin` - Always runs
-- `aspire-dashboard` - Always runs
-- `azurite` - Azure Storage emulator
-- `backup-api` - Your main API service
+Useful local URLs:
 
-### View traces:
+| Service | URL |
+| --- | --- |
+| Backup API | `http://localhost:8210` |
+| Backup Worker | `http://localhost:8220` |
+| Zipkin | `http://localhost:9411` |
+| Aspire dashboard | `http://localhost:18888` |
+| RedisInsight | `http://localhost:5540` |
 
-**Aspire Dashboard** (Recommended):
-1. Open http://localhost:18888
-2. Navigate to "Traces" section
-3. View real-time traces from all services
+## Local exporter configuration
 
-**Zipkin**:
-1. Open http://localhost:9411
-2. Click "Run Query" to see recent traces
-3. Click on a trace to see the full span details
+API and worker development settings intentionally use Docker Compose service names because those processes run inside the Compose network:
 
-## Configuration
+```json
+{
+  "OTEL_EXPORTER_OTLP_ENDPOINT": "http://dev-dashboard:18889",
+  "OTEL_EXPORTER_ZIPKIN_ENDPOINT": "http://zipkin:9411/api/v2/spans"
+}
+```
 
-### For Services in Docker Compose
+The backup client usually runs outside Docker, so localhost endpoints are appropriate when local tracing is enabled:
 
-Services inside Docker use the service hostnames. The `backup-api` already has logging configured via GELF to send logs to the monitoring stack.
-
-### For Console Apps (like backup-client)
-
-The backup client runs **outside Docker** and connects via localhost:
-
-**appsettings.json**:
 ```json
 {
   "OTEL_SERVICE_NAME": "backup-client",
   "OTEL_EXPORTER_ZIPKIN_ENDPOINT": "http://localhost:9411/api/v2/spans",
-  "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4317"
+  "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4317",
+  "OTEL_EXPORTER_AZURE_MONITOR_CONNECTION": ""
 }
 ```
 
-The console logging library will automatically:
-- Create structured logs with Serilog
-- Generate distributed traces with OpenTelemetry
-- Export to all configured backends
-
-### Disabling Exporters
-
-To disable an exporter, set its configuration value to an empty string:
+To disable a local exporter, set its value to an empty string:
 
 ```json
 {
@@ -80,78 +68,69 @@ To disable an exporter, set its configuration value to an empty string:
 }
 ```
 
-## Example: Viewing a Backup Operation
+## Production monitoring
 
-1. Start monitoring services:
+Production infrastructure creates:
+
+- Log Analytics workspace.
+- Application Insights resource.
+- Container Apps environment connected to Log Analytics.
+- `APPLICATIONINSIGHTS_CONNECTION_STRING` injected into the API and worker Container Apps.
+
+The API and worker default production appsettings keep these local-development exporters empty:
+
+```json
+{
+  "OTEL_EXPORTER_ZIPKIN_ENDPOINT": "",
+  "OTEL_EXPORTER_OTLP_ENDPOINT": "",
+  "OTEL_EXPORTER_AZURE_MONITOR_CONNECTION": ""
+}
+```
+
+This avoids failed outbound dependencies to local-only services. Application telemetry is sent through Application Insights SDK configuration and Container Apps platform logging.
+
+## Viewing a local backup trace
+
+1. Start the local stack:
+
    ```bash
-   docker compose up -d zipkin aspire-dashboard
+   docker compose up -d
    ```
 
 2. Run the backup client:
+
    ```bash
    cd src/services/client
    dotnet run
    ```
 
-3. View traces in Aspire Dashboard:
-   - Open http://localhost:18888
-   - Look for service "backup-client"
-   - See the full trace: `BackupClient.Run` → `BackupService.Backup`
+3. Open the Aspire dashboard at `http://localhost:18888` and inspect traces, metrics, and logs.
+4. Open Zipkin at `http://localhost:9411` and query recent traces if Zipkin export is enabled.
 
-4. Or view in Zipkin:
-   - Open http://localhost:9411
-   - Click "Run Query"
-   - Click on the backup-client trace
+## Trace context
 
-## Trace Context
+Traces and logs include:
 
-Traces automatically include:
-- **Service name**: Identifies which service created the span
-- **Operation name**: The activity/method being traced
-- **Tags**: Custom attributes (e.g., `backup.success`, `app.version`)
-- **Timing**: Duration of each operation
-- **Parent/child relationships**: How operations nest
+- service name, such as `backup-api`, `backup-worker`, or `backup-client`;
+- operation names for backup scans, upload operations, API calls, and commit processing;
+- correlation IDs propagated through request logging middleware;
+- tags such as backup target count, transferred bytes, success/failure markers, and exception details.
 
-## Best Practices
+## Health checks
 
-1. **Always use ActivitySource for custom spans**:
-   ```csharp
-   using var activity = activitySource.StartActivity("MyOperation");
-   activity?.SetTag("custom.tag", "value");
-   ```
+The API exposes:
 
-2. **Add tags for important business data**:
-   ```csharp
-   activity?.SetTag("backup.size", fileSize);
-   activity?.SetTag("backup.success", true);
-   ```
+- `GET /api/health`
+- `GET /api/health/alive`
+- `GET /api/health/ready`
 
-3. **Record exceptions in traces**:
-   ```csharp
-   catch (Exception ex)
-   {
-       activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
-       activity?.RecordException(ex);
-       throw;
-   }
-   ```
+The checks cover application readiness plus configured dependencies such as Dapr and Azure Blob Storage where applicable. Container Apps can use these endpoints for operational diagnostics.
 
-4. **Use structured logging**:
-   ```csharp
-   logger.LogInformation("Backup completed for {FilePath} with size {Size}", 
-       filePath, fileSize);
-   ```
+## Best practices
 
-## Production Configuration
-
-For production, use Azure Monitor:
-
-```json
-{
-  "OTEL_EXPORTER_AZURE_MONITOR_CONNECTION": "InstrumentationKey=xxx;IngestionEndpoint=https://xxx.in.applicationinsights.azure.com/",
-  "OTEL_EXPORTER_ZIPKIN_ENDPOINT": "",
-  "OTEL_EXPORTER_OTLP_ENDPOINT": ""
-}
-```
-
-Or configure multiple exporters for hybrid scenarios (e.g., Zipkin for local dev + Azure Monitor for staging).
+- Keep local OTLP and Zipkin endpoints in development settings only.
+- Use `APPLICATIONINSIGHTS_CONNECTION_STRING` for production API and worker telemetry.
+- Do not set `OTEL_EXPORTER_OTLP_ENDPOINT` to Docker Compose service names in production.
+- Use structured log templates and named properties rather than string interpolation.
+- Add custom `Activity` spans around business operations that need end-to-end tracing.
+- Tag traces with stable identifiers such as `device.id`, `run.id`, and `commit.id`, but avoid local file paths or secrets.

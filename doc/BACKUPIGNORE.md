@@ -416,5 +416,5 @@ Review patterns from most to least specific:
 ## Related Documentation
 
 - [Quick Start Guide](CLIENT_CONFIGURATION.md#quick-start)
-- [Configuration Reference](CLIENT_CONFIGURATION.md#configuration-options)
+- [Configuration Reference](CLIENT_CONFIGURATION.md#configuration-reference)
 - [Troubleshooting](CLIENT_CONFIGURATION.md#troubleshooting)

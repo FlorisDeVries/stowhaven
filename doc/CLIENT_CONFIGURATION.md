@@ -60,8 +60,11 @@ Check the logs for:
 
 Verify files were uploaded:
 ```
-Azure Blob Storage > backups container > device-{guid}/ > my-files/
+Azure Blob Storage > backups container > staging/{deviceId}/{runId}/
+Azure Blob Storage > backups container > runs/{deviceId}/{runId}/run-manifest.json
 ```
+
+After the server-side commit worker finishes, committed files are moved under `devices/{deviceId}/files/` and the authoritative logical path mapping is stored in Cosmos DB through Dapr.
 
 **That's it!** The backup client uses smart defaults that work for most users.
 
@@ -356,7 +359,7 @@ Create `/var/www/myapp/.backupignore`:
 **/cache/**
 ```
 
-📖 [Server backup guide](BACKUPIGNORE.md#linux-windows-server-backups)
+📖 [Server backup guide](BACKUPIGNORE.md#customization-by-use-case)
 
 ---
 
