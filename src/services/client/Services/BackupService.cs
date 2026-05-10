@@ -36,32 +36,34 @@ public partial class BackupService(
 
     public async Task<bool> Backup(CancellationToken cancellationToken)
     {
-        var targets = _options.GetEffectiveTargets();
-
-        // Step 0: Validate all backup targets before starting
-        ValidateTargets(targets);
-
-        using var activity = telemetry.ActivitySource.StartActivity();
-
-        // Get or create device state (generates persistent device ID on first run)
-        var deviceState = await backupStateService.GetOrCreateDeviceStateAsync(cancellationToken);
-        var deviceId = deviceState.DeviceId;
-
-        await RegisterDeviceAsync(deviceId, cancellationToken);
-
-        var pendingRun = await LoadUsablePendingRunAsync(deviceId, cancellationToken);
-        if (pendingRun is { ManifestUploaded: true } or { CommitId: not null })
-        {
-            return await ResumeFinalizedRunAsync(pendingRun, activity, cancellationToken);
-        }
-
-        SetupTelemetryBackupStart(activity, deviceId, targets);
-
         var stopwatch = Stopwatch.StartNew();
         var metricTags = new TagList { { "operation.name", "Backup" } };
+        using var activity = telemetry.ActivitySource.StartActivity("Backup");
+
+        var targets = _options.GetEffectiveTargets();
 
         try
         {
+            // Step 0: Validate all backup targets before starting
+            ValidateTargets(targets);
+
+            // Get or create device state (generates persistent device ID on first run)
+            var deviceState = await backupStateService.GetOrCreateDeviceStateAsync(cancellationToken);
+            var deviceId = deviceState.DeviceId;
+
+            await RegisterDeviceAsync(deviceId, cancellationToken);
+
+            var pendingRun = await LoadUsablePendingRunAsync(deviceId, cancellationToken);
+            if (pendingRun is { ManifestUploaded: true } or { CommitId: not null })
+            {
+                var result = await ResumeFinalizedRunAsync(pendingRun, activity, cancellationToken);
+                stopwatch.Stop();
+                RecordOperationDuration(activity, metricTags, stopwatch, "resumed");
+                return result;
+            }
+
+            SetupTelemetryBackupStart(activity, deviceId, targets);
+
             // Step 1: Resolve exclusion patterns
             var excludePatterns = ResolveExclusionPatterns();
 
@@ -78,7 +80,7 @@ public partial class BackupService(
             // Step 4: Handle case of no changes
             if (!processingResult.HasStartedBackupRun && deletedFiles.Count == 0)
             {
-                return HandleNoChanges(activity, stopwatch);
+                return HandleNoChanges(activity, metricTags, stopwatch);
             }
 
             if (!processingResult.HasStartedBackupRun && deletedFiles.Count > 0)
@@ -482,10 +484,12 @@ public partial class BackupService(
         return new HashSet<string>(deletedFilesList, StringComparer.OrdinalIgnoreCase);
     }
 
-    private bool HandleNoChanges(Activity? activity, Stopwatch stopwatch)
+    private bool HandleNoChanges(Activity? activity, TagList metricTags, Stopwatch stopwatch)
     {
         LogNoChangesDetected();
         stopwatch.Stop();
+
+        RecordOperationDuration(activity, metricTags, stopwatch, "no_changes");
 
         activity?.SetTag(ActivityAttributes.OperationStatus, "skipped");
         activity?.SetTag(ActivityAttributes.BackupSuccess, true);
@@ -812,6 +816,8 @@ public partial class BackupService(
     private void RecordSuccessMetrics(Activity? activity, Guid? runId, BackupStats stats, TagList metricTags,
         Stopwatch stopwatch)
     {
+        metricTags.Add("backup.status", "success");
+
         var totalChangedFiles = stats.NewFilesCount + stats.ModifiedFilesCount;
         telemetry.CountFiles.Add(totalChangedFiles, metricTags);
         telemetry.BackupDuration.Record(stopwatch.ElapsedMilliseconds, metricTags);
@@ -841,6 +847,20 @@ public partial class BackupService(
         }
     }
 
+    private void RecordOperationDuration(Activity? activity, TagList metricTags, Stopwatch stopwatch, string status)
+    {
+        var tags = new TagList();
+        foreach (var tag in metricTags)
+        {
+            tags.Add(tag);
+        }
+
+        tags.Add("backup.status", status);
+        telemetry.BackupDuration.Record(stopwatch.ElapsedMilliseconds, tags);
+
+        activity?.SetTag("backup.duration_ms", stopwatch.ElapsedMilliseconds);
+    }
+
     private void HandleBackupFailure(Exception ex, Activity? activity, Stopwatch stopwatch)
     {
         stopwatch.Stop();
@@ -848,6 +868,7 @@ public partial class BackupService(
         var failureTags = new TagList
         {
             { "operation.name", "Backup" },
+            { "backup.status", "failure" },
             { "error.type", ex.GetType().Name }
         };
         telemetry.CountBackupFailures.Add(1, failureTags);

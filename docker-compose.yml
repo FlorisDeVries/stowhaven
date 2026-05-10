@@ -12,6 +12,8 @@ services:
             - ASPNETCORE_URLS=http://+:8080
             - ALLOW_DEVELOPMENT_ANONYMOUS_AUTHENTICATION=true
             - LOG_PATH=/var/log
+            - Swagger__WorkerBaseUrl=http://backup-worker:8080
+            - Swagger__WorkerProxyPath=/worker
         volumes:
             - ./run/api/data:/var/lib/backup-api
         user: ${UID}:${GID}
@@ -46,8 +48,12 @@ services:
             - "./run/components/:/components"
             - "./run/configuration/:/configuration"
         depends_on:
-            - backup-api
-            - azurite
+            backup-api:
+                condition: service_started
+            azurite:
+                condition: service_started
+            redis:
+                condition: service_healthy
         network_mode: "service:backup-api"
         logging:
             driver: "gelf"
@@ -75,6 +81,8 @@ services:
         volumes:
             - ./run/api/data:/var/lib/backup-api
         user: ${UID}:${GID}
+        ports:
+            - 127.0.0.1:8220:8080
         depends_on:
             - azurite
         logging:
@@ -104,8 +112,12 @@ services:
             - "./run/components/:/components"
             - "./run/configuration/:/configuration"
         depends_on:
-            - backup-worker
-            - azurite
+            backup-worker:
+                condition: service_started
+            azurite:
+                condition: service_started
+            redis:
+                condition: service_healthy
         network_mode: "service:backup-worker"
         logging:
             driver: "gelf"
@@ -159,5 +171,44 @@ services:
             - 127.0.0.1:10002:10002  # Table service
         command: azurite --blobHost 0.0.0.0 --queueHost 0.0.0.0 --tableHost 0.0.0.0 --location /data --debug /data/debug.log
 
+    redis:
+        container_name: backup-redis
+        image: redis:7-alpine
+        hostname: redis
+        restart: unless-stopped
+        command: redis-server --appendonly yes
+        volumes:
+            - redis-data:/data
+        healthcheck:
+            test: ["CMD", "redis-cli", "ping"]
+            interval: 5s
+            timeout: 3s
+            retries: 5
+        deploy:
+            resources:
+                limits:
+                    cpus: '0.25'
+                    memory: 256m
+
+    redisinsight:
+        container_name: backup-redisinsight
+        image: redis/redisinsight:latest
+        hostname: redisinsight
+        restart: unless-stopped
+        ports:
+            - 127.0.0.1:5540:5540
+        volumes:
+            - redisinsight-data:/data
+        depends_on:
+            redis:
+                condition: service_healthy
+        deploy:
+            resources:
+                limits:
+                    cpus: '0.25'
+                    memory: 512m
+
 volumes:
     azurite-data:
+    redis-data:
+    redisinsight-data:

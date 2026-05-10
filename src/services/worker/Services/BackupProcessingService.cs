@@ -119,6 +119,12 @@ public partial class BackupProcessingService(
             commitJob.CompletedAt = DateTimeOffset.UtcNow;
             await manifestManager.UpdateCommitJobAsync(commitJob, cancellationToken);
 
+            await TryCleanupRunTemporaryBlobsAsync(
+                backupEvent.DeviceId,
+                backupEvent.RunId,
+                containerClient,
+                cancellationToken);
+
             stopwatch.Stop();
             telemetry.BackupRunsProcessed.Add(1, metricTags);
             telemetry.OperationDuration.Record(stopwatch.ElapsedMilliseconds, metricTags);
@@ -461,6 +467,34 @@ public partial class BackupProcessingService(
         LogFileDeletionProcessed(logger, relativePath);
     }
 
+    private async Task TryCleanupRunTemporaryBlobsAsync(
+        Guid deviceId,
+        Guid runId,
+        BlobContainerClient containerClient,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var stagingPrefix = $"staging/{deviceId:N}/{runId:N}/";
+            var deletedStagingBlobCount = 0;
+
+            await foreach (var blob in containerClient.GetBlobsAsync(prefix: stagingPrefix, cancellationToken: cancellationToken))
+            {
+                await containerClient.GetBlobClient(blob.Name).DeleteIfExistsAsync(cancellationToken: cancellationToken);
+                deletedStagingBlobCount++;
+            }
+
+            var manifestPath = GetManifestPath(deviceId, runId);
+            var manifestDeleted = await containerClient.GetBlobClient(manifestPath).DeleteIfExistsAsync(cancellationToken: cancellationToken);
+
+            LogRunTemporaryBlobCleanupCompleted(logger, deviceId, runId, deletedStagingBlobCount, manifestDeleted.Value);
+        }
+        catch (Exception ex)
+        {
+            LogRunTemporaryBlobCleanupFailed(logger, deviceId, runId, ex);
+        }
+    }
+
     private async Task RetireFileVersionAsync(
         Guid deviceId,
         string uniqueFileId,
@@ -580,6 +614,12 @@ public partial class BackupProcessingService(
 
     [LoggerMessage(LogLevel.Information, "Completed processing backup run {runId} for device {deviceId}. Processed {processedCount} items")]
     static partial void LogProcessingCompleted(ILogger logger, Guid deviceId, Guid runId, int processedCount);
+
+    [LoggerMessage(LogLevel.Information, "Cleaned temporary blobs for backup run {runId} device {deviceId}. Deleted {deletedStagingBlobCount} staging blobs, manifestDeleted={manifestDeleted}")]
+    static partial void LogRunTemporaryBlobCleanupCompleted(ILogger logger, Guid deviceId, Guid runId, int deletedStagingBlobCount, bool manifestDeleted);
+
+    [LoggerMessage(LogLevel.Warning, "Failed to clean temporary blobs for backup run {runId} device {deviceId}. Backup processing remains succeeded.")]
+    static partial void LogRunTemporaryBlobCleanupFailed(ILogger logger, Guid deviceId, Guid runId, Exception ex);
 
     [LoggerMessage(LogLevel.Error, "Failed to process backup run {runId} for device {deviceId}")]
     static partial void LogProcessingFailed(ILogger logger, Guid deviceId, Guid runId, Exception ex);

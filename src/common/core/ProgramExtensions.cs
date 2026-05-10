@@ -40,6 +40,8 @@ public static class ProgramExtensions
 
         public void AddCustomSwagger(Assembly assembly)
         {
+            builder.Services.AddHttpClient();
+
             builder.Services.AddSwaggerGen(c =>
             {
                 var productVersion = FileVersionInfo.GetVersionInfo(assembly.Location).ProductVersion;
@@ -199,6 +201,103 @@ public static class ProgramExtensions
             });
         });
 
-        builder.UseSwaggerUI(c => { c.SwaggerEndpoint("main/swagger.json", applicationName); });
+        builder.UseSwaggerUI(c =>
+        {
+            c.SwaggerEndpoint("main/swagger.json", applicationName);
+
+            var configuration = builder.ApplicationServices.GetRequiredService<IConfiguration>();
+            var workerBaseUrl = configuration["Swagger:WorkerBaseUrl"];
+
+            if (!string.IsNullOrWhiteSpace(workerBaseUrl))
+            {
+                var workerProxyPath = NormalizeProxyPath(configuration["Swagger:WorkerProxyPath"] ?? "/worker");
+                c.SwaggerEndpoint($"{workerProxyPath}/swagger/main/swagger.json", "FlorisDeV.BackupWorker");
+            }
+        });
+    }
+
+    public static void MapWorkerSwaggerProxy(this WebApplication app)
+    {
+        var configuration = app.Services.GetRequiredService<IConfiguration>();
+        var workerBaseUrl = configuration["Swagger:WorkerBaseUrl"];
+
+        if (string.IsNullOrWhiteSpace(workerBaseUrl))
+        {
+            return;
+        }
+
+        var workerProxyPath = NormalizeProxyPath(configuration["Swagger:WorkerProxyPath"] ?? "/worker");
+        var workerBaseUri = new Uri(workerBaseUrl, UriKind.Absolute);
+
+        app.Map($"{workerProxyPath}/{{**path}}", async context =>
+        {
+            var httpClientFactory = context.RequestServices.GetRequiredService<IHttpClientFactory>();
+            var httpClient = httpClientFactory.CreateClient();
+            var targetUri = BuildProxyUri(workerBaseUri, context.Request.RouteValues["path"] as string, context.Request.QueryString);
+
+            using var requestMessage = new HttpRequestMessage(new HttpMethod(context.Request.Method), targetUri);
+            requestMessage.Headers.Host = context.Request.Host.Value;
+            requestMessage.Headers.TryAddWithoutValidation("X-Forwarded-Proto", context.Request.Scheme);
+            requestMessage.Headers.TryAddWithoutValidation("X-Forwarded-Host", context.Request.Host.Value);
+            requestMessage.Headers.TryAddWithoutValidation("X-Forwarded-Prefix", workerProxyPath);
+
+            if (context.Request.ContentLength is > 0 || context.Request.Headers.ContainsKey("Transfer-Encoding"))
+            {
+                requestMessage.Content = new StreamContent(context.Request.Body);
+            }
+
+            foreach (var header in context.Request.Headers)
+            {
+                if (string.Equals(header.Key, "Host", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (!requestMessage.Headers.TryAddWithoutValidation(header.Key, header.Value.ToArray()))
+                {
+                    requestMessage.Content?.Headers.TryAddWithoutValidation(header.Key, header.Value.ToArray());
+                }
+            }
+
+            using var responseMessage = await httpClient.SendAsync(
+                requestMessage,
+                HttpCompletionOption.ResponseHeadersRead,
+                context.RequestAborted).ConfigureAwait(false);
+
+            context.Response.StatusCode = (int)responseMessage.StatusCode;
+
+            foreach (var header in responseMessage.Headers)
+            {
+                context.Response.Headers[header.Key] = header.Value.ToArray();
+            }
+
+            foreach (var header in responseMessage.Content.Headers)
+            {
+                context.Response.Headers[header.Key] = header.Value.ToArray();
+            }
+
+            context.Response.Headers.Remove("transfer-encoding");
+
+            await responseMessage.Content.CopyToAsync(context.Response.Body, context.RequestAborted).ConfigureAwait(false);
+        }).ExcludeFromDescription();
+    }
+
+    private static Uri BuildProxyUri(Uri baseUri, string? path, QueryString queryString)
+    {
+        var basePath = baseUri.AbsolutePath.TrimEnd('/');
+        var targetPath = path?.TrimStart('/') ?? string.Empty;
+        var combinedPath = string.IsNullOrEmpty(basePath) ? $"/{targetPath}" : $"{basePath}/{targetPath}";
+
+        return new UriBuilder(baseUri)
+        {
+            Path = combinedPath,
+            Query = queryString.HasValue ? queryString.Value![1..] : string.Empty
+        }.Uri;
+    }
+
+    private static string NormalizeProxyPath(string path)
+    {
+        var normalizedPath = path.Trim('/');
+        return string.IsNullOrWhiteSpace(normalizedPath) ? "/worker" : $"/{normalizedPath}";
     }
 }

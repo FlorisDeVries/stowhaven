@@ -12,9 +12,13 @@
             <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
         </PackageReference>
         <PackageReference Include="Azure.Identity" Version="1.16.0" />
-        <PackageReference Include="Microsoft.CST.DevSkim" Version="1.0.67">
+        <PackageReference Include="Microsoft.CST.DevSkim" Version="1.0.70">
             <PrivateAssets>all</PrivateAssets>
-            <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+            <IncludeAssets>analyzers; build; buildtransitive</IncludeAssets>
+        </PackageReference>
+        <PackageReference Include="SharpCompress" Version="0.48.0">
+            <PrivateAssets>all</PrivateAssets>
+            <IncludeAssets>none</IncludeAssets>
         </PackageReference>
         <PackageReference Include="Roslynator.Analyzers" Version="4.14.0">
             <PrivateAssets>all</PrivateAssets>

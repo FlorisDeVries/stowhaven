@@ -49,11 +49,13 @@ public static class StartupLoggingExtensions
 
             // OpenTelemetry Configuration
             var otelServiceName = configuration.GetValue<string>("OTEL_SERVICE_NAME");
+            var otlpEndpoint = configuration.GetValue<string>("OTEL_EXPORTER_OTLP_ENDPOINT");
             var zipkinEndpoint = configuration.GetValue<string>("OTEL_EXPORTER_ZIPKIN_ENDPOINT");
             var azureMonitorConnection = configuration.GetValue<string>("OTEL_EXPORTER_AZURE_MONITOR_CONNECTION");
 
             logger.LogInformation("OpenTelemetry Service: {ServiceName}",
                 otelServiceName ?? environment.ApplicationName);
+            logger.LogInformation("OpenTelemetry OTLP: {IsConfigured}", !string.IsNullOrEmpty(otlpEndpoint));
             logger.LogInformation("OpenTelemetry Zipkin: {IsConfigured}", !string.IsNullOrEmpty(zipkinEndpoint));
             logger.LogInformation("OpenTelemetry Azure Monitor: {IsConfigured}",
                 !string.IsNullOrEmpty(azureMonitorConnection));

@@ -374,9 +374,11 @@ public static class HostBuilderExtensions
 
                         if (!string.IsNullOrEmpty(otlpEndpoint))
                         {
-                            metrics.AddOtlpExporter(exportOptions =>
+                            metrics.AddOtlpExporter((exportOptions, metricReaderOptions) =>
                             {
                                 exportOptions.Endpoint = new Uri(otlpEndpoint);
+                                metricReaderOptions.PeriodicExportingMetricReaderOptions.ExportIntervalMilliseconds = 1000;
+                                metricReaderOptions.PeriodicExportingMetricReaderOptions.ExportTimeoutMilliseconds = 5000;
                             });
                         }
 

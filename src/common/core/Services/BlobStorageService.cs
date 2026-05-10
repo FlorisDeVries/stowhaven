@@ -112,6 +112,12 @@ public partial class BlobStorageService(
 
                 var credential = new StorageSharedKeyCredential(_storageAccountName, accountKey);
                 _blobServiceClient = new BlobServiceClient(new Uri(blobEndpoint), credential);
+
+                // Local Azurite volumes are often deleted during test resets. Bicep creates
+                // the production container, but local development needs to bootstrap it.
+                await _blobServiceClient
+                    .GetBlobContainerClient(_containerName)
+                    .CreateIfNotExistsAsync(cancellationToken: cancellationToken);
             }
             else
             {

@@ -57,7 +57,6 @@ public partial class SasUrlService(
 
             activity?.SetTag(ActivityAttributes.StorageAccount, storageAccount);
 
-            string sasToken;
             Uri sasUrl;
 
             if (isAzurite)
@@ -87,10 +86,9 @@ public partial class SasUrlService(
 
                 // Use the blob container client which already has credentials
                 var containerClient = blobServiceClient.GetBlobContainerClient(containerName);
-                sasToken = containerClient.GenerateSasUri(containerSasBuilder).Query;
-
-                // Container-level URL — path is NOT embedded; the client uses BasePath separately
-                sasUrl = new Uri($"{blobServiceClient.Uri}/{containerName}?{sasToken}");
+                // Container-level URL — path is NOT embedded; the client uses BasePath separately.
+                // GenerateSasUri returns the complete URI including the leading '?' before the query string.
+                sasUrl = containerClient.GenerateSasUri(containerSasBuilder);
             }
             else
             {
@@ -117,7 +115,7 @@ public partial class SasUrlService(
 
                 // Use User Delegation Key for enhanced security (no account key exposure)
                 var key = await blobStorageService.GetUserDelegationKeyAsync(expiresAt, cancellationToken);
-                sasToken = dirSasBuilder.ToSasQueryParameters(key, storageAccount).ToString();
+                var sasToken = dirSasBuilder.ToSasQueryParameters(key, storageAccount).ToString();
 
                 // Directory-level URL — path IS embedded so BlobContainerClient resolves correctly
                 sasUrl = new Uri($"{blobServiceClient.Uri}/{containerName}/{path}?{sasToken}");
@@ -184,7 +182,6 @@ public partial class SasUrlService(
             var containerName = await blobStorageService.GetContainerNameAsync(cancellationToken);
             var isAzurite = await blobStorageService.IsUsingAzuriteAsync(cancellationToken);
 
-            string sasToken;
             Uri sasUrl;
 
             if (isAzurite)
@@ -206,8 +203,8 @@ public partial class SasUrlService(
                 }
 
                 var containerClient = blobServiceClient.GetBlobContainerClient(containerName);
-                sasToken = containerClient.GenerateSasUri(containerSasBuilder).Query;
-                sasUrl = new Uri($"{blobServiceClient.Uri}/{containerName}?{sasToken}");
+                // GenerateSasUri returns the complete URI including the leading '?' before the query string.
+                sasUrl = containerClient.GenerateSasUri(containerSasBuilder);
             }
             else
             {
@@ -229,7 +226,7 @@ public partial class SasUrlService(
                 }
 
                 var key = await blobStorageService.GetUserDelegationKeyAsync(expiresAt, cancellationToken);
-                sasToken = dirSasBuilder.ToSasQueryParameters(key, storageAccount).ToString();
+                var sasToken = dirSasBuilder.ToSasQueryParameters(key, storageAccount).ToString();
                 sasUrl = new Uri($"{blobServiceClient.Uri}/{containerName}/{path}?{sasToken}");
             }
 
