@@ -32,7 +32,7 @@
       <Content Include="..\..\..\.dockerignore">
         <Link>.dockerignore</Link>
       </Content>
-      <Content Include="..\..\..\doc\README.md">
+      <Content Include="..\..\..\README.md">
         <Link>README.md</Link>
       </Content>
     </ItemGroup>
