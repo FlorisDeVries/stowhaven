@@ -332,6 +332,18 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
               value: appInsightsConnectionString
             }
             {
+              name: 'OTEL_EXPORTER_OTLP_ENDPOINT'
+              value: ''
+            }
+            {
+              name: 'OTEL_EXPORTER_ZIPKIN_ENDPOINT'
+              value: ''
+            }
+            {
+              name: 'OTEL_EXPORTER_AZURE_MONITOR_CONNECTION'
+              value: ''
+            }
+            {
               name: 'ASPNETCORE_ENVIRONMENT'
               value: 'Production'
             }
@@ -423,6 +435,18 @@ resource workerContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
             {
               name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
               value: appInsightsConnectionString
+            }
+            {
+              name: 'OTEL_EXPORTER_OTLP_ENDPOINT'
+              value: ''
+            }
+            {
+              name: 'OTEL_EXPORTER_ZIPKIN_ENDPOINT'
+              value: ''
+            }
+            {
+              name: 'OTEL_EXPORTER_AZURE_MONITOR_CONNECTION'
+              value: ''
             }
             {
               name: 'ASPNETCORE_ENVIRONMENT'
