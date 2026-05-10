@@ -74,6 +74,7 @@ public partial class BackupProcessingService(
             }
 
             LogManifestLoaded(logger, backupEvent.DeviceId, backupEvent.RunId, manifest.Files.Count, manifest.Deleted.Count);
+            await manifestManager.SaveRunManifestAsync(backupEvent.DeviceId, backupEvent.RunId, manifest, cancellationToken);
 
             var containerClient = await blobStorageService.GetContainerClientAsync(cancellationToken);
             var processedCount = 0;

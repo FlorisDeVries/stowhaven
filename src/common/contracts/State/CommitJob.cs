@@ -30,6 +30,40 @@ public enum CommitJobStatus
     Failed
 }
 
+public sealed record CommitJobIndexEntry
+{
+    public required Guid CommitId { get; init; }
+    public required Guid DeviceId { get; init; }
+    public required Guid RunId { get; init; }
+    public required DateTimeOffset CreatedAt { get; init; }
+}
+
+public sealed record CommitJobIndex
+{
+    public required List<CommitJobIndexEntry> Commits { get; init; }
+    public string? ETag { get; set; }
+}
+
+public sealed record CommitJobQuery
+{
+    public Guid? DeviceId { get; init; }
+    public Guid? RunId { get; init; }
+    public CommitJobStatus? Status { get; init; }
+    public DateTimeOffset? CreatedFromUtc { get; init; }
+    public DateTimeOffset? CreatedToUtc { get; init; }
+    public int PageSize { get; init; } = 100;
+    public string? ContinuationToken { get; init; }
+}
+
+public sealed record CommitJobPage
+{
+    public required IReadOnlyList<CommitJob> Commits { get; init; }
+    public required int PageSize { get; init; }
+    public string? ContinuationToken { get; init; }
+    public string? NextContinuationToken { get; init; }
+    public bool HasMore => !string.IsNullOrWhiteSpace(NextContinuationToken);
+}
+
 /// <summary>
 /// Tracks deterministic, retry-safe progress for a single file within a commit job.
 /// </summary>
@@ -53,4 +87,20 @@ public enum CommitFileStatus
     StateUpdated,
     Succeeded,
     Failed
+}
+
+public sealed record CommitFileProgressIndex
+{
+    public required Guid CommitId { get; init; }
+    public required List<string> UniqueFileIds { get; init; }
+    public string? ETag { get; set; }
+}
+
+public sealed record CommitFileProgressPage
+{
+    public required IReadOnlyList<CommitFileProgress> Files { get; init; }
+    public required int PageSize { get; init; }
+    public string? ContinuationToken { get; init; }
+    public string? NextContinuationToken { get; init; }
+    public bool HasMore => !string.IsNullOrWhiteSpace(NextContinuationToken);
 }

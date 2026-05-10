@@ -2,7 +2,7 @@
 // Deploys to the existing resource group specified at deployment time.
 // Usage:
 //   az deployment group create \
-//     --resource-group rg-fdev-neu-backup-prd \
+//     --resource-group rg-fdev-weu-backup-prd \
 //     --template-file deploy/bicep/main.bicep \
 //     --parameters deploy/bicep/main.bicepparam
 
@@ -13,13 +13,13 @@ targetScope = 'resourceGroup'
 // ---------------------------------------------------------------------------
 
 @description('Azure region for all resources')
-param location string = 'northeurope'
+param location string = 'westeurope'
 
 @description('Suffix for resource names (with dashes)')
-param nameSuffix string = 'fdev-neu-prd'
+param nameSuffix string = 'fdev-weu-prd'
 
 @description('Suffix for storage-account-style names (no dashes)')
-param nameSuffixStr string = 'fdevneuprd'
+param nameSuffixStr string = 'fdevweuprd'
 
 @description('Days after which blobs are moved to archive tier')
 param lifecycleArchiveAfterDays int = 30
@@ -54,6 +54,15 @@ param staleStagingCleanupDryRun bool = false
 @description('Minimum API replicas. Keep at least 1 when Dapr cron bindings must fire without external traffic.')
 param apiMinReplicas int = 1
 
+@description('Name of the existing, manually created Cosmos DB account used by the production manifest-state-store Dapr component. Leave empty to derive from the deployment name suffix.')
+param cosmosAccountName string = ''
+
+@description('Cosmos DB SQL database name for Dapr state.')
+param cosmosDatabaseName string = 'backup-state'
+
+@description('Cosmos DB SQL container name for manifest-state-store.')
+param cosmosManifestContainerName string = 'manifest-state'
+
 @description('Optional Azure client ID for a user-assigned managed identity used by Dapr Azure components. Leave empty for system-assigned Container App identities.')
 param daprAzureClientId string = ''
 
@@ -76,6 +85,7 @@ var commonTags = {
 // Pre-determine the Key Vault name so both dapr-infra and compute modules can
 // reference it without creating a circular dependency.
 var keyVaultName = 'kv-${nameSuffix}'
+var cosmosAccountNameEffective = empty(cosmosAccountName) ? 'cosmos-${nameSuffix}' : cosmosAccountName
 
 // Role definition IDs (built-in)
 var roleStorageBlobDataContributor = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
@@ -134,6 +144,10 @@ module daprInfra 'modules/dapr-infra.bicep' = {
   }
 }
 
+resource cosmosAccount 'Microsoft.DocumentDB/databaseAccounts@2024-05-15' existing = {
+  name: cosmosAccountNameEffective
+}
+
 // Deploy Container App after monitoring, registry, storage, and dapr-infra.
 module compute 'modules/compute.bicep' = {
   name: 'compute'
@@ -156,6 +170,9 @@ module compute 'modules/compute.bicep' = {
     staleStagingCleanupMaxDeletes: staleStagingCleanupMaxDeletes
     staleStagingCleanupDryRun: staleStagingCleanupDryRun
     apiMinReplicas: apiMinReplicas
+    cosmosAccountEndpoint: cosmosAccount.properties.documentEndpoint
+    cosmosDatabaseName: cosmosDatabaseName
+    cosmosManifestContainerName: cosmosManifestContainerName
     daprAzureClientId: daprAzureClientId
     tags: commonTags
   }
@@ -287,6 +304,26 @@ resource roleAssignWorkerServiceBusDataReceiver 'Microsoft.Authorization/roleAss
     principalId: compute.outputs.workerPrincipalId
     principalType: 'ServicePrincipal'
     description: 'Worker Container App - Service Bus Data Receiver for Dapr pub/sub subscription'
+  }
+}
+
+resource roleAssignCosmosDataContributor 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-05-15' = {
+  name: guid(resourceGroup().id, cosmosAccount.name, 'ca-${nameSuffix}', 'cosmos-data-contributor')
+  parent: cosmosAccount
+  properties: {
+    roleDefinitionId: resourceId('Microsoft.DocumentDB/databaseAccounts/sqlRoleDefinitions', cosmosAccount.name, '00000000-0000-0000-0000-000000000002')
+    principalId: compute.outputs.principalId
+    scope: cosmosAccount.id
+  }
+}
+
+resource roleAssignWorkerCosmosDataContributor 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-05-15' = {
+  name: guid(resourceGroup().id, cosmosAccount.name, 'ca-${nameSuffix}-worker', 'cosmos-data-contributor')
+  parent: cosmosAccount
+  properties: {
+    roleDefinitionId: resourceId('Microsoft.DocumentDB/databaseAccounts/sqlRoleDefinitions', cosmosAccount.name, '00000000-0000-0000-0000-000000000002')
+    principalId: compute.outputs.workerPrincipalId
+    scope: cosmosAccount.id
   }
 }
 

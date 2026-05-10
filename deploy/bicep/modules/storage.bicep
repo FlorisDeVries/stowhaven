@@ -3,7 +3,7 @@
 @description('Azure region for resources')
 param location string
 
-@description('Suffix for storage account names (no dashes, e.g. fdevneuprd)')
+@description('Suffix for storage account names (no dashes, e.g. fdevweuprd)')
 param nameSuffixStr string
 
 @description('Days after which blobs are moved to archive tier')

@@ -17,6 +17,38 @@ public class RunStatistics
     public long TotalBytes { get; set; }
 }
 
+public sealed record BackupRunIndexEntry
+{
+    public required Guid DeviceId { get; init; }
+    public required Guid RunId { get; init; }
+    public required DateTimeOffset StartedAt { get; init; }
+}
+
+public sealed record BackupRunIndex
+{
+    public required List<BackupRunIndexEntry> Runs { get; init; }
+    public string? ETag { get; set; }
+}
+
+public sealed record BackupRunQuery
+{
+    public Guid? DeviceId { get; init; }
+    public DateTimeOffset? StartedFromUtc { get; init; }
+    public DateTimeOffset? StartedToUtc { get; init; }
+    public BackupRunStatus? Status { get; init; }
+    public int PageSize { get; init; } = 100;
+    public string? ContinuationToken { get; init; }
+}
+
+public sealed record BackupRunPage
+{
+    public required IReadOnlyList<BackupRun> Runs { get; init; }
+    public required int PageSize { get; init; }
+    public string? ContinuationToken { get; init; }
+    public string? NextContinuationToken { get; init; }
+    public bool HasMore => !string.IsNullOrWhiteSpace(NextContinuationToken);
+}
+
 public enum BackupRunStatus
 {
     Queued,

@@ -56,6 +56,15 @@ param staleStagingCleanupDryRun bool = false
 @description('Minimum API replicas. Keep at least 1 when Dapr cron bindings must fire without external traffic.')
 param apiMinReplicas int = 1
 
+@description('Cosmos DB account endpoint for the Dapr manifest-state-store component.')
+param cosmosAccountEndpoint string
+
+@description('Cosmos DB SQL database name for Dapr state.')
+param cosmosDatabaseName string = 'backup-state'
+
+@description('Cosmos DB SQL container name for manifest-state-store.')
+param cosmosManifestContainerName string = 'manifest-state'
+
 @description('Optional Azure client ID for a user-assigned managed identity used by Dapr Azure components. Leave empty for system-assigned Container App identities.')
 param daprAzureClientId string = ''
 
@@ -109,23 +118,32 @@ resource daprSecretStore 'Microsoft.App/managedEnvironments/daprComponents@2023-
 }
 
 // ---------------------------------------------------------------------------
-// Dapr component: manifest state-store (Azure Table Storage via managed identity)
+// Dapr component: manifest state-store (Azure Cosmos DB for NoSQL via managed identity)
 // ---------------------------------------------------------------------------
 
 resource daprManifestStateStore 'Microsoft.App/managedEnvironments/daprComponents@2023-05-01' = {
   parent: containerAppEnv
   name: 'manifest-state-store'
   properties: {
-    componentType: 'state.azure.tablestorage'
+    componentType: 'state.azure.cosmosdb'
     version: 'v1'
+    initTimeout: '5m'
     metadata: concat([
       {
-        name: 'accountName'
-        value: dataStorageAccountName
+        name: 'url'
+        value: cosmosAccountEndpoint
       }
       {
-        name: 'tableName'
-        value: 'manifeststate'
+        name: 'database'
+        value: cosmosDatabaseName
+      }
+      {
+        name: 'collection'
+        value: cosmosManifestContainerName
+      }
+      {
+        name: 'partitionKey'
+        value: 'partitionKey'
       }
     ], daprAzureIdentityMetadata)
   }
