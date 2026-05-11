@@ -155,34 +155,8 @@ module daprInfra 'modules/dapr-infra.bicep' = {
   }
 }
 
-// Update Cosmos DB firewall to allow Azure services (needed for Container Apps)
-resource cosmosAccountNetworkConfig 'Microsoft.DocumentDB/databaseAccounts@2024-05-15' = {
+resource cosmosAccount 'Microsoft.DocumentDB/databaseAccounts@2024-05-15' existing = {
   name: cosmosAccountNameEffective
-  location: location
-  properties: {
-    databaseAccountOfferType: 'Standard'
-    locations: [
-      {
-        locationName: location
-        failoverPriority: 0
-        isZoneRedundant: false
-      }
-    ]
-    consistencyPolicy: {
-      defaultConsistencyLevel: 'Session'
-    }
-    publicNetworkAccess: 'Enabled'
-    ipRules: [
-      {
-        ipAddressOrRange: '0.0.0.0' // Special Azure rule: allows access from Azure datacenters
-      }
-    ]
-    isVirtualNetworkFilterEnabled: false
-    enableAutomaticFailover: false
-    enableMultipleWriteLocations: false
-    capabilities: []
-  }
-  tags: commonTags
 }
 
 resource dataStorageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' existing = {
@@ -204,7 +178,7 @@ resource registryPullIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@
 }
 
 resource cosmosDatabase 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases@2024-05-15' = {
-  parent: cosmosAccountNetworkConfig
+  parent: cosmosAccount
   name: cosmosDatabaseName
   properties: {
     resource: {
@@ -285,7 +259,7 @@ module compute 'modules/compute.bicep' = if (deployContainerApps) {
     staleStagingCleanupMaxDeletes: staleStagingCleanupMaxDeletes
     staleStagingCleanupDryRun: staleStagingCleanupDryRun
     apiMinReplicas: apiMinReplicas
-    cosmosAccountEndpoint: cosmosAccountNetworkConfig.properties.documentEndpoint
+    cosmosAccountEndpoint: cosmosAccount.properties.documentEndpoint
     cosmosDatabaseName: cosmosDatabaseName
     cosmosManifestContainerName: cosmosManifestContainerName
     cosmosDeviceRegistryContainerName: cosmosDeviceRegistryContainerName
@@ -385,22 +359,22 @@ resource roleAssignWorkerServiceBusDataReceiver 'Microsoft.Authorization/roleAss
 }
 
 resource roleAssignCosmosDataContributor 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-05-15' = if (deployContainerApps) {
-  name: guid(resourceGroup().id, cosmosAccountNetworkConfig.name, 'ca-${nameSuffix}', 'cosmos-data-contributor')
-  parent: cosmosAccountNetworkConfig
+  name: guid(resourceGroup().id, cosmosAccount.name, 'ca-${nameSuffix}', 'cosmos-data-contributor')
+  parent: cosmosAccount
   properties: {
-    roleDefinitionId: resourceId('Microsoft.DocumentDB/databaseAccounts/sqlRoleDefinitions', cosmosAccountNetworkConfig.name, '00000000-0000-0000-0000-000000000002')
+    roleDefinitionId: resourceId('Microsoft.DocumentDB/databaseAccounts/sqlRoleDefinitions', cosmosAccount.name, '00000000-0000-0000-0000-000000000002')
     principalId: compute!.outputs.principalId
-    scope: cosmosAccountNetworkConfig.id
+    scope: cosmosAccount.id
   }
 }
 
 resource roleAssignWorkerCosmosDataContributor 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-05-15' = if (deployContainerApps) {
-  name: guid(resourceGroup().id, cosmosAccountNetworkConfig.name, 'ca-${nameSuffix}-worker', 'cosmos-data-contributor')
-  parent: cosmosAccountNetworkConfig
+  name: guid(resourceGroup().id, cosmosAccount.name, 'ca-${nameSuffix}-worker', 'cosmos-data-contributor')
+  parent: cosmosAccount
   properties: {
-    roleDefinitionId: resourceId('Microsoft.DocumentDB/databaseAccounts/sqlRoleDefinitions', cosmosAccountNetworkConfig.name, '00000000-0000-0000-0000-000000000002')
+    roleDefinitionId: resourceId('Microsoft.DocumentDB/databaseAccounts/sqlRoleDefinitions', cosmosAccount.name, '00000000-0000-0000-0000-000000000002')
     principalId: compute!.outputs.workerPrincipalId
-    scope: cosmosAccountNetworkConfig.id
+    scope: cosmosAccount.id
   }
 }
 
