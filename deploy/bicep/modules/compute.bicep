@@ -111,31 +111,6 @@ var gatewayAuthSecrets = gatewayAuthEnabled ? [
     value: gatewayAuthClientSecret
   }
 ] : []
-var gatewayAuthConfiguration = gatewayAuthEnabled ? {
-  auth: {
-    platform: {
-      enabled: true
-    }
-    globalValidation: {
-      unauthenticatedClientAction: 'RedirectToLoginPage'
-    }
-    identityProviders: {
-      azureActiveDirectory: {
-        enabled: true
-        registration: {
-          clientId: gatewayAuthClientId
-          clientSecretSettingName: 'gateway-auth-client-secret'
-          openIdIssuer: '${environment().authentication.loginEndpoint}${tenant().tenantId}/v2.0'
-        }
-        validation: {
-          allowedAudiences: empty(gatewayAuthAllowedAudiences) ? [
-            gatewayAuthClientId
-          ] : gatewayAuthAllowedAudiences
-        }
-      }
-    }
-  }
-} : {}
 
 // ---------------------------------------------------------------------------
 // Container App Environment
@@ -551,7 +526,7 @@ resource gatewayContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
   }
   properties: {
     managedEnvironmentId: containerAppEnv.id
-    configuration: union({
+    configuration: {
       activeRevisionsMode: 'Single'
       ingress: {
         external: true
@@ -571,7 +546,7 @@ resource gatewayContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
         }
       ]
       secrets: gatewayAuthSecrets
-    }, gatewayAuthConfiguration)
+    }
     template: {
       scale: {
         minReplicas: gatewayMinReplicas
@@ -612,6 +587,34 @@ resource gatewayContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
     }
   }
   tags: tags
+}
+
+resource gatewayAuthConfig 'Microsoft.App/containerApps/authConfigs@2024-03-01' = if (gatewayAuthEnabled) {
+  parent: gatewayContainerApp
+  name: 'current'
+  properties: {
+    platform: {
+      enabled: true
+    }
+    globalValidation: {
+      unauthenticatedClientAction: 'RedirectToLoginPage'
+    }
+    identityProviders: {
+      azureActiveDirectory: {
+        enabled: true
+        registration: {
+          clientId: gatewayAuthClientId
+          clientSecretSettingName: 'gateway-auth-client-secret'
+          openIdIssuer: '${environment().authentication.loginEndpoint}${tenant().tenantId}/v2.0'
+        }
+        validation: {
+          allowedAudiences: empty(gatewayAuthAllowedAudiences) ? [
+            gatewayAuthClientId
+          ] : gatewayAuthAllowedAudiences
+        }
+      }
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
