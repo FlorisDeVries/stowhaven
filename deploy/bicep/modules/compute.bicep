@@ -347,6 +347,14 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
               name: 'ASPNETCORE_ENVIRONMENT'
               value: 'Production'
             }
+            {
+              name: 'Swagger__WorkerBaseUrl'
+              value: 'http://ca-${nameSuffix}-worker'
+            }
+            {
+              name: 'Swagger__WorkerProxyPath'
+              value: '/worker'
+            }
           ]
         }
       ]
@@ -373,6 +381,17 @@ resource workerContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
         appId: 'backup-worker'
         appPort: 8080
         appProtocol: 'http'
+      }
+      ingress: {
+        external: false
+        targetPort: 8080
+        transport: 'http'
+        traffic: [
+          {
+            weight: 100
+            latestRevision: true
+          }
+        ]
       }
       registries: [
         {
@@ -468,4 +487,5 @@ output containerAppName string = containerApp.name
 output containerAppFqdn string = containerApp.properties.configuration.ingress.fqdn
 output principalId string = containerApp.identity.principalId
 output workerContainerAppName string = workerContainerApp.name
+output workerContainerAppFqdn string = workerContainerApp.properties.configuration.ingress.fqdn
 output workerPrincipalId string = workerContainerApp.identity.principalId
