@@ -26,6 +26,9 @@ env:
   PARAMETERS_FILE: deploy/bicep/main.bicepparam
   API_IMAGE_NAME: backup-api
   WORKER_IMAGE_NAME: backup-worker
+  GATEWAY_IMAGE_NAME: gateway
+  GATEWAY_AUTH_CLIENT_ID: ${{ vars.GATEWAY_AUTH_CLIENT_ID }}
+  GATEWAY_AUTH_CLIENT_SECRET: ${{ secrets.GATEWAY_AUTH_CLIENT_SECRET }}
 
 permissions:
   contents: read
@@ -110,6 +113,7 @@ jobs:
             --template-file "$TEMPLATE_FILE" \
             --parameters "$PARAMETERS_FILE" \
             --parameters imageTag="$IMAGE_TAG" deployContainerApps=true \
+            --parameters gatewayAuthClientId="$GATEWAY_AUTH_CLIENT_ID" gatewayAuthClientSecret="$GATEWAY_AUTH_CLIENT_SECRET" \
             --output none
 
   deploy-foundation:
@@ -206,6 +210,20 @@ jobs:
           cache-from: type=gha,scope=backup-worker
           cache-to: type=gha,mode=max,scope=backup-worker
 
+      - name: Build and push Gateway image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: src/services/gateway/Dockerfile
+          push: true
+          tags: |
+            ${{ needs.deploy-foundation.outputs.acr_login_server }}/${{ env.GATEWAY_IMAGE_NAME }}:${{ needs.deploy-foundation.outputs.image_tag }}
+            ${{ needs.deploy-foundation.outputs.acr_login_server }}/${{ env.GATEWAY_IMAGE_NAME }}:latest
+          build-args: |
+            BUILD_VERSION=${{ needs.deploy-foundation.outputs.image_tag }}
+          cache-from: type=gha,scope=gateway
+          cache-to: type=gha,mode=max,scope=gateway
+
   deploy-apps:
     name: Deploy Container Apps
     runs-on: ubuntu-latest
@@ -234,6 +252,7 @@ jobs:
             --template-file "$TEMPLATE_FILE" \
             --parameters "$PARAMETERS_FILE" \
             --parameters imageTag="$IMAGE_TAG" deployContainerApps=true \
+            --parameters gatewayAuthClientId="$GATEWAY_AUTH_CLIENT_ID" gatewayAuthClientSecret="$GATEWAY_AUTH_CLIENT_SECRET" \
             --output table
 
       - name: Show Container App URL
@@ -241,5 +260,5 @@ jobs:
           az deployment group show \
             --resource-group "$AZURE_RESOURCE_GROUP" \
             --name "apps-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
-            --query "properties.outputs.{apiUrl:containerAppUrl.value,apiName:containerAppName.value,workerName:workerContainerAppName.value}" \
+            --query "properties.outputs.{apiUrl:containerAppUrl.value,gatewayUrl:gatewayContainerAppUrl.value,apiName:containerAppName.value,workerName:workerContainerAppName.value,gatewayName:gatewayContainerAppName.value}" \
             --output table

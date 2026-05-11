@@ -189,6 +189,28 @@ public static class ProgramExtensions
 
     public static void UseCustomSwagger(this IApplicationBuilder builder, string applicationName)
     {
+        var configuration = builder.ApplicationServices.GetRequiredService<IConfiguration>();
+        var requiredGatewayHeaderName = configuration["Swagger:RequiredGatewayHeaderName"];
+        var requiredGatewayHeaderValue = configuration["Swagger:RequiredGatewayHeaderValue"];
+
+        if (!string.IsNullOrWhiteSpace(requiredGatewayHeaderName) &&
+            !string.IsNullOrWhiteSpace(requiredGatewayHeaderValue))
+        {
+            builder.UseWhen(
+                context => context.Request.Path.StartsWithSegments("/swagger"),
+                branch => branch.Use(async (context, next) =>
+                {
+                    if (!context.Request.Headers.TryGetValue(requiredGatewayHeaderName, out var headerValue) ||
+                        !StringComparer.Ordinal.Equals(headerValue.ToString(), requiredGatewayHeaderValue))
+                    {
+                        context.Response.StatusCode = StatusCodes.Status404NotFound;
+                        return;
+                    }
+
+                    await next(context).ConfigureAwait(false);
+                }));
+        }
+
         builder.UseSwagger(c =>
         {
             c.PreSerializeFilters.Add((swagger, httpReq) =>
@@ -205,7 +227,6 @@ public static class ProgramExtensions
         {
             c.SwaggerEndpoint("main/swagger.json", applicationName);
 
-            var configuration = builder.ApplicationServices.GetRequiredService<IConfiguration>();
             var workerBaseUrl = configuration["Swagger:WorkerBaseUrl"];
 
             if (!string.IsNullOrWhiteSpace(workerBaseUrl))

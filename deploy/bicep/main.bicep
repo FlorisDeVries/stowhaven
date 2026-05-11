@@ -59,6 +59,26 @@ param staleStagingCleanupDryRun bool = false
 @description('Minimum API replicas. Keep at least 1 when Dapr cron bindings must fire without external traffic.')
 param apiMinReplicas int = 1
 
+@description('Minimum Gateway replicas. Keep 0 for lowest cost; the app scales up on HTTP requests.')
+param gatewayMinReplicas int = 0
+
+@description('Optional Microsoft Entra application client ID for Container Apps built-in authentication on the Gateway. Leave empty to deploy without built-in auth.')
+param gatewayAuthClientId string = ''
+
+@description('Optional Microsoft Entra application client secret for Container Apps built-in authentication on the Gateway.')
+@secure()
+param gatewayAuthClientSecret string = ''
+
+@description('Optional allowed token audiences for Gateway built-in auth. Defaults to the Gateway auth client ID when auth is enabled.')
+param gatewayAuthAllowedAudiences array = []
+
+@description('Header name used by the Gateway to access otherwise hidden service Swagger endpoints.')
+param gatewayProxyHeaderName string = 'X-Backup-Gateway'
+
+@description('Optional shared header value used by the Gateway to access otherwise hidden service Swagger endpoints. Leave empty to derive a stable deployment-specific value.')
+@secure()
+param gatewayProxyHeaderValue string = ''
+
 @description('Name of the existing, manually created Cosmos DB account used by the production Dapr state-store components. Leave empty to derive from the deployment name suffix.')
 param cosmosAccountName string = ''
 
@@ -259,6 +279,12 @@ module compute 'modules/compute.bicep' = if (deployContainerApps) {
     staleStagingCleanupMaxDeletes: staleStagingCleanupMaxDeletes
     staleStagingCleanupDryRun: staleStagingCleanupDryRun
     apiMinReplicas: apiMinReplicas
+    gatewayMinReplicas: gatewayMinReplicas
+    gatewayAuthClientId: gatewayAuthClientId
+    gatewayAuthClientSecret: gatewayAuthClientSecret
+    gatewayAuthAllowedAudiences: gatewayAuthAllowedAudiences
+    gatewayProxyHeaderName: gatewayProxyHeaderName
+    gatewayProxyHeaderValue: gatewayProxyHeaderValue
     cosmosAccountEndpoint: cosmosAccount.properties.documentEndpoint
     cosmosDatabaseName: cosmosDatabaseName
     cosmosManifestContainerName: cosmosManifestContainerName
@@ -385,6 +411,8 @@ resource roleAssignWorkerCosmosDataContributor 'Microsoft.DocumentDB/databaseAcc
 output containerAppName string = deployContainerApps ? compute!.outputs.containerAppName : ''
 output containerAppUrl string = deployContainerApps ? 'https://${compute!.outputs.containerAppFqdn}' : ''
 output workerContainerAppName string = deployContainerApps ? compute!.outputs.workerContainerAppName : ''
+output gatewayContainerAppName string = deployContainerApps ? compute!.outputs.gatewayContainerAppName : ''
+output gatewayContainerAppUrl string = deployContainerApps ? 'https://${compute!.outputs.gatewayContainerAppFqdn}' : ''
 output dataStorageAccountName string = storage.outputs.dataStorageAccountName
 output containerName string = storage.outputs.containerName
 output containerRegistryName string = registry.outputs.name

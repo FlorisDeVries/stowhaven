@@ -59,6 +59,26 @@ param staleStagingCleanupDryRun bool = false
 @description('Minimum API replicas. Keep at least 1 when Dapr cron bindings must fire without external traffic.')
 param apiMinReplicas int = 1
 
+@description('Minimum Gateway replicas. Keep 0 for lowest cost; the app scales up on HTTP requests.')
+param gatewayMinReplicas int = 0
+
+@description('Optional Microsoft Entra application client ID for Container Apps built-in authentication on the Gateway. Leave empty to deploy without built-in auth.')
+param gatewayAuthClientId string = ''
+
+@description('Optional Microsoft Entra application client secret for Container Apps built-in authentication on the Gateway.')
+@secure()
+param gatewayAuthClientSecret string = ''
+
+@description('Optional allowed token audiences for Gateway built-in auth. Defaults to the Gateway auth client ID when auth is enabled.')
+param gatewayAuthAllowedAudiences array = []
+
+@description('Header name used by the Gateway to access otherwise hidden service Swagger endpoints.')
+param gatewayProxyHeaderName string = 'X-Backup-Gateway'
+
+@description('Optional shared header value used by the Gateway to access otherwise hidden service Swagger endpoints. Leave empty to derive a stable deployment-specific value.')
+@secure()
+param gatewayProxyHeaderValue string = ''
+
 @description('Cosmos DB account endpoint for the Dapr manifest-state-store component.')
 param cosmosAccountEndpoint string
 
@@ -83,6 +103,39 @@ var daprAzureIdentityMetadata = empty(daprAzureClientId) ? [] : [
     value: daprAzureClientId
   }
 ]
+var gatewayAuthEnabled = !empty(gatewayAuthClientId) && !empty(gatewayAuthClientSecret)
+var gatewayProxyHeaderValueEffective = empty(gatewayProxyHeaderValue) ? uniqueString(subscription().id, resourceGroup().id, nameSuffix, 'gateway') : gatewayProxyHeaderValue
+var gatewayAuthSecrets = gatewayAuthEnabled ? [
+  {
+    name: 'gateway-auth-client-secret'
+    value: gatewayAuthClientSecret
+  }
+] : []
+var gatewayAuthConfiguration = gatewayAuthEnabled ? {
+  auth: {
+    platform: {
+      enabled: true
+    }
+    globalValidation: {
+      unauthenticatedClientAction: 'RedirectToLoginPage'
+    }
+    identityProviders: {
+      azureActiveDirectory: {
+        enabled: true
+        registration: {
+          clientId: gatewayAuthClientId
+          clientSecretSettingName: 'gateway-auth-client-secret'
+          openIdIssuer: '${environment().authentication.loginEndpoint}${tenant().tenantId}/v2.0'
+        }
+        validation: {
+          allowedAudiences: empty(gatewayAuthAllowedAudiences) ? [
+            gatewayAuthClientId
+          ] : gatewayAuthAllowedAudiences
+        }
+      }
+    }
+  }
+} : {}
 
 // ---------------------------------------------------------------------------
 // Container App Environment
@@ -348,12 +401,12 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
               value: 'Production'
             }
             {
-              name: 'Swagger__WorkerBaseUrl'
-              value: 'http://ca-${nameSuffix}-worker'
+              name: 'Swagger__RequiredGatewayHeaderName'
+              value: gatewayProxyHeaderName
             }
             {
-              name: 'Swagger__WorkerProxyPath'
-              value: '/worker'
+              name: 'Swagger__RequiredGatewayHeaderValue'
+              value: gatewayProxyHeaderValueEffective
             }
           ]
         }
@@ -471,6 +524,88 @@ resource workerContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
               name: 'ASPNETCORE_ENVIRONMENT'
               value: 'Production'
             }
+            {
+              name: 'Swagger__RequiredGatewayHeaderName'
+              value: gatewayProxyHeaderName
+            }
+            {
+              name: 'Swagger__RequiredGatewayHeaderValue'
+              value: gatewayProxyHeaderValueEffective
+            }
+          ]
+        }
+      ]
+    }
+  }
+  tags: tags
+}
+
+resource gatewayContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
+  name: 'ca-${nameSuffix}-gateway'
+  location: location
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${registryPullIdentityId}': {}
+    }
+  }
+  properties: {
+    managedEnvironmentId: containerAppEnv.id
+    configuration: union({
+      activeRevisionsMode: 'Single'
+      ingress: {
+        external: true
+        targetPort: 8080
+        transport: 'http'
+        traffic: [
+          {
+            weight: 100
+            latestRevision: true
+          }
+        ]
+      }
+      registries: [
+        {
+          server: registryLoginServer
+          identity: registryPullIdentityId
+        }
+      ]
+      secrets: gatewayAuthSecrets
+    }, gatewayAuthConfiguration)
+    template: {
+      scale: {
+        minReplicas: gatewayMinReplicas
+        maxReplicas: 2
+      }
+      containers: [
+        {
+          name: 'gateway'
+          image: '${registryLoginServer}/gateway:${imageTag}'
+          resources: {
+            cpu: json('0.25')
+            memory: '0.5Gi'
+          }
+          env: [
+            {
+              name: 'ASPNETCORE_ENVIRONMENT'
+              value: 'Production'
+            }
+            {
+              name: 'Gateway__ApiBaseUrl'
+              value: 'https://${containerApp.properties.configuration.ingress.fqdn}'
+            }
+            {
+              name: 'Gateway__WorkerBaseUrl'
+              value: 'https://${workerContainerApp.properties.configuration.ingress.fqdn}'
+            }
+            {
+              name: 'Gateway__HeaderName'
+              value: gatewayProxyHeaderName
+            }
+            {
+              name: 'Gateway__HeaderValue'
+              value: gatewayProxyHeaderValueEffective
+            }
           ]
         }
       ]
@@ -489,3 +624,5 @@ output principalId string = containerApp.identity.principalId
 output workerContainerAppName string = workerContainerApp.name
 output workerContainerAppFqdn string = workerContainerApp.properties.configuration.ingress.fqdn
 output workerPrincipalId string = workerContainerApp.identity.principalId
+output gatewayContainerAppName string = gatewayContainerApp.name
+output gatewayContainerAppFqdn string = gatewayContainerApp.properties.configuration.ingress.fqdn
