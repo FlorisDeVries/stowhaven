@@ -1,21 +1,51 @@
-# Dapr Pub/Sub component for local development using Redis Streams.
-#
-# Production uses Azure Service Bus Topics via Bicep. Azure Storage Queues are not
-# supported as a Dapr pub/sub broker, so local Docker Compose uses Redis instead.
+# Dapr binding components for local development using Azurite Storage Queues.
 apiVersion: dapr.io/v1alpha1
 kind: Component
 metadata:
-    name: backup-events-pubsub
+    name: backup-events-output
 spec:
-    type: pubsub.redis
+    type: bindings.azure.storagequeues
     version: v1
     metadata:
-        - name: redisHost
-          value: redis:6379
-        - name: redisPassword
-          value: ""
-        - name: consumerID
-          value: backup-worker
-        - name: enableTLS
-          value: "false"
+        - name: accountName
+          value: devstoreaccount1
+        - name: accountKey
+          value: Eby8vdM02xNo8CmXUq4u0xHa1S5gN7xjzq6pJxB5E4kG/5GPxM7C4F2q6C3H4mJ7E7sQ8wN5c1mC2rV7f9g==
+        - name: queueName
+          value: backup-events
+        - name: endpoint
+          value: http://azurite:10001/devstoreaccount1
+        - name: direction
+          value: output
+        - name: ttlInSeconds
+          value: "604800"
+scopes:
+    - backup-api
+---
+apiVersion: dapr.io/v1alpha1
+kind: Component
+metadata:
+    name: backup-events-input
+spec:
+    type: bindings.azure.storagequeues
+    version: v1
+    metadata:
+        - name: accountName
+          value: devstoreaccount1
+        - name: accountKey
+          value: Eby8vdM02xNo8CmXUq4u0xHa1S5gN7xjzq6pJxB5E4kG/5GPxM7C4F2q6C3H4mJ7E7sQ8wN5c1mC2rV7f9g==
+        - name: queueName
+          value: backup-events
+        - name: endpoint
+          value: http://azurite:10001/devstoreaccount1
+        - name: direction
+          value: input
+        - name: route
+          value: /api/backupevents/backup-run-committed
+        - name: pollingInterval
+          value: 10s
+        - name: visibilityTimeout
+          value: 10m
+scopes:
+    - backup-worker
 

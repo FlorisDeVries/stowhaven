@@ -78,7 +78,6 @@ jobs:
             Microsoft.KeyVault \
             Microsoft.ManagedIdentity \
             Microsoft.OperationalInsights \
-            Microsoft.ServiceBus \
             Microsoft.Storage; do
             state=$(az provider show --namespace "$namespace" --query registrationState --output tsv 2>/dev/null || echo "NotRegistered")
             echo "$namespace: $state"

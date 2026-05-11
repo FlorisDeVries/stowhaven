@@ -46,6 +46,16 @@ resource backupsContainer 'Microsoft.Storage/storageAccounts/blobServices/contai
   }
 }
 
+resource dataStorageQueueService 'Microsoft.Storage/storageAccounts/queueServices@2023-01-01' = {
+  parent: dataStorageAccount
+  name: 'default'
+}
+
+resource backupEventsQueue 'Microsoft.Storage/storageAccounts/queueServices/queues@2023-01-01' = {
+  parent: dataStorageQueueService
+  name: 'backup-events'
+}
+
 var backupsContainerPrefix = '${backupsContainer.name}/'
 
 resource lifecyclePolicy 'Microsoft.Storage/storageAccounts/managementPolicies@2023-01-01' = {
@@ -145,3 +155,4 @@ resource lifecyclePolicy 'Microsoft.Storage/storageAccounts/managementPolicies@2
 output dataStorageAccountName string = dataStorageAccount.name
 output dataStorageAccountId string = dataStorageAccount.id
 output containerName string = backupsContainer.name
+output backupEventsQueueName string = backupEventsQueue.name

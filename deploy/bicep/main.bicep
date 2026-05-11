@@ -122,8 +122,7 @@ var cosmosAccountNameEffective = empty(cosmosAccountName) ? 'cosmos-${nameSuffix
 // Role definition IDs (built-in)
 var roleStorageBlobDataContributor = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
 var roleStorageBlobDelegator       = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'db58b8e5-c6ad-4a2a-8342-4190687cbf4a')
-var roleServiceBusDataSender       = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '69a216fc-b8fb-44d8-bc22-1f3c2cd27a39')
-var roleServiceBusDataReceiver     = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0')
+var roleStorageQueueDataContributor = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '974c5e8b-45b9-4653-ba55-5f855dd0fb88')
 var roleAcrPull                    = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')
 var roleKeyVaultSecretsUser        = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')
 
@@ -167,7 +166,6 @@ module daprInfra 'modules/dapr-infra.bicep' = {
   name: 'dapr-infra'
   params: {
     location: location
-    nameSuffix: nameSuffix
     keyVaultName: keyVaultName
     tenantId: tenant().tenantId
     keyVaultNetworkDefaultAction: keyVaultNetworkDefaultAction
@@ -269,8 +267,8 @@ module compute 'modules/compute.bicep' = if (deployContainerApps) {
     dataStorageAccountName: storage.outputs.dataStorageAccountName
     containerName: storage.outputs.containerName
     keyVaultName: daprInfra.outputs.keyVaultName
-    serviceBusNamespaceName: daprInfra.outputs.serviceBusNamespaceName
-    serviceBusScaleConnectionString: daprInfra.outputs.serviceBusScaleConnectionString
+    backupEventsQueueName: storage.outputs.backupEventsQueueName
+    backupEventsQueueScaleConnectionString: 'DefaultEndpointsProtocol=https;AccountName=${storage.outputs.dataStorageAccountName};AccountKey=${dataStorageAccount.listKeys().keys[0].value};EndpointSuffix=${environment().suffixes.storage}'
     imageTag: imageTag
     allowCopyDeleteFallback: allowCopyDeleteFallback
     enableSasIpRestriction: enableSasIpRestriction
@@ -297,10 +295,6 @@ module compute 'modules/compute.bicep' = if (deployContainerApps) {
     cosmosDeviceRegistryContainer
     roleAssignRegistryPullIdentityAcrPull
   ]
-}
-
-resource serviceBusNamespace 'Microsoft.ServiceBus/namespaces@2022-10-01-preview' existing = {
-  name: 'sb-${nameSuffix}'
 }
 
 // ---------------------------------------------------------------------------
@@ -340,6 +334,28 @@ resource roleAssignStorageDelegator 'Microsoft.Authorization/roleAssignments@202
   }
 }
 
+resource roleAssignStorageQueueContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployContainerApps) {
+  name: guid(dataStorageAccount.id, 'ca-${nameSuffix}', 'queue-contributor')
+  scope: dataStorageAccount
+  properties: {
+    roleDefinitionId: roleStorageQueueDataContributor
+    principalId: compute!.outputs.principalId
+    principalType: 'ServicePrincipal'
+    description: 'Container App – Storage Queue Data Contributor on backup events queue'
+  }
+}
+
+resource roleAssignWorkerStorageQueueContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployContainerApps) {
+  name: guid(dataStorageAccount.id, 'ca-${nameSuffix}-worker', 'queue-contributor')
+  scope: dataStorageAccount
+  properties: {
+    roleDefinitionId: roleStorageQueueDataContributor
+    principalId: compute!.outputs.workerPrincipalId
+    principalType: 'ServicePrincipal'
+    description: 'Worker Container App – Storage Queue Data Contributor on backup events queue'
+  }
+}
+
 resource roleAssignKeyVaultSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployContainerApps) {
   name: guid(keyVault.id, 'ca-${nameSuffix}', 'kv-secrets-user')
   scope: keyVault
@@ -359,28 +375,6 @@ resource roleAssignWorkerKeyVaultSecretsUser 'Microsoft.Authorization/roleAssign
     principalId: compute!.outputs.workerPrincipalId
     principalType: 'ServicePrincipal'
     description: 'Worker Container App - Key Vault Secrets User'
-  }
-}
-
-resource roleAssignServiceBusDataSender 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployContainerApps) {
-  name: guid(serviceBusNamespace.id, 'ca-${nameSuffix}', 'sb-sender')
-  scope: serviceBusNamespace
-  properties: {
-    roleDefinitionId: roleServiceBusDataSender
-    principalId: compute!.outputs.principalId
-    principalType: 'ServicePrincipal'
-    description: 'API Container App - Service Bus Data Sender for Dapr pub/sub publishing'
-  }
-}
-
-resource roleAssignWorkerServiceBusDataReceiver 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployContainerApps) {
-  name: guid(serviceBusNamespace.id, 'ca-${nameSuffix}-worker', 'sb-receiver')
-  scope: serviceBusNamespace
-  properties: {
-    roleDefinitionId: roleServiceBusDataReceiver
-    principalId: compute!.outputs.workerPrincipalId
-    principalType: 'ServicePrincipal'
-    description: 'Worker Container App - Service Bus Data Receiver for Dapr pub/sub subscription'
   }
 }
 

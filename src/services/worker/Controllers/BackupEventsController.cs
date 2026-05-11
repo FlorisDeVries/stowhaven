@@ -1,5 +1,3 @@
-using Dapr;
-using FlorisDeV.BackupContracts.Constants;
 using FlorisDeV.BackupContracts.Events;
 using FlorisDeV.BackupWorker.Services;
 using Microsoft.AspNetCore.Authorization;
@@ -8,7 +6,7 @@ using Microsoft.AspNetCore.Mvc;
 namespace FlorisDeV.BackupWorker.Controllers;
 
 /// <summary>
-/// Handles Dapr pub/sub events for backup processing.
+/// Handles Dapr input binding events for backup processing.
 /// </summary>
 [AllowAnonymous] // Dapr sidecar invokes this, not external users
 [ApiController]
@@ -19,7 +17,7 @@ public partial class BackupEventsController(
 ) : ControllerBase
 {
     /// <summary>
-    /// Handles BackupRunCommitted events from the backup-events topic.
+    /// Handles BackupRunCommitted events from the backup-events Azure Storage Queue.
     /// Invoked by Dapr sidecar when a message is received.
     /// </summary>
     /// <remarks>
@@ -31,7 +29,6 @@ public partial class BackupEventsController(
     /// 1. Status checks prevent reprocessing completed runs
     /// 2. Blob operations are idempotent (copy overwrites, delete is idempotent)
     /// </remarks>
-    [Topic(DaprComponents.BackupEventsPubSub, "backup-events")]
     [HttpPost("backup-run-committed")]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status500InternalServerError)]

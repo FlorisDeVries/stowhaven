@@ -28,12 +28,12 @@ param containerName string
 @description('Key Vault name for Dapr secret-store component')
 param keyVaultName string
 
-@description('Service Bus namespace name for Dapr pub/sub component')
-param serviceBusNamespaceName string
+@description('Storage Queue name for backup events.')
+param backupEventsQueueName string = 'backup-events'
 
-@description('Least-privilege Service Bus Listen connection string used only by the Container Apps scaler')
+@description('Storage account connection string used only by the Container Apps queue scaler.')
 @secure()
-param serviceBusScaleConnectionString string
+param backupEventsQueueScaleConnectionString string
 
 @description('Container image tag to deploy')
 param imageTag string = 'latest'
@@ -216,37 +216,78 @@ resource daprDeviceRegistryStateStore 'Microsoft.App/managedEnvironments/daprCom
 }
 
 // ---------------------------------------------------------------------------
-// Dapr component: pub/sub (Azure Service Bus via managed identity)
+// Dapr component: output binding for backup events (Azure Storage Queue via managed identity)
 // ---------------------------------------------------------------------------
 
-resource daprPubSub 'Microsoft.App/managedEnvironments/daprComponents@2023-05-01' = {
+resource daprBackupEventsOutputBinding 'Microsoft.App/managedEnvironments/daprComponents@2023-05-01' = {
   parent: containerAppEnv
-  name: 'backup-events-pubsub'
+  name: 'backup-events-output'
   properties: {
-    componentType: 'pubsub.azure.servicebus.topics'
+    componentType: 'bindings.azure.storagequeues'
     version: 'v1'
     metadata: concat([
       {
-        name: 'namespaceName'
-        value: '${serviceBusNamespaceName}.servicebus.windows.net'
+        name: 'accountName'
+        value: dataStorageAccountName
       }
       {
-        name: 'consumerID'
-        value: 'backup-worker'
+        name: 'queueName'
+        value: backupEventsQueueName
       }
       {
-        name: 'maxConcurrentHandlers'
-        value: '8'
+        name: 'direction'
+        value: 'output'
       }
       {
-        name: 'timeoutInSec'
-        value: '300'
-      }
-      {
-        name: 'maxRetryCount'
-        value: '3'
+        name: 'ttlInSeconds'
+        value: '604800'
       }
     ], daprAzureIdentityMetadata)
+    scopes: [
+      'backup-api'
+    ]
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Dapr component: input binding for backup events (Azure Storage Queue via managed identity)
+// ---------------------------------------------------------------------------
+
+resource daprBackupEventsInputBinding 'Microsoft.App/managedEnvironments/daprComponents@2023-05-01' = {
+  parent: containerAppEnv
+  name: 'backup-events-input'
+  properties: {
+    componentType: 'bindings.azure.storagequeues'
+    version: 'v1'
+    metadata: concat([
+      {
+        name: 'accountName'
+        value: dataStorageAccountName
+      }
+      {
+        name: 'queueName'
+        value: backupEventsQueueName
+      }
+      {
+        name: 'direction'
+        value: 'input'
+      }
+      {
+        name: 'route'
+        value: '/api/backupevents/backup-run-committed'
+      }
+      {
+        name: 'pollingInterval'
+        value: '10s'
+      }
+      {
+        name: 'visibilityTimeout'
+        value: '10m'
+      }
+    ], daprAzureIdentityMetadata)
+    scopes: [
+      'backup-worker'
+    ]
   }
 }
 
@@ -376,6 +417,10 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
               value: 'Production'
             }
             {
+              name: 'DaprHealth__EnablePubSubProbe'
+              value: 'false'
+            }
+            {
               name: 'Swagger__RequiredGatewayHeaderName'
               value: gatewayProxyHeaderName
             }
@@ -429,8 +474,8 @@ resource workerContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
       ]
       secrets: [
         {
-          name: 'servicebus-scale-connection-string'
-          value: serviceBusScaleConnectionString
+          name: 'backup-events-queue-scale-connection-string'
+          value: backupEventsQueueScaleConnectionString
         }
       ]
     }
@@ -442,15 +487,15 @@ resource workerContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
           {
             name: 'backup-events'
             custom: {
-              type: 'azure-servicebus'
+              type: 'azure-queue'
               metadata: {
-                topicName: 'backup-events'
-                subscriptionName: 'backup-worker'
-                messageCount: '1'
+                accountName: dataStorageAccountName
+                queueName: backupEventsQueueName
+                queueLength: '1'
               }
               auth: [
                 {
-                  secretRef: 'servicebus-scale-connection-string'
+                  secretRef: 'backup-events-queue-scale-connection-string'
                   triggerParameter: 'connection'
                 }
               ]
@@ -498,6 +543,10 @@ resource workerContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
             {
               name: 'ASPNETCORE_ENVIRONMENT'
               value: 'Production'
+            }
+            {
+              name: 'DaprHealth__EnablePubSubProbe'
+              value: 'false'
             }
             {
               name: 'Swagger__RequiredGatewayHeaderName'

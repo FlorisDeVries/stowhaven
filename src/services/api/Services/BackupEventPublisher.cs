@@ -49,11 +49,11 @@ public partial class BackupEventPublisher(
 
             LogPublishingEvent(logger, commitJob.DeviceId, commitJob.RunId, backupEvent.StagingPath, manifestPath);
 
-            await daprClient.PublishEventAsync(
-                DaprComponents.BackupEventsPubSub,
-                "backup-events",
+            await daprClient.InvokeBindingAsync(
+                DaprComponents.BackupEventsOutputBinding,
+                "create",
                 backupEvent,
-                cancellationToken);
+                cancellationToken: cancellationToken);
 
             stopwatch.Stop();
             telemetry.BackupEventsPublished.Add(1, metricTags);
