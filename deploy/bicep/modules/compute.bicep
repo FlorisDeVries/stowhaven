@@ -97,12 +97,6 @@ param daprAzureClientId string = ''
 @description('Common resource tags')
 param tags object
 
-var daprAzureIdentityMetadata = empty(daprAzureClientId) ? [] : [
-  {
-    name: 'azureClientId'
-    value: daprAzureClientId
-  }
-]
 var gatewayAuthEnabled = !empty(gatewayAuthClientId) && !empty(gatewayAuthClientSecret)
 var gatewayProxyHeaderValueEffective = empty(gatewayProxyHeaderValue) ? uniqueString(subscription().id, resourceGroup().id, nameSuffix, 'gateway') : gatewayProxyHeaderValue
 var gatewayAuthSecrets = gatewayAuthEnabled ? [
@@ -133,183 +127,22 @@ resource containerAppEnv 'Microsoft.App/managedEnvironments@2023-05-01' = {
 }
 
 // ---------------------------------------------------------------------------
-// Dapr component: secret-store (Azure Key Vault via managed identity)
+// Dapr components
 // ---------------------------------------------------------------------------
 
-resource daprSecretStore 'Microsoft.App/managedEnvironments/daprComponents@2023-05-01' = {
-  parent: containerAppEnv
-  name: 'secret-store'
-  properties: {
-    componentType: 'secretstores.azure.keyvault'
-    version: 'v1'
-    metadata: concat([
-      {
-        name: 'vaultName'
-        value: keyVaultName
-      }
-    ], daprAzureIdentityMetadata)
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Dapr component: manifest state-store (Azure Cosmos DB for NoSQL via managed identity)
-// ---------------------------------------------------------------------------
-
-resource daprManifestStateStore 'Microsoft.App/managedEnvironments/daprComponents@2023-05-01' = {
-  parent: containerAppEnv
-  name: 'manifest-state-store'
-  properties: {
-    componentType: 'state.azure.cosmosdb'
-    version: 'v1'
-    initTimeout: '5m'
-    metadata: concat([
-      {
-        name: 'url'
-        value: cosmosAccountEndpoint
-      }
-      {
-        name: 'database'
-        value: cosmosDatabaseName
-      }
-      {
-        name: 'collection'
-        value: cosmosManifestContainerName
-      }
-      {
-        name: 'partitionKey'
-        value: 'partitionKey'
-      }
-    ], daprAzureIdentityMetadata)
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Dapr component: device registry state-store (Azure Cosmos DB for NoSQL via managed identity)
-// ---------------------------------------------------------------------------
-
-resource daprDeviceRegistryStateStore 'Microsoft.App/managedEnvironments/daprComponents@2023-05-01' = {
-  parent: containerAppEnv
-  name: 'device-registry-state-store'
-  properties: {
-    componentType: 'state.azure.cosmosdb'
-    version: 'v1'
-    initTimeout: '5m'
-    metadata: concat([
-      {
-        name: 'url'
-        value: cosmosAccountEndpoint
-      }
-      {
-        name: 'database'
-        value: cosmosDatabaseName
-      }
-      {
-        name: 'collection'
-        value: cosmosDeviceRegistryContainerName
-      }
-      {
-        name: 'partitionKey'
-        value: 'partitionKey'
-      }
-    ], daprAzureIdentityMetadata)
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Dapr component: output binding for backup events (Azure Storage Queue via managed identity)
-// ---------------------------------------------------------------------------
-
-resource daprBackupEventsOutputBinding 'Microsoft.App/managedEnvironments/daprComponents@2023-05-01' = {
-  parent: containerAppEnv
-  name: 'backup-events-output'
-  properties: {
-    componentType: 'bindings.azure.storagequeues'
-    version: 'v1'
-    metadata: concat([
-      {
-        name: 'accountName'
-        value: dataStorageAccountName
-      }
-      {
-        name: 'queueName'
-        value: backupEventsQueueName
-      }
-      {
-        name: 'direction'
-        value: 'output'
-      }
-      {
-        name: 'ttlInSeconds'
-        value: '604800'
-      }
-    ], daprAzureIdentityMetadata)
-    scopes: [
-      'backup-api'
-    ]
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Dapr component: input binding for backup events (Azure Storage Queue via managed identity)
-// ---------------------------------------------------------------------------
-
-resource daprBackupEventsInputBinding 'Microsoft.App/managedEnvironments/daprComponents@2023-05-01' = {
-  parent: containerAppEnv
-  name: 'backup-events-input'
-  properties: {
-    componentType: 'bindings.azure.storagequeues'
-    version: 'v1'
-    metadata: concat([
-      {
-        name: 'accountName'
-        value: dataStorageAccountName
-      }
-      {
-        name: 'queueName'
-        value: backupEventsQueueName
-      }
-      {
-        name: 'direction'
-        value: 'input'
-      }
-      {
-        name: 'route'
-        value: '/api/backupevents/backup-run-committed'
-      }
-      {
-        name: 'pollingInterval'
-        value: '10s'
-      }
-      {
-        name: 'visibilityTimeout'
-        value: '10m'
-      }
-    ], daprAzureIdentityMetadata)
-    scopes: [
-      'backup-worker'
-    ]
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Dapr component: scheduled stale staging cleanup trigger
-// ---------------------------------------------------------------------------
-
-resource daprStaleStagingCleanupCron 'Microsoft.App/managedEnvironments/daprComponents@2023-05-01' = {
-  parent: containerAppEnv
-  name: 'cleanup-staging-cron'
-  properties: {
-    componentType: 'bindings.cron'
-    version: 'v1'
-    metadata: [
-      {
-        name: 'schedule'
-        value: staleStagingCleanupCronSchedule
-      }
-    ]
-    scopes: [
-      'backup-api'
-    ]
+module daprComponents 'dapr-components.bicep' = {
+  name: 'dapr-components'
+  params: {
+    managedEnvironmentName: containerAppEnv.name
+    keyVaultName: keyVaultName
+    cosmosAccountEndpoint: cosmosAccountEndpoint
+    cosmosDatabaseName: cosmosDatabaseName
+    cosmosManifestContainerName: cosmosManifestContainerName
+    cosmosDeviceRegistryContainerName: cosmosDeviceRegistryContainerName
+    dataStorageAccountName: dataStorageAccountName
+    backupEventsQueueName: backupEventsQueueName
+    staleStagingCleanupCronSchedule: staleStagingCleanupCronSchedule
+    daprAzureClientId: daprAzureClientId
   }
 }
 
