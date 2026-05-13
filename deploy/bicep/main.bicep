@@ -56,8 +56,8 @@ param staleStagingCleanupMaxDeletes int = 500
 @description('Run scheduled stale staging cleanup as a dry run instead of deleting blobs.')
 param staleStagingCleanupDryRun bool = false
 
-@description('Minimum API replicas. Keep at least 1 when Dapr cron bindings must fire without external traffic.')
-param apiMinReplicas int = 1
+@description('Minimum API replicas. Use 0 for beta/development cost reduction; set at least 1 when Dapr cron bindings must fire without external traffic.')
+param apiMinReplicas int = 0
 
 @description('Minimum Gateway replicas. Keep 0 for lowest cost; the app scales up on HTTP requests.')
 param gatewayMinReplicas int = 0
