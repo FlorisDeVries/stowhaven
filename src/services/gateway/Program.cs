@@ -59,7 +59,8 @@ static async Task ProxyAsync(
 {
     var httpClientFactory = context.RequestServices.GetRequiredService<IHttpClientFactory>();
     var httpClient = httpClientFactory.CreateClient("swagger-proxy");
-    var targetUri = BuildProxyUri(baseUri, context.Request.RouteValues["path"] as string, context.Request.QueryString);
+    var routePath = context.Request.RouteValues["path"] as string;
+    var targetUri = BuildProxyUri(baseUri, routePath, forwardedPrefix, context.Request.QueryString);
 
     using var requestMessage = new HttpRequestMessage(new HttpMethod(context.Request.Method), targetUri);
     requestMessage.Headers.Host = targetUri.Authority;
@@ -125,10 +126,10 @@ static async Task ProxyAsync(
     await responseMessage.Content.CopyToAsync(context.Response.Body, context.RequestAborted).ConfigureAwait(false);
 }
 
-static Uri BuildProxyUri(Uri baseUri, string? path, QueryString queryString)
+static Uri BuildProxyUri(Uri baseUri, string? path, string forwardedPrefix, QueryString queryString)
 {
     var basePath = baseUri.AbsolutePath.TrimEnd('/');
-    var targetPath = path?.TrimStart('/') ?? string.Empty;
+    var targetPath = BuildTargetPath(path, forwardedPrefix);
     var combinedPath = string.IsNullOrEmpty(basePath) ? $"/{targetPath}" : $"{basePath}/{targetPath}";
 
     return new UriBuilder(baseUri)
@@ -136,4 +137,19 @@ static Uri BuildProxyUri(Uri baseUri, string? path, QueryString queryString)
         Path = combinedPath,
         Query = queryString.HasValue ? queryString.Value![1..] : string.Empty
     }.Uri;
+}
+
+static string BuildTargetPath(string? path, string forwardedPrefix)
+{
+    var targetPath = path?.TrimStart('/') ?? string.Empty;
+
+    // Swagger UI loads documents through /api/swagger/* and /worker/swagger/*,
+    // but the upstream services expose those documents at /swagger/*.
+    if (targetPath.StartsWith("swagger/", StringComparison.OrdinalIgnoreCase))
+    {
+        return targetPath;
+    }
+
+    var prefix = forwardedPrefix.Trim('/');
+    return string.IsNullOrEmpty(targetPath) ? prefix : $"{prefix}/{targetPath}";
 }
