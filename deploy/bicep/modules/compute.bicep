@@ -97,6 +97,15 @@ param daprAzureClientId string = ''
 @description('Common resource tags')
 param tags object
 
+@description('Microsoft Entra tenant ID used by the Backup API for JWT validation.')
+param apiAuthTenantId string = tenant().tenantId
+
+@description('Microsoft Entra application/client ID of the Backup API app registration.')
+param apiAuthClientId string = '906eb0e3-e351-47c0-a68a-690207f4cccb'
+
+@description('JWT audience accepted by the Backup API. Defaults to api://{apiAuthClientId}.')
+param apiAuthAudience string = 'api://${apiAuthClientId}'
+
 var gatewayAuthEnabled = !empty(gatewayAuthClientId) && !empty(gatewayAuthClientSecret)
 var gatewayProxyHeaderValueEffective = empty(gatewayProxyHeaderValue) ? uniqueString(subscription().id, resourceGroup().id, nameSuffix, 'gateway') : gatewayProxyHeaderValue
 var gatewayAuthSecrets = gatewayAuthEnabled ? [
@@ -248,6 +257,18 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
             {
               name: 'ASPNETCORE_ENVIRONMENT'
               value: 'Production'
+            }
+            {
+              name: 'AzureAd__TenantId'
+              value: apiAuthTenantId
+            }
+            {
+              name: 'AzureAd__ClientId'
+              value: apiAuthClientId
+            }
+            {
+              name: 'AzureAd__Audience'
+              value: apiAuthAudience
             }
             {
               name: 'DaprHealth__EnablePubSubProbe'

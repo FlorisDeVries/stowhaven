@@ -105,6 +105,15 @@ param daprAzureClientId string = ''
 ])
 param keyVaultNetworkDefaultAction string = 'Allow'
 
+@description('Microsoft Entra tenant ID used by the Backup API for JWT validation.')
+param apiAuthTenantId string = tenant().tenantId
+
+@description('Microsoft Entra application/client ID of the Backup API app registration.')
+param apiAuthClientId string = '906eb0e3-e351-47c0-a68a-690207f4cccb'
+
+@description('JWT audience accepted by the Backup API. Defaults to api://{apiAuthClientId}.')
+param apiAuthAudience string = 'api://${apiAuthClientId}'
+
 // ---------------------------------------------------------------------------
 // Locals / derived values
 // ---------------------------------------------------------------------------
@@ -288,6 +297,9 @@ module compute 'modules/compute.bicep' = if (deployContainerApps) {
     cosmosManifestContainerName: cosmosManifestContainerName
     cosmosDeviceRegistryContainerName: cosmosDeviceRegistryContainerName
     daprAzureClientId: daprAzureClientId
+    apiAuthTenantId: apiAuthTenantId
+    apiAuthClientId: apiAuthClientId
+    apiAuthAudience: apiAuthAudience
     tags: commonTags
   }
   dependsOn: [

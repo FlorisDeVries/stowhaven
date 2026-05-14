@@ -429,7 +429,7 @@ flowchart TD
   * Device registration is self-service: any authenticated user with the client backup scope may register a new device ID.
   * First registration wins. If a `deviceId` already belongs to another `(tenantId, userId)`, registration and backup operations return a conflict/forbidden response.
   * A single user can own multiple devices. Device sharing is intentionally out of scope for v1.
-  * Backup clients use a narrow delegated scope such as `backup.client`; `backup-admin` is reserved for future operator/admin APIs.
+  * Backup clients use a narrow delegated scope such as `backup.client`; `backup.admin` is reserved for future operator/admin APIs.
   * SAS scope includes `deviceId` + `runId`, ensuring a client cannot write outside its staging area.
   * SAS IP restriction is disabled by default for SaaS clients. It can be enabled per deployment with `Backup:Sas:EnableIpRestriction` / `Backup__Sas__EnableIpRestriction` only after ACA/proxy and customer network behavior is validated.
   * Backup routes include `deviceId`; the route value is authoritative and every start/commit/status operation authorizes ownership before touching storage, runs, commits, or SAS.

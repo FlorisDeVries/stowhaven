@@ -82,9 +82,9 @@ public static class JwtBearerAuthenticationHandler
 
                 var scopeClaim = context.Principal?.FindFirst("scp")?.Value;
                 var scopes = scopeClaim?.Split(' ', StringSplitOptions.RemoveEmptyEntries) ?? [];
-                if (!scopes.Contains("backup.client") && !scopes.Contains("backup-admin"))
+                if (!scopes.Contains("backup.client") && !scopes.Contains("backup.admin"))
                 {
-                    context.Fail("Missing required scope: backup.client");
+                    context.Fail("Missing required scope: backup.client or backup.admin");
                 }
 
                 logger.LogDebug("JWT token validated for user: {UserId}", userId);

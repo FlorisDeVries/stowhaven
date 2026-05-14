@@ -35,7 +35,7 @@ sequenceDiagram
         MSAL->>MSAL: Load from cache
     end
     
-    MSAL-->>Client: Access token (scope: backup.client or backup-admin)
+    MSAL-->>Client: Access token (scope: backup.client or backup.admin)
     Client->>API: POST /api/devices/{deviceId}/backup/start-run<br/>(Authorization: Bearer <token>)
     API->>API: Validate JWT<br/>(audience, issuer, scope)
     API->>Blob: Request User Delegation Key (Managed Identity)
@@ -72,9 +72,9 @@ Key features:
 
 1. In your new app registration, go to **API permissions**
 2. Click **Add a permission** → **My APIs**
-3. Select your Backup API (the one with ClientId `46f1d4c9-d546-47a5-9e65-fb1fa2c15665`)
+3. Select your Backup API (the one with ClientId `906eb0e3-e351-47c0-a68a-690207f4cccb`)
 4. Select **Delegated permissions**
-5. Check `backup.client` for normal backup clients. Use `backup-admin` only for trusted administrative/operator clients.
+5. Check `backup.client` for normal backup clients. Use `backup.admin` only for trusted administrative/operator clients.
 6. Click **Add permissions**
 7. **Optional**: Click **Grant admin consent** (if you want to pre-approve for all users)
 
@@ -90,11 +90,11 @@ Key features:
 
 The API also needs to accept tokens from the client app:
 
-1. Go to your API's app registration (`46f1d4c9-d546-47a5-9e65-fb1fa2c15665`)
+1. Go to your API's app registration (`906eb0e3-e351-47c0-a68a-690207f4cccb`)
 2. Go to **Expose an API**
 3. Under **Authorized client applications**, click **Add a client application**
 4. Enter the **Client App ID** from step 1.5
-5. Check the `backup.client` scope for the client app. Add `backup-admin` only for trusted administrative clients.
+5. Check the `backup.client` scope for the client app. Add `backup.admin` only for trusted administrative clients.
 6. Click **Add application**
 
 ## Client Configuration
@@ -110,7 +110,7 @@ Update your client's `appsettings.json`:
   },
   "BackupApiClient": {
     "ApiUrl": "https://your-container-app-url.azurecontainerapps.io",
-    "AuthenticationScope": "api://46f1d4c9-d546-47a5-9e65-fb1fa2c15665/backup.client",
+    "AuthenticationScope": "api://906eb0e3-e351-47c0-a68a-690207f4cccb/backup.client",
     "AuthenticationTenant": "cf8adfe1-bb3b-4ef0-8ba9-44dcddb8ecb9",
     "RetryOptions": {
       "MaxRetryAttempts": 3,
@@ -160,7 +160,7 @@ Tokens are stored securely per platform:
 - **Token caching**: Encrypted at rest using OS-provided secure storage
 - **Short-lived tokens**: Access tokens expire (typically 1 hour)
 - **Refresh tokens**: Longer-lived but revocable by admin
-- **Scope-based access**: normal clients use the narrow `backup.client` delegated scope; `backup-admin` is reserved for trusted operator/admin scenarios
+- **Scope-based access**: normal clients use the narrow `backup.client` delegated scope; `backup.admin` is reserved for trusted operator/admin scenarios
 - **Per-user authentication**: Each user authenticates with their own account
 
 ### ⚠️ Important Notes
@@ -173,9 +173,9 @@ Tokens are stored securely per platform:
 
 The API validates:
 1. Token signature (from Entra ID)
-2. Audience (`api://46f1d4c9-d546-47a5-9e65-fb1fa2c15665`)
+2. Audience (`api://906eb0e3-e351-47c0-a68a-690207f4cccb`)
 3. Issuer (correct tenant)
-4. Required scope (`backup.client` or `backup-admin`)
+4. Required scope (`backup.client` or `backup.admin`)
 5. Token expiry
 
 See [JwtBearerAuthenticationHandler.cs](../src/common/security/Authentication/JwtBearerAuthenticationHandler.cs)

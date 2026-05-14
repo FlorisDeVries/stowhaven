@@ -29,6 +29,8 @@ env:
   GATEWAY_IMAGE_NAME: gateway
   GATEWAY_AUTH_CLIENT_ID: ${{ vars.GATEWAY_AUTH_CLIENT_ID }}
   GATEWAY_AUTH_CLIENT_SECRET: ${{ secrets.GATEWAY_AUTH_CLIENT_SECRET }}
+  API_AUTH_CLIENT_ID: ${{ vars.API_AUTH_CLIENT_ID }}
+  API_AUTH_AUDIENCE: ${{ vars.API_AUTH_AUDIENCE }}
 
 permissions:
   contents: read
@@ -107,12 +109,20 @@ jobs:
       - name: Validate full deployment phase
         run: |
           IMAGE_TAG="${{ github.event.inputs.imageTag || github.sha }}"
+          API_AUTH_PARAMS=()
+          if [ -n "$API_AUTH_CLIENT_ID" ]; then
+            API_AUTH_PARAMS+=(--parameters)
+            API_AUTH_PARAMS+=(apiAuthClientId="$API_AUTH_CLIENT_ID")
+            API_AUTH_PARAMS+=(apiAuthAudience="${API_AUTH_AUDIENCE:-api://$API_AUTH_CLIENT_ID}")
+          fi
+
           az deployment group validate \
             --resource-group "$AZURE_RESOURCE_GROUP" \
             --template-file "$TEMPLATE_FILE" \
             --parameters "$PARAMETERS_FILE" \
             --parameters imageTag="$IMAGE_TAG" deployContainerApps=true \
             --parameters gatewayAuthClientId="$GATEWAY_AUTH_CLIENT_ID" gatewayAuthClientSecret="$GATEWAY_AUTH_CLIENT_SECRET" \
+            "${API_AUTH_PARAMS[@]}" \
             --output none
 
   deploy-foundation:
@@ -244,6 +254,12 @@ jobs:
         run: |
           DEPLOYMENT_NAME="apps-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           IMAGE_TAG="${{ needs.deploy-foundation.outputs.image_tag }}"
+          API_AUTH_PARAMS=()
+          if [ -n "$API_AUTH_CLIENT_ID" ]; then
+            API_AUTH_PARAMS+=(--parameters)
+            API_AUTH_PARAMS+=(apiAuthClientId="$API_AUTH_CLIENT_ID")
+            API_AUTH_PARAMS+=(apiAuthAudience="${API_AUTH_AUDIENCE:-api://$API_AUTH_CLIENT_ID}")
+          fi
 
           az deployment group create \
             --name "$DEPLOYMENT_NAME" \
@@ -252,6 +268,7 @@ jobs:
             --parameters "$PARAMETERS_FILE" \
             --parameters imageTag="$IMAGE_TAG" deployContainerApps=true \
             --parameters gatewayAuthClientId="$GATEWAY_AUTH_CLIENT_ID" gatewayAuthClientSecret="$GATEWAY_AUTH_CLIENT_SECRET" \
+            "${API_AUTH_PARAMS[@]}" \
             --output table
 
       - name: Show Container App URL

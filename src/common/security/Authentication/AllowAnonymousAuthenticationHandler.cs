@@ -33,7 +33,7 @@ public class AllowAnonymousAuthenticationHandler(
             new Claim(ClaimTypes.Role, "Developer"),
             new Claim("tid", "dev-tenant"),
             new Claim("oid", "dev-user"),
-            new Claim("scp", "backup.client backup-admin"),
+            new Claim("scp", "backup.client backup.admin"),
             new Claim("environment", "development")
         };
 
