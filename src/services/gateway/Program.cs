@@ -1,5 +1,7 @@
 using System.Net.Http.Headers;
 
+const string EasyAuthAccessTokenHeader = "X-MS-TOKEN-AAD-ACCESS-TOKEN";
+
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddHttpClient("swagger-proxy", client =>
@@ -68,6 +70,13 @@ static async Task ProxyAsync(
     if (!string.IsNullOrWhiteSpace(gatewayHeaderValue))
     {
         requestMessage.Headers.TryAddWithoutValidation(gatewayHeaderName, gatewayHeaderValue);
+    }
+
+    if (!context.Request.Headers.ContainsKey("Authorization") &&
+        context.Request.Headers.TryGetValue(EasyAuthAccessTokenHeader, out var accessToken) &&
+        !string.IsNullOrWhiteSpace(accessToken.ToString()))
+    {
+        requestMessage.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken.ToString());
     }
 
     if (context.Request.ContentLength is > 0 || context.Request.Headers.ContainsKey("Transfer-Encoding"))
