@@ -1,4 +1,8 @@
 using System.Net.Http.Headers;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using Azure.Core;
+using Azure.Identity;
 
 const string EasyAuthAccessTokenHeader = "X-MS-TOKEN-AAD-ACCESS-TOKEN";
 
@@ -16,6 +20,11 @@ var apiBaseUrl = RequireAbsoluteUri(configuration["Gateway:ApiBaseUrl"], "Gatewa
 var workerBaseUrl = RequireAbsoluteUri(configuration["Gateway:WorkerBaseUrl"], "Gateway:WorkerBaseUrl");
 var gatewayHeaderName = configuration["Gateway:HeaderName"] ?? "X-Backup-Gateway";
 var gatewayHeaderValue = configuration["Gateway:HeaderValue"] ?? string.Empty;
+var apiTokenScope = configuration["Gateway:ApiTokenScope"];
+var managedIdentityClientId = configuration["Gateway:ManagedIdentityClientId"];
+var apiTokenCredential = string.IsNullOrWhiteSpace(apiTokenScope)
+    ? null
+    : CreateTokenCredential(managedIdentityClientId);
 
 app.MapGet("/", () => Results.Redirect("/swagger"));
 app.MapGet("/healthz", () => Results.Ok(new { status = "Healthy" }));
@@ -26,16 +35,17 @@ app.UseSwaggerUI(options =>
     options.DocumentTitle = "Backup API Swagger";
     options.SwaggerEndpoint("/api/swagger/main/swagger.json", "FlorisDeV.BackupApi");
     options.SwaggerEndpoint("/worker/swagger/main/swagger.json", "FlorisDeV.BackupWorker");
+    options.ConfigObject.AdditionalItems["withCredentials"] = true;
 });
 
 app.Map("/api/{**path}", async context =>
 {
-    await ProxyAsync(context, apiBaseUrl, "/api", gatewayHeaderName, gatewayHeaderValue);
+    await ProxyAsync(context, apiBaseUrl, "/api", gatewayHeaderName, gatewayHeaderValue, apiTokenCredential, apiTokenScope);
 });
 
 app.Map("/worker/{**path}", async context =>
 {
-    await ProxyAsync(context, workerBaseUrl, "/worker", gatewayHeaderName, gatewayHeaderValue);
+    await ProxyAsync(context, workerBaseUrl, "/worker", gatewayHeaderName, gatewayHeaderValue, tokenCredential: null, tokenScope: null);
 });
 
 app.Run();
@@ -55,12 +65,15 @@ static async Task ProxyAsync(
     Uri baseUri,
     string forwardedPrefix,
     string gatewayHeaderName,
-    string gatewayHeaderValue)
+    string gatewayHeaderValue,
+    TokenCredential? tokenCredential,
+    string? tokenScope)
 {
     var httpClientFactory = context.RequestServices.GetRequiredService<IHttpClientFactory>();
     var httpClient = httpClientFactory.CreateClient("swagger-proxy");
     var routePath = context.Request.RouteValues["path"] as string;
     var targetUri = BuildProxyUri(baseUri, routePath, forwardedPrefix, context.Request.QueryString);
+    var isSwaggerDocument = IsSwaggerDocument(routePath);
 
     using var requestMessage = new HttpRequestMessage(new HttpMethod(context.Request.Method), targetUri);
     requestMessage.Headers.Host = targetUri.Authority;
@@ -80,6 +93,19 @@ static async Task ProxyAsync(
         requestMessage.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken.ToString());
     }
 
+    if (!context.Request.Headers.ContainsKey("Authorization") &&
+        requestMessage.Headers.Authorization is null &&
+        tokenCredential is not null &&
+        !string.IsNullOrWhiteSpace(tokenScope) &&
+        !isSwaggerDocument)
+    {
+        var token = await tokenCredential.GetTokenAsync(
+            new TokenRequestContext([tokenScope]),
+            context.RequestAborted).ConfigureAwait(false);
+
+        requestMessage.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Token);
+    }
+
     if (context.Request.ContentLength is > 0 || context.Request.Headers.ContainsKey("Transfer-Encoding"))
     {
         requestMessage.Content = new StreamContent(context.Request.Body);
@@ -93,7 +119,8 @@ static async Task ProxyAsync(
     foreach (var header in context.Request.Headers)
     {
         if (string.Equals(header.Key, "Host", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(header.Key, "Content-Length", StringComparison.OrdinalIgnoreCase))
+            string.Equals(header.Key, "Content-Length", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(header.Key, "Accept-Encoding", StringComparison.OrdinalIgnoreCase))
         {
             continue;
         }
@@ -108,6 +135,12 @@ static async Task ProxyAsync(
         requestMessage,
         HttpCompletionOption.ResponseHeadersRead,
         context.RequestAborted).ConfigureAwait(false);
+
+    if (isSwaggerDocument && responseMessage.IsSuccessStatusCode)
+    {
+        await RewriteSwaggerDocumentAsync(context, responseMessage).ConfigureAwait(false);
+        return;
+    }
 
     context.Response.StatusCode = (int)responseMessage.StatusCode;
 
@@ -139,6 +172,13 @@ static Uri BuildProxyUri(Uri baseUri, string? path, string forwardedPrefix, Quer
     }.Uri;
 }
 
+static TokenCredential CreateTokenCredential(string? managedIdentityClientId)
+{
+    return string.IsNullOrWhiteSpace(managedIdentityClientId)
+        ? new ManagedIdentityCredential()
+        : new ManagedIdentityCredential(managedIdentityClientId);
+}
+
 static string BuildTargetPath(string? path, string forwardedPrefix)
 {
     var targetPath = path?.TrimStart('/') ?? string.Empty;
@@ -152,4 +192,39 @@ static string BuildTargetPath(string? path, string forwardedPrefix)
 
     var prefix = forwardedPrefix.Trim('/');
     return string.IsNullOrEmpty(targetPath) ? prefix : $"{prefix}/{targetPath}";
+}
+
+static bool IsSwaggerDocument(string? path)
+{
+    var targetPath = path?.TrimStart('/') ?? string.Empty;
+    return targetPath.StartsWith("swagger/", StringComparison.OrdinalIgnoreCase) &&
+           targetPath.EndsWith(".json", StringComparison.OrdinalIgnoreCase);
+}
+
+static async Task RewriteSwaggerDocumentAsync(HttpContext context, HttpResponseMessage responseMessage)
+{
+    context.Response.StatusCode = (int)responseMessage.StatusCode;
+    context.Response.ContentType = "application/json; charset=utf-8";
+
+    var json = await responseMessage.Content.ReadAsStringAsync(context.RequestAborted).ConfigureAwait(false);
+    var document = JsonNode.Parse(json)?.AsObject();
+
+    if (document is null)
+    {
+        await context.Response.WriteAsync(json, context.RequestAborted).ConfigureAwait(false);
+        return;
+    }
+
+    // Upstream services generate Swagger documents using their own Container App
+    // host/scheme/path base. For Gateway-hosted Swagger UI, force try-it-out
+    // requests to stay on the Gateway origin. The OpenAPI paths already contain
+    // the service prefix, e.g. /api/health.
+    document["servers"] = new JsonArray(new JsonObject
+    {
+        ["url"] = "/"
+    });
+
+    await context.Response.WriteAsync(
+        document.ToJsonString(new JsonSerializerOptions { WriteIndented = false }),
+        context.RequestAborted).ConfigureAwait(false);
 }

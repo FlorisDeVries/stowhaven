@@ -10,6 +10,10 @@ and exposes the delegated scopes used by client applications:
 - backup.client: normal backup/restore clients
 - backup.admin: trusted administrative/operator clients
 
+It also exposes the application role used by the Swagger Gateway managed identity:
+
+- backup.gateway: Gateway application access to the Backup API
+
 After creating this API app, set the GitHub repository variable API_AUTH_CLIENT_ID
 to the printed app ID and redeploy the Container Apps stack.
 
@@ -120,7 +124,22 @@ $backupAdminScope = $existingScopes | Where-Object { $_.value -eq "backup.admin"
 $backupClientScopeId = if ($backupClientScope) { $backupClientScope.id } else { [guid]::NewGuid().ToString() }
 $backupAdminScopeId = if ($backupAdminScope) { $backupAdminScope.id } else { [guid]::NewGuid().ToString() }
 
+$existingAppRoles = @($apiApp.appRoles)
+$backupGatewayAppRole = $existingAppRoles | Where-Object { $_.value -eq "backup.gateway" } | Select-Object -First 1
+$backupGatewayAppRoleId = if ($backupGatewayAppRole) { $backupGatewayAppRole.id } else { [guid]::NewGuid().ToString() }
+$appRoles = @($existingAppRoles | Where-Object { $_.value -ne "backup.gateway" }) + @(
+    @{
+        allowedMemberTypes = @("Application")
+        description = "Allows the Swagger Gateway managed identity to call the Backup API."
+        displayName = "Backup Gateway"
+        id = $backupGatewayAppRoleId
+        isEnabled = $true
+        value = "backup.gateway"
+    }
+)
+
 $apiDefinition = @{
+    appRoles = $appRoles
     api = @{
         requestedAccessTokenVersion = 2
         oauth2PermissionScopes = @(
@@ -153,6 +172,7 @@ try {
     Set-Content -Path $temporaryApiFile -Value $apiDefinition -NoNewline
 
     Write-Host "Exposing delegated scopes: backup.client, backup.admin"
+    Write-Host "Exposing application role: backup.gateway"
     Invoke-AzCli -Arguments @(
         "rest",
         "--method", "PATCH",
@@ -173,6 +193,9 @@ Write-Host "  $apiAppId"
 Write-Host ""
 Write-Host "Application ID URI / audience:"
 Write-Host "  $identifierUri"
+Write-Host ""
+Write-Host "Application role for Gateway managed identity:"
+Write-Host "  backup.gateway"
 Write-Host ""
 Write-Host "Set these GitHub repository variables before redeploying:"
 Write-Host "  API_AUTH_CLIENT_ID = $apiAppId"

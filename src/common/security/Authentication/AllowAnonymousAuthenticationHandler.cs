@@ -34,6 +34,7 @@ public class AllowAnonymousAuthenticationHandler(
             new Claim("tid", "dev-tenant"),
             new Claim("oid", "dev-user"),
             new Claim("scp", "backup.client backup.admin"),
+            new Claim("roles", "backup.gateway"),
             new Claim("environment", "development")
         };
 

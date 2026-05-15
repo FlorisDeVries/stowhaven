@@ -419,6 +419,7 @@ output containerAppUrl string = deployContainerApps ? 'https://${compute!.output
 output workerContainerAppName string = deployContainerApps ? compute!.outputs.workerContainerAppName : ''
 output gatewayContainerAppName string = deployContainerApps ? compute!.outputs.gatewayContainerAppName : ''
 output gatewayContainerAppUrl string = deployContainerApps ? 'https://${compute!.outputs.gatewayContainerAppFqdn}' : ''
+output gatewayPrincipalId string = deployContainerApps ? compute!.outputs.gatewayPrincipalId : ''
 output dataStorageAccountName string = storage.outputs.dataStorageAccountName
 output containerName string = storage.outputs.containerName
 output containerRegistryName string = registry.outputs.name

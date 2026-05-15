@@ -80,11 +80,18 @@ public static class JwtBearerAuthenticationHandler
 
                 var userId = context.Principal?.GetUserId();
 
+                var roleClaims = context.Principal?.FindAll("roles").Select(claim => claim.Value).ToArray() ?? [];
+                if (roleClaims.Contains("backup.gateway"))
+                {
+                    logger.LogDebug("JWT app-role token validated for gateway access");
+                    return Task.CompletedTask;
+                }
+
                 var scopeClaim = context.Principal?.FindFirst("scp")?.Value;
                 var scopes = scopeClaim?.Split(' ', StringSplitOptions.RemoveEmptyEntries) ?? [];
                 if (!scopes.Contains("backup.client") && !scopes.Contains("backup.admin"))
                 {
-                    context.Fail("Missing required scope: backup.client or backup.admin");
+                    context.Fail("Missing required scope or app role: backup.client, backup.admin, or backup.gateway");
                 }
 
                 logger.LogDebug("JWT token validated for user: {UserId}", userId);

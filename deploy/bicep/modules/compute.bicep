@@ -422,7 +422,7 @@ resource gatewayContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
   name: 'ca-${nameSuffix}-gateway'
   location: location
   identity: {
-    type: 'UserAssigned'
+    type: 'SystemAssigned, UserAssigned'
     userAssignedIdentities: {
       '${registryPullIdentityId}': {}
     }
@@ -484,6 +484,10 @@ resource gatewayContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
               name: 'Gateway__HeaderValue'
               value: gatewayProxyHeaderValueEffective
             }
+            {
+              name: 'Gateway__ApiTokenScope'
+              value: '${apiAuthAudience}/.default'
+            }
           ]
         }
       ]
@@ -533,3 +537,4 @@ output workerContainerAppFqdn string = workerContainerApp.properties.configurati
 output workerPrincipalId string = workerContainerApp.identity.principalId
 output gatewayContainerAppName string = gatewayContainerApp.name
 output gatewayContainerAppFqdn string = gatewayContainerApp.properties.configuration.ingress.fqdn
+output gatewayPrincipalId string = gatewayContainerApp.identity.principalId
