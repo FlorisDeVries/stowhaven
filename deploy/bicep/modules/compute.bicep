@@ -518,6 +518,7 @@ resource gatewayAuthConfig 'Microsoft.App/containerApps/authConfigs@2024-03-01' 
           allowedAudiences: empty(gatewayAuthAllowedAudiences) ? [
             gatewayAuthClientId
             'api://${gatewayAuthClientId}'
+            apiAuthAudience
           ] : gatewayAuthAllowedAudiences
         }
       }

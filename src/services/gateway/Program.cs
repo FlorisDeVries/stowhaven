@@ -86,7 +86,10 @@ static async Task ProxyAsync(
         requestMessage.Headers.TryAddWithoutValidation(gatewayHeaderName, gatewayHeaderValue);
     }
 
-    if (tokenCredential is not null &&
+    var hasAuthorizationHeader = context.Request.Headers.ContainsKey("Authorization");
+
+    if (!hasAuthorizationHeader &&
+        tokenCredential is not null &&
         !string.IsNullOrWhiteSpace(tokenScope) &&
         !isSwaggerDocument)
     {
@@ -99,7 +102,7 @@ static async Task ProxyAsync(
 
         requestMessage.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Token);
     }
-    else if (!context.Request.Headers.ContainsKey("Authorization") &&
+    else if (!hasAuthorizationHeader &&
              context.Request.Headers.TryGetValue(EasyAuthAccessTokenHeader, out var accessToken) &&
              !string.IsNullOrWhiteSpace(accessToken.ToString()))
     {
