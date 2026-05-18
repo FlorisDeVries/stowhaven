@@ -179,7 +179,7 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
         appProtocol: 'http'
       }
       ingress: {
-        external: true
+        external: false
         targetPort: 8080
         transport: 'http'
         traffic: [

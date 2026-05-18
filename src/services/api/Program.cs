@@ -62,7 +62,6 @@ app.UseAzureFeatureFlags();
 app.UseCloudEvents();
 
 app.UseCustomSwagger(environment.ApplicationName);
-app.MapWorkerSwaggerProxy();
 
 app.UseRouting();
 app.UseAuthentication();

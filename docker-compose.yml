@@ -12,8 +12,6 @@ services:
             - ASPNETCORE_URLS=http://+:8080
             - ALLOW_DEVELOPMENT_ANONYMOUS_AUTHENTICATION=true
             - LOG_PATH=/var/log
-            - Swagger__WorkerBaseUrl=http://backup-worker:8080
-            - Swagger__WorkerProxyPath=/worker
         volumes:
             - ./run/api/data:/var/lib/backup-api
         user: ${UID}:${GID}
@@ -124,6 +122,33 @@ services:
             options:
                 gelf-address: "udp://127.0.0.1:12201"
                 tag: "backup-worker-dapr"
+        deploy:
+            resources:
+                limits:
+                    cpus: '0.25'
+                    memory: 0.5g
+
+    backup-gateway:
+        container_name: backup-gateway
+        image: ${DOCKER_REGISTRY-}gateway:${IMAGE_TAG:-latest}
+        build:
+            context: .
+            dockerfile: src/services/gateway/Dockerfile
+        environment:
+            - ASPNETCORE_ENVIRONMENT=Development
+            - ASPNETCORE_URLS=http://+:8080
+            - Gateway__ApiBaseUrl=http://backup-api:8080
+            - Gateway__WorkerBaseUrl=http://backup-worker:8080
+        ports:
+            - 127.0.0.1:8200:8080
+        depends_on:
+            - backup-api
+            - backup-worker
+        logging:
+            driver: "gelf"
+            options:
+                gelf-address: "udp://127.0.0.1:12201"
+                tag: "backup-gateway"
         deploy:
             resources:
                 limits:

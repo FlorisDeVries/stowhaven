@@ -8,7 +8,7 @@ const string EasyAuthAccessTokenHeader = "X-MS-TOKEN-AAD-ACCESS-TOKEN";
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddHttpClient("swagger-proxy", client =>
+builder.Services.AddHttpClient("gateway-proxy", client =>
 {
     client.Timeout = TimeSpan.FromSeconds(30);
 });
@@ -35,17 +35,16 @@ app.UseSwaggerUI(options =>
     options.DocumentTitle = "Backup API Swagger";
     options.SwaggerEndpoint("/api/swagger/main/swagger.json", "FlorisDeV.BackupApi");
     options.SwaggerEndpoint("/worker/swagger/main/swagger.json", "FlorisDeV.BackupWorker");
-    options.ConfigObject.AdditionalItems["withCredentials"] = true;
 });
 
 app.Map("/api/{**path}", async context =>
 {
-    await ProxyAsync(context, apiBaseUrl, "/api", gatewayHeaderName, gatewayHeaderValue, apiTokenCredential, apiTokenScope);
+    await ProxyAsync(context, apiBaseUrl, "/api", "/api", "/", gatewayHeaderName, gatewayHeaderValue, apiTokenCredential, apiTokenScope);
 });
 
 app.Map("/worker/{**path}", async context =>
 {
-    await ProxyAsync(context, workerBaseUrl, "/worker", gatewayHeaderName, gatewayHeaderValue, tokenCredential: null, tokenScope: null);
+    await ProxyAsync(context, workerBaseUrl, "/worker", string.Empty, "/worker", gatewayHeaderName, gatewayHeaderValue, tokenCredential: null, tokenScope: null);
 });
 
 app.Run();
@@ -63,23 +62,24 @@ static Uri RequireAbsoluteUri(string? value, string configurationKey)
 static async Task ProxyAsync(
     HttpContext context,
     Uri baseUri,
-    string forwardedPrefix,
+    string proxyPrefix,
+    string upstreamPathPrefix,
+    string swaggerServerUrl,
     string gatewayHeaderName,
     string gatewayHeaderValue,
     TokenCredential? tokenCredential,
     string? tokenScope)
 {
     var httpClientFactory = context.RequestServices.GetRequiredService<IHttpClientFactory>();
-    var httpClient = httpClientFactory.CreateClient("swagger-proxy");
+    var httpClient = httpClientFactory.CreateClient("gateway-proxy");
     var routePath = context.Request.RouteValues["path"] as string;
-    var targetUri = BuildProxyUri(baseUri, routePath, forwardedPrefix, context.Request.QueryString);
+    var targetUri = BuildProxyUri(baseUri, routePath, upstreamPathPrefix, context.Request.QueryString);
     var isSwaggerDocument = IsSwaggerDocument(routePath);
 
     using var requestMessage = new HttpRequestMessage(new HttpMethod(context.Request.Method), targetUri);
-    requestMessage.Headers.Host = targetUri.Authority;
     requestMessage.Headers.TryAddWithoutValidation("X-Forwarded-Proto", context.Request.Scheme);
     requestMessage.Headers.TryAddWithoutValidation("X-Forwarded-Host", context.Request.Host.Value);
-    requestMessage.Headers.TryAddWithoutValidation("X-Forwarded-Prefix", forwardedPrefix);
+    requestMessage.Headers.TryAddWithoutValidation("X-Forwarded-Prefix", proxyPrefix);
 
     if (!string.IsNullOrWhiteSpace(gatewayHeaderValue))
     {
@@ -118,9 +118,7 @@ static async Task ProxyAsync(
 
     foreach (var header in context.Request.Headers)
     {
-        if (string.Equals(header.Key, "Host", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(header.Key, "Content-Length", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(header.Key, "Accept-Encoding", StringComparison.OrdinalIgnoreCase))
+        if (ShouldSkipRequestHeader(header.Key))
         {
             continue;
         }
@@ -138,7 +136,7 @@ static async Task ProxyAsync(
 
     if (isSwaggerDocument && responseMessage.IsSuccessStatusCode)
     {
-        await RewriteSwaggerDocumentAsync(context, responseMessage).ConfigureAwait(false);
+        await RewriteSwaggerDocumentAsync(context, responseMessage, swaggerServerUrl).ConfigureAwait(false);
         return;
     }
 
@@ -146,11 +144,21 @@ static async Task ProxyAsync(
 
     foreach (var header in responseMessage.Headers)
     {
+        if (ShouldSkipResponseHeader(header.Key))
+        {
+            continue;
+        }
+
         context.Response.Headers[header.Key] = header.Value.ToArray();
     }
 
     foreach (var header in responseMessage.Content.Headers)
     {
+        if (ShouldSkipResponseHeader(header.Key))
+        {
+            continue;
+        }
+
         context.Response.Headers[header.Key] = header.Value.ToArray();
     }
 
@@ -159,10 +167,10 @@ static async Task ProxyAsync(
     await responseMessage.Content.CopyToAsync(context.Response.Body, context.RequestAborted).ConfigureAwait(false);
 }
 
-static Uri BuildProxyUri(Uri baseUri, string? path, string forwardedPrefix, QueryString queryString)
+static Uri BuildProxyUri(Uri baseUri, string? path, string upstreamPathPrefix, QueryString queryString)
 {
     var basePath = baseUri.AbsolutePath.TrimEnd('/');
-    var targetPath = BuildTargetPath(path, forwardedPrefix);
+    var targetPath = BuildTargetPath(path, upstreamPathPrefix);
     var combinedPath = string.IsNullOrEmpty(basePath) ? $"/{targetPath}" : $"{basePath}/{targetPath}";
 
     return new UriBuilder(baseUri)
@@ -179,7 +187,7 @@ static TokenCredential CreateTokenCredential(string? managedIdentityClientId)
         : new ManagedIdentityCredential(managedIdentityClientId);
 }
 
-static string BuildTargetPath(string? path, string forwardedPrefix)
+static string BuildTargetPath(string? path, string upstreamPathPrefix)
 {
     var targetPath = path?.TrimStart('/') ?? string.Empty;
 
@@ -190,7 +198,12 @@ static string BuildTargetPath(string? path, string forwardedPrefix)
         return targetPath;
     }
 
-    var prefix = forwardedPrefix.Trim('/');
+    var prefix = upstreamPathPrefix.Trim('/');
+    if (string.IsNullOrEmpty(prefix))
+    {
+        return targetPath;
+    }
+
     return string.IsNullOrEmpty(targetPath) ? prefix : $"{prefix}/{targetPath}";
 }
 
@@ -201,7 +214,7 @@ static bool IsSwaggerDocument(string? path)
            targetPath.EndsWith(".json", StringComparison.OrdinalIgnoreCase);
 }
 
-static async Task RewriteSwaggerDocumentAsync(HttpContext context, HttpResponseMessage responseMessage)
+static async Task RewriteSwaggerDocumentAsync(HttpContext context, HttpResponseMessage responseMessage, string serverUrl)
 {
     context.Response.StatusCode = (int)responseMessage.StatusCode;
     context.Response.ContentType = "application/json; charset=utf-8";
@@ -217,14 +230,46 @@ static async Task RewriteSwaggerDocumentAsync(HttpContext context, HttpResponseM
 
     // Upstream services generate Swagger documents using their own Container App
     // host/scheme/path base. For Gateway-hosted Swagger UI, force try-it-out
-    // requests to stay on the Gateway origin. The OpenAPI paths already contain
-    // the service prefix, e.g. /api/health.
+    // requests to stay on the Gateway origin and use the public proxy prefix.
     document["servers"] = new JsonArray(new JsonObject
     {
-        ["url"] = "/"
+        ["url"] = serverUrl
     });
 
     await context.Response.WriteAsync(
         document.ToJsonString(new JsonSerializerOptions { WriteIndented = false }),
         context.RequestAborted).ConfigureAwait(false);
+}
+
+static bool ShouldSkipRequestHeader(string headerName)
+{
+    if (IsHopByHopHeader(headerName) ||
+        string.Equals(headerName, "Host", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(headerName, "Content-Length", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(headerName, "Accept-Encoding", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(headerName, "Cookie", StringComparison.OrdinalIgnoreCase))
+    {
+        return true;
+    }
+
+    return headerName.StartsWith("X-MS-TOKEN-", StringComparison.OrdinalIgnoreCase) ||
+           headerName.StartsWith("X-MS-CLIENT-PRINCIPAL", StringComparison.OrdinalIgnoreCase);
+}
+
+static bool ShouldSkipResponseHeader(string headerName)
+{
+    return IsHopByHopHeader(headerName) ||
+           string.Equals(headerName, "Set-Cookie", StringComparison.OrdinalIgnoreCase);
+}
+
+static bool IsHopByHopHeader(string headerName)
+{
+    return string.Equals(headerName, "Connection", StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(headerName, "Keep-Alive", StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(headerName, "Proxy-Authenticate", StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(headerName, "Proxy-Authorization", StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(headerName, "TE", StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(headerName, "Trailer", StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(headerName, "Transfer-Encoding", StringComparison.OrdinalIgnoreCase) ||
+           string.Equals(headerName, "Upgrade", StringComparison.OrdinalIgnoreCase);
 }

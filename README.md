@@ -170,13 +170,14 @@ Useful local URLs:
 
 | Service | URL |
 | --- | --- |
+| Backup Gateway | `http://localhost:8200` |
 | Backup API | `http://localhost:8210` |
 | Backup Worker | `http://localhost:8220` |
 | Zipkin | `http://localhost:9411` |
 | Aspire dashboard | `http://localhost:18888` |
 | RedisInsight | `http://localhost:5540` |
 
-The Docker Compose environment runs with `ASPNETCORE_ENVIRONMENT=Development`. Development appsettings intentionally point OpenTelemetry to local Zipkin and the Aspire dashboard. Production appsettings leave those exporter endpoints empty and use Application Insights through the Azure deployment configuration.
+Use the Backup Gateway for combined Swagger/runtime access to API and worker endpoints. The direct API and worker URLs remain exposed locally for debugging. The Docker Compose environment runs with `ASPNETCORE_ENVIRONMENT=Development`. Development appsettings intentionally point OpenTelemetry to local Zipkin and the Aspire dashboard. Production appsettings leave those exporter endpoints empty and use Application Insights through the Azure deployment configuration.
 
 Run the test suite:
 

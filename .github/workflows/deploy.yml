@@ -271,10 +271,10 @@ jobs:
             "${API_AUTH_PARAMS[@]}" \
             --output table
 
-      - name: Show Container App URL
+      - name: Show Gateway URL
         run: |
           az deployment group show \
             --resource-group "$AZURE_RESOURCE_GROUP" \
             --name "apps-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
-            --query "properties.outputs.{apiUrl:containerAppUrl.value,gatewayUrl:gatewayContainerAppUrl.value,apiName:containerAppName.value,workerName:workerContainerAppName.value,gatewayName:gatewayContainerAppName.value}" \
+            --query "properties.outputs.{gatewayUrl:gatewayContainerAppUrl.value,apiName:containerAppName.value,workerName:workerContainerAppName.value,gatewayName:gatewayContainerAppName.value}" \
             --output table

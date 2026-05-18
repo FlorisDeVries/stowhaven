@@ -31,6 +31,7 @@ Useful local URLs:
 
 | Service | URL |
 | --- | --- |
+| Backup Gateway | `http://localhost:8200` |
 | Backup API | `http://localhost:8210` |
 | Backup Worker | `http://localhost:8220` |
 | Zipkin | `http://localhost:9411` |
