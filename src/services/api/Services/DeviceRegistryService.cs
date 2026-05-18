@@ -112,7 +112,7 @@ public sealed class DeviceRegistryService(DaprClient daprClient) : IDeviceRegist
         => string.Equals(registration.TenantId, tenantId, StringComparison.OrdinalIgnoreCase)
            && string.Equals(registration.UserId, userId, StringComparison.OrdinalIgnoreCase);
 
-    private static string GetDeviceStateKey(Guid deviceId) => $"devices/{deviceId:N}";
+    private static string GetDeviceStateKey(Guid deviceId) => $"devices:{deviceId:N}";
 }
 
 public interface IDeviceAuthorizationService

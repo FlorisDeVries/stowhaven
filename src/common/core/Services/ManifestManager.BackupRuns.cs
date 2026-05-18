@@ -13,7 +13,7 @@ public partial class ManifestManager
         CancellationToken cancellationToken = default)
     {
         using var activity = telemetry.ActivitySource.StartActivity("CreateBackupRun");
-        var stateKey = $"{deviceId}/backupruns/{runId}";
+        var stateKey = GetBackupRunStateKey(deviceId, runId);
 
         activity?.SetTag(ActivityAttributes.StateKey, stateKey);
         activity?.SetTag(ActivityAttributes.DeviceId, deviceId.ToString());
@@ -41,7 +41,7 @@ public partial class ManifestManager
     public async Task<BackupRun> GetBackupRunAsync(Guid deviceId, Guid runId, CancellationToken cancellationToken = default)
     {
         using var activity = telemetry.ActivitySource.StartActivity("GetBackupRun");
-        var stateKey = $"{deviceId}/backupruns/{runId}";
+        var stateKey = GetBackupRunStateKey(deviceId, runId);
 
         activity?.SetTag(ActivityAttributes.StateKey, stateKey);
         activity?.SetTag(ActivityAttributes.DeviceId, deviceId.ToString());
@@ -66,7 +66,7 @@ public partial class ManifestManager
 
     public async Task<BackupRun> CommitBackupRunAsync(Guid deviceId, Guid runId, CancellationToken cancellationToken = default)
     {
-        var stateKey = $"{deviceId}/backupruns/{runId}";
+        var stateKey = GetBackupRunStateKey(deviceId, runId);
         var (run, etag) = await daprClient.GetStateAndETagAsync<BackupRun>(
             DaprComponents.ManifestStateStore,
             stateKey,
@@ -111,7 +111,7 @@ public partial class ManifestManager
         CancellationToken cancellationToken = default)
     {
         using var activity = telemetry.ActivitySource.StartActivity("UpdateBackupRun");
-        var stateKey = $"{deviceId}/backupruns/{runId}";
+        var stateKey = GetBackupRunStateKey(deviceId, runId);
 
         activity?.SetTag(ActivityAttributes.StateKey, stateKey);
         activity?.SetTag(ActivityAttributes.DeviceId, deviceId.ToString());

@@ -42,8 +42,11 @@ public static class HostBuilderExtensions
             // Configure authorization policies
             builder.Services.AddAuthorization(options =>
             {
-                // Default policy requires authentication
-                options.FallbackPolicy = options.DefaultPolicy;
+                // Require authorization explicitly on protected endpoint groups.
+                // Do not use a global fallback policy: Dapr sidecar discovery endpoints
+                // such as /dapr/config and /dapr/subscribe must remain reachable from
+                // the local sidecar without a JWT.
+                options.FallbackPolicy = null;
 
                 // Example: Policy requiring specific role
                 options.AddPolicy("RequireAdminRole", policy =>

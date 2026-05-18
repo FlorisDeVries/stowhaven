@@ -10,7 +10,7 @@ public partial class ManifestManager
     public async Task<FileEntry?> GetFileEntryAsync(Guid deviceId, string relativePath, CancellationToken cancellationToken = default)
     {
         using var activity = telemetry.ActivitySource.StartActivity("GetFileEntry");
-        var stateKey = $"{deviceId}/files/{Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(relativePath))}";
+        var stateKey = GetFileEntryStateKey(deviceId, relativePath);
 
         activity?.SetTag(ActivityAttributes.StateKey, stateKey);
         activity?.SetTag(ActivityAttributes.DeviceId, deviceId.ToString());
@@ -38,7 +38,7 @@ public partial class ManifestManager
     public async Task SaveFileEntryAsync(FileEntry fileEntry, CancellationToken cancellationToken = default)
     {
         using var activity = telemetry.ActivitySource.StartActivity("SaveFileEntry");
-        var stateKey = $"{fileEntry.DeviceId}/files/{Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(fileEntry.RelativePath))}";
+        var stateKey = GetFileEntryStateKey(fileEntry.DeviceId, fileEntry.RelativePath);
 
         activity?.SetTag(ActivityAttributes.StateKey, stateKey);
         activity?.SetTag(ActivityAttributes.DeviceId, fileEntry.DeviceId);
@@ -76,7 +76,7 @@ public partial class ManifestManager
     public async Task<FileVersion?> GetFileVersionAsync(Guid deviceId, string uniqueFileId, CancellationToken cancellationToken = default)
     {
         using var activity = telemetry.ActivitySource.StartActivity("GetFileVersion");
-        var stateKey = $"{deviceId}/versions/{uniqueFileId}";
+        var stateKey = GetFileVersionStateKey(deviceId, uniqueFileId);
 
         activity?.SetTag(ActivityAttributes.StateKey, stateKey);
         activity?.SetTag(ActivityAttributes.DeviceId, deviceId.ToString());
@@ -104,7 +104,7 @@ public partial class ManifestManager
     public async Task SaveFileVersionAsync(FileVersion fileVersion, CancellationToken cancellationToken = default)
     {
         using var activity = telemetry.ActivitySource.StartActivity("SaveFileVersion");
-        var stateKey = $"{fileVersion.DeviceId}/versions/{fileVersion.UniqueFileId}";
+        var stateKey = GetFileVersionStateKey(fileVersion.DeviceId, fileVersion.UniqueFileId);
 
         activity?.SetTag(ActivityAttributes.StateKey, stateKey);
         activity?.SetTag(ActivityAttributes.DeviceId, fileVersion.DeviceId);

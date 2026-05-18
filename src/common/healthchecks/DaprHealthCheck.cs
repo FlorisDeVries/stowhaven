@@ -45,7 +45,10 @@ public class DaprHealthCheck(DaprClient daprClient, IOptions<DaprHealthCheckOpti
 
     private async Task ProbeStateStoreAsync(string stateStore, Dictionary<string, object> data, CancellationToken cancellationToken)
     {
-        var key = $"health/readiness/{Environment.MachineName}/{Guid.NewGuid():N}";
+        // Cosmos DB item ids cannot contain '/', '\\', '?' or '#'. Dapr's
+        // Cosmos state store uses the state key as the item id, so readiness
+        // probe keys must use a Cosmos-safe separator.
+        var key = $"health:readiness:{Environment.MachineName}:{Guid.NewGuid():N}";
         var value = new DaprReadinessProbe(DateTimeOffset.UtcNow);
 
         await daprClient.SaveStateAsync(stateStore, key, value, cancellationToken: cancellationToken).ConfigureAwait(false);

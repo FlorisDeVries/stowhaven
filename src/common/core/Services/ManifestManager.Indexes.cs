@@ -210,25 +210,37 @@ public partial class ManifestManager
         }
     }
 
-    private static string GetFileEntryIndexKey(Guid deviceId) => $"{deviceId}/files/_index";
+    private static string GetFileEntryStateKey(Guid deviceId, string relativePath) => $"{deviceId}:files:{EncodeStateKeySegment(relativePath)}";
 
-    private static string GetBackupRunGlobalIndexKey() => "backupruns/_index";
+    private static string GetFileVersionStateKey(Guid deviceId, string uniqueFileId) => $"{deviceId}:versions:{EncodeStateKeySegment(uniqueFileId)}";
 
-    private static string GetBackupRunDeviceIndexKey(Guid deviceId) => $"{deviceId}/backupruns/_index";
+    private static string GetFileEntryIndexKey(Guid deviceId) => $"{deviceId}:files:index";
 
-    private static string GetRunManifestStateKey(Guid deviceId, Guid runId) => $"{deviceId}/runmanifests/{runId}";
+    private static string GetBackupRunGlobalIndexKey() => "backupruns:index";
 
-    private static string GetCommitJobGlobalIndexKey() => "commitjobs/_index";
+    private static string GetBackupRunDeviceIndexKey(Guid deviceId) => $"{deviceId}:backupruns:index";
 
-    private static string GetCommitJobDeviceIndexKey(Guid deviceId) => $"{deviceId}/commitjobs/_index";
+    private static string GetBackupRunStateKey(Guid deviceId, Guid runId) => $"{deviceId}:backupruns:{runId}";
 
-    private static string GetCommitJobRunIndexKey(Guid deviceId, Guid runId) => $"{deviceId}/backupruns/{runId}/commitjobs/_index";
+    private static string GetRunManifestStateKey(Guid deviceId, Guid runId) => $"{deviceId}:runmanifests:{runId}";
 
-    private static string GetCommitFileProgressIndexKey(Guid commitId) => $"commitjobs/{commitId}/files/_index";
+    private static string GetCommitJobGlobalIndexKey() => "commitjobs:index";
 
-    private static string GetCommitJobStateKey(Guid commitId) => $"commitjobs/{commitId}";
+    private static string GetCommitJobDeviceIndexKey(Guid deviceId) => $"{deviceId}:commitjobs:index";
 
-    private static string GetCommitFileProgressStateKey(Guid commitId, string uniqueFileId) => $"commitjobs/{commitId}/files/{uniqueFileId}";
+    private static string GetCommitJobRunIndexKey(Guid deviceId, Guid runId) => $"{deviceId}:backupruns:{runId}:commitjobs:index";
+
+    private static string GetCommitFileProgressIndexKey(Guid commitId) => $"commitjobs:{commitId}:files:index";
+
+    private static string GetCommitJobStateKey(Guid commitId) => $"commitjobs:{commitId}";
+
+    private static string GetCommitFileProgressStateKey(Guid commitId, string uniqueFileId) => $"commitjobs:{commitId}:files:{EncodeStateKeySegment(uniqueFileId)}";
+
+    private static string EncodeStateKeySegment(string value)
+        => Convert.ToBase64String(Encoding.UTF8.GetBytes(value))
+            .TrimEnd('=')
+            .Replace('+', '-')
+            .Replace('/', '_');
 
     private static string EncodeContinuationToken(int offset)
         => Convert.ToBase64String(Encoding.UTF8.GetBytes(offset.ToString(CultureInfo.InvariantCulture)));

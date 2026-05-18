@@ -86,24 +86,24 @@ static async Task ProxyAsync(
         requestMessage.Headers.TryAddWithoutValidation(gatewayHeaderName, gatewayHeaderValue);
     }
 
-    if (!context.Request.Headers.ContainsKey("Authorization") &&
-        context.Request.Headers.TryGetValue(EasyAuthAccessTokenHeader, out var accessToken) &&
-        !string.IsNullOrWhiteSpace(accessToken.ToString()))
-    {
-        requestMessage.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken.ToString());
-    }
-
-    if (!context.Request.Headers.ContainsKey("Authorization") &&
-        requestMessage.Headers.Authorization is null &&
-        tokenCredential is not null &&
+    if (tokenCredential is not null &&
         !string.IsNullOrWhiteSpace(tokenScope) &&
         !isSwaggerDocument)
     {
+        // Easy Auth injects a token for the Gateway app registration. The API
+        // expects its own audience/app role, so API proxy calls must use the
+        // Gateway managed identity instead of forwarding the Easy Auth token.
         var token = await tokenCredential.GetTokenAsync(
             new TokenRequestContext([tokenScope]),
             context.RequestAborted).ConfigureAwait(false);
 
         requestMessage.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Token);
+    }
+    else if (!context.Request.Headers.ContainsKey("Authorization") &&
+             context.Request.Headers.TryGetValue(EasyAuthAccessTokenHeader, out var accessToken) &&
+             !string.IsNullOrWhiteSpace(accessToken.ToString()))
+    {
+        requestMessage.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken.ToString());
     }
 
     if (context.Request.ContentLength is > 0 || context.Request.Headers.ContainsKey("Transfer-Encoding"))

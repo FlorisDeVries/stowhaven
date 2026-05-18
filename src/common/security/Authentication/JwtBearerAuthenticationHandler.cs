@@ -25,6 +25,7 @@ public static class JwtBearerAuthenticationHandler
         // Validate required configuration
         var instance = azureAd["Instance"] ?? throw new InvalidOperationException("AzureAd:Instance is required");
         var tenantId = azureAd["TenantId"] ?? throw new InvalidOperationException("AzureAd:TenantId is required");
+        var clientId = azureAd["ClientId"] ?? throw new InvalidOperationException("AzureAd:ClientId is required");
         var audience = azureAd["Audience"] ?? throw new InvalidOperationException("AzureAd:Audience is required");
 
         var authority = $"{instance}{tenantId}/v2.0";
@@ -32,7 +33,10 @@ public static class JwtBearerAuthenticationHandler
         options.Authority = authority;
         options.TokenValidationParameters = new TokenValidationParameters
         {
-            ValidAudience = audience,
+            // Delegated v2 tokens use the Application ID URI (api://...), while
+            // managed identity app-role tokens can use the raw app/client id as
+            // aud. Accept both for the same API app registration.
+            ValidAudiences = [audience, clientId],
             ValidateIssuer = true,
             ValidateAudience = true,
             ValidateLifetime = true,
@@ -41,8 +45,11 @@ public static class JwtBearerAuthenticationHandler
             IssuerValidator = (issuer, token, parameters) =>
             {
                 // Accept any issuer from our tenant
-                if (issuer.StartsWith($"{instance}{tenantId}", StringComparison.OrdinalIgnoreCase))
+                if (issuer.StartsWith($"{instance}{tenantId}", StringComparison.OrdinalIgnoreCase) ||
+                    issuer.Equals($"https://sts.windows.net/{tenantId}/", StringComparison.OrdinalIgnoreCase))
+                {
                     return issuer;
+                }
 
                 throw new SecurityTokenInvalidIssuerException($"Invalid issuer: {issuer}");
             },
@@ -78,9 +85,10 @@ public static class JwtBearerAuthenticationHandler
                     .GetRequiredService<ILoggerFactory>()
                     .CreateLogger(nameof(JwtBearerAuthenticationHandler));
 
-                var userId = context.Principal?.GetUserId();
-
-                var roleClaims = context.Principal?.FindAll("roles").Select(claim => claim.Value).ToArray() ?? [];
+                var roleClaims = context.Principal?
+                    .FindAll(claim => claim.Type == "roles" || claim.Type == ClaimTypes.Role)
+                    .Select(claim => claim.Value)
+                    .ToArray() ?? [];
                 if (roleClaims.Contains("backup.gateway"))
                 {
                     logger.LogDebug("JWT app-role token validated for gateway access");
@@ -94,6 +102,7 @@ public static class JwtBearerAuthenticationHandler
                     context.Fail("Missing required scope or app role: backup.client, backup.admin, or backup.gateway");
                 }
 
+                var userId = context.Principal?.GetUserId();
                 logger.LogDebug("JWT token validated for user: {UserId}", userId);
 
                 return Task.CompletedTask;
