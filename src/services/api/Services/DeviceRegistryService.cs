@@ -26,8 +26,7 @@ public sealed class DeviceRegistryService(DaprClient daprClient) : IDeviceRegist
         string? displayName,
         CancellationToken cancellationToken = default)
     {
-        var tenantId = principal.GetTenantId();
-        var userId = principal.GetUserId();
+        var (tenantId, userId) = DeviceIdentity.GetRequiredUserIdentity(principal);
         var deviceId = requestedDeviceId.GetValueOrDefault(Guid.NewGuid());
 
         if (deviceId == Guid.Empty)
@@ -131,8 +130,7 @@ public sealed class DeviceAuthorizationService(IDeviceRegistryService deviceRegi
         CancellationToken cancellationToken = default)
     {
         var registration = await deviceRegistry.GetDeviceAsync(deviceId, cancellationToken);
-        var tenantId = principal.GetTenantId();
-        var userId = principal.GetUserId();
+        var (tenantId, userId) = DeviceIdentity.GetRequiredUserIdentity(principal);
 
         if (registration.Status != DeviceRegistrationStatus.Active
             || !string.Equals(registration.TenantId, tenantId, StringComparison.OrdinalIgnoreCase)
@@ -140,5 +138,19 @@ public sealed class DeviceAuthorizationService(IDeviceRegistryService deviceRegi
         {
             throw new DeviceAccessDeniedException(deviceId);
         }
+    }
+
+}
+
+file static class DeviceIdentity
+{
+    public static (string TenantId, string UserId) GetRequiredUserIdentity(ClaimsPrincipal principal)
+    {
+        if (!principal.TryGetTenantId(out var tenantId) || !principal.TryGetUserId(out var userId))
+        {
+            throw new UserIdentityRequiredException();
+        }
+
+        return (tenantId, userId);
     }
 }

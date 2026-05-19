@@ -71,6 +71,7 @@ static async Task ProxyAsync(
     string? tokenScope)
 {
     var httpClientFactory = context.RequestServices.GetRequiredService<IHttpClientFactory>();
+    var logger = context.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("GatewayProxy");
     var httpClient = httpClientFactory.CreateClient("gateway-proxy");
     var routePath = context.Request.RouteValues["path"] as string;
     var targetUri = BuildProxyUri(baseUri, routePath, upstreamPathPrefix, context.Request.QueryString);
@@ -89,6 +90,18 @@ static async Task ProxyAsync(
     var hasAuthorizationHeader = context.Request.Headers.ContainsKey("Authorization");
 
     if (!hasAuthorizationHeader &&
+        context.Request.Headers.TryGetValue(EasyAuthAccessTokenHeader, out var accessToken) &&
+        !string.IsNullOrWhiteSpace(accessToken.ToString()))
+    {
+        // Container Apps Easy Auth may validate and remove the original
+        // Authorization header before the request reaches the Gateway. When
+        // token store is enabled, the validated access token is available via
+        // X-MS-TOKEN-AAD-ACCESS-TOKEN; prefer that delegated token over the
+        // Gateway managed identity so user-specific endpoints keep user claims.
+        requestMessage.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken.ToString());
+        logger.LogDebug("Proxying {Method} {Path} with Easy Auth access token", context.Request.Method, context.Request.Path);
+    }
+    else if (!hasAuthorizationHeader &&
         tokenCredential is not null &&
         !string.IsNullOrWhiteSpace(tokenScope) &&
         !isSwaggerDocument)
@@ -101,12 +114,11 @@ static async Task ProxyAsync(
             context.RequestAborted).ConfigureAwait(false);
 
         requestMessage.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Token);
+        logger.LogDebug("Proxying {Method} {Path} with Gateway managed identity token", context.Request.Method, context.Request.Path);
     }
-    else if (!hasAuthorizationHeader &&
-             context.Request.Headers.TryGetValue(EasyAuthAccessTokenHeader, out var accessToken) &&
-             !string.IsNullOrWhiteSpace(accessToken.ToString()))
+    else if (hasAuthorizationHeader)
     {
-        requestMessage.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken.ToString());
+        logger.LogDebug("Proxying {Method} {Path} with incoming Authorization header", context.Request.Method, context.Request.Path);
     }
 
     if (context.Request.ContentLength is > 0 || context.Request.Headers.ContainsKey("Transfer-Encoding"))

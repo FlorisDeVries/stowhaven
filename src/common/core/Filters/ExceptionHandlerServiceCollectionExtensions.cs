@@ -20,6 +20,7 @@ public static class ExceptionHandlerServiceCollectionExtensions
         services.AddSingleton<IExceptionHandler, DeviceAlreadyRegisteredExceptionHandler>();
         services.AddSingleton<IExceptionHandler, DeviceNotRegisteredExceptionHandler>();
         services.AddSingleton<IExceptionHandler, DeviceAccessDeniedExceptionHandler>();
+        services.AddSingleton<IExceptionHandler, UserIdentityRequiredExceptionHandler>();
         services.AddSingleton<IExceptionHandler, ManifestPayloadNotAvailableExceptionHandler>();
         
         // General exception handlers

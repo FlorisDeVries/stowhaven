@@ -3,6 +3,7 @@ using Azure.Core;
 using FluentAssertions;
 using FlorisDeV.BackupClient.Clients.BackupApi;
 using FlorisDeV.BackupClient.Clients.BackupApi.Config;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
 
@@ -15,6 +16,7 @@ public class BackupApiAuthHandlerTests
 {
     private readonly Mock<IOptionsSnapshot<BackupApiClientOptions>> _mockOptions;
     private readonly Mock<TokenCredential> _mockCredential;
+    private readonly Mock<ILogger<BackupApiAuthHandler>> _mockLogger;
     private readonly BackupApiClientOptions _clientOptions;
 
     public BackupApiAuthHandlerTests()
@@ -30,6 +32,8 @@ public class BackupApiAuthHandlerTests
         _mockOptions.Setup(o => o.Value).Returns(_clientOptions);
 
         _mockCredential = new Mock<TokenCredential>();
+
+        _mockLogger = new Mock<ILogger<BackupApiAuthHandler>>();
     }
 
     [Fact]
@@ -45,7 +49,7 @@ public class BackupApiAuthHandlerTests
             .Callback<TokenRequestContext, CancellationToken>((context, _) => capturedContext = context)
             .ReturnsAsync(expectedToken);
 
-        var handler = new BackupApiAuthHandler(_mockOptions.Object, _mockCredential.Object)
+        var handler = new BackupApiAuthHandler(_mockOptions.Object, _mockCredential.Object, _mockLogger.Object)
         {
             InnerHandler = new TestHttpMessageHandler()
         };
@@ -74,7 +78,7 @@ public class BackupApiAuthHandlerTests
             .ReturnsAsync(expectedToken);
 
         var testHandler = new TestHttpMessageHandler();
-        var handler = new BackupApiAuthHandler(_mockOptions.Object, _mockCredential.Object)
+        var handler = new BackupApiAuthHandler(_mockOptions.Object, _mockCredential.Object, _mockLogger.Object)
         {
             InnerHandler = testHandler
         };
@@ -103,7 +107,7 @@ public class BackupApiAuthHandlerTests
             .ReturnsAsync(expectedToken);
 
         var testHandler = new TestHttpMessageHandler();
-        var handler = new BackupApiAuthHandler(_mockOptions.Object, _mockCredential.Object)
+        var handler = new BackupApiAuthHandler(_mockOptions.Object, _mockCredential.Object, _mockLogger.Object)
         {
             InnerHandler = testHandler
         };
@@ -132,7 +136,7 @@ public class BackupApiAuthHandlerTests
             .ReturnsAsync(expectedToken);
 
         var testHandler = new TestHttpMessageHandler(HttpStatusCode.Created, "Test response");
-        var handler = new BackupApiAuthHandler(_mockOptions.Object, _mockCredential.Object)
+        var handler = new BackupApiAuthHandler(_mockOptions.Object, _mockCredential.Object, _mockLogger.Object)
         {
             InnerHandler = testHandler
         };
@@ -162,14 +166,14 @@ public class BackupApiAuthHandlerTests
 
         _mockCredential
             .Setup(c => c.GetTokenAsync(It.IsAny<TokenRequestContext>(), It.IsAny<CancellationToken>()))
-            .Callback<TokenRequestContext, CancellationToken>((_, ct) => 
+            .Callback<TokenRequestContext, CancellationToken>((_, ct) =>
             {
                 wasCalled = true;
                 ct.CanBeCanceled.Should().BeTrue("cancellation token should be passed through");
             })
             .ReturnsAsync(expectedToken);
 
-        var handler = new BackupApiAuthHandler(_mockOptions.Object, _mockCredential.Object)
+        var handler = new BackupApiAuthHandler(_mockOptions.Object, _mockCredential.Object, _mockLogger.Object)
         {
             InnerHandler = new TestHttpMessageHandler()
         };
@@ -198,7 +202,7 @@ public class BackupApiAuthHandlerTests
             .Setup(c => c.GetTokenAsync(It.IsAny<TokenRequestContext>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(expectedException);
 
-        var handler = new BackupApiAuthHandler(_mockOptions.Object, _mockCredential.Object)
+        var handler = new BackupApiAuthHandler(_mockOptions.Object, _mockCredential.Object, _mockLogger.Object)
         {
             InnerHandler = new TestHttpMessageHandler()
         };
@@ -228,7 +232,7 @@ public class BackupApiAuthHandlerTests
                 return new AccessToken($"token-{tokenCallCount}", DateTimeOffset.UtcNow.AddHours(1));
             });
 
-        var handler = new BackupApiAuthHandler(_mockOptions.Object, _mockCredential.Object)
+        var handler = new BackupApiAuthHandler(_mockOptions.Object, _mockCredential.Object, _mockLogger.Object)
         {
             InnerHandler = new TestHttpMessageHandler()
         };
@@ -258,7 +262,7 @@ public class BackupApiAuthHandlerTests
             .ReturnsAsync(expectedToken);
 
         var testHandler = new TestHttpMessageHandler();
-        var handler = new BackupApiAuthHandler(_mockOptions.Object, _mockCredential.Object)
+        var handler = new BackupApiAuthHandler(_mockOptions.Object, _mockCredential.Object, _mockLogger.Object)
         {
             InnerHandler = testHandler
         };
@@ -292,7 +296,7 @@ public class BackupApiAuthHandlerTests
             .Setup(c => c.GetTokenAsync(It.IsAny<TokenRequestContext>(), It.IsAny<CancellationToken>()))
             .ThrowsAsync(new OperationCanceledException());
 
-        var handler = new BackupApiAuthHandler(_mockOptions.Object, _mockCredential.Object)
+        var handler = new BackupApiAuthHandler(_mockOptions.Object, _mockCredential.Object, _mockLogger.Object)
         {
             InnerHandler = new TestHttpMessageHandler()
         };
@@ -317,7 +321,7 @@ public class BackupApiAuthHandlerTests
             .Setup(c => c.GetTokenAsync(It.IsAny<TokenRequestContext>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(expectedToken);
 
-        var handler = new BackupApiAuthHandler(_mockOptions.Object, _mockCredential.Object)
+        var handler = new BackupApiAuthHandler(_mockOptions.Object, _mockCredential.Object, _mockLogger.Object)
         {
             InnerHandler = new TestHttpMessageHandler()
         };
@@ -330,7 +334,7 @@ public class BackupApiAuthHandlerTests
 
         // Assert
         // Value is accessed twice: once for AuthenticationTenant, once for AuthenticationScope
-        _mockOptions.Verify(o => o.Value, Times.AtLeastOnce(), 
+        _mockOptions.Verify(o => o.Value, Times.AtLeastOnce(),
             "should read configuration from options snapshot");
     }
 

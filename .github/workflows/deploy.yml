@@ -7,6 +7,17 @@ on:
         description: 'Container image tag to deploy. Defaults to the commit SHA.'
         required: false
         type: string
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/deploy.yml'
+      - 'deploy/bicep/**'
+      - 'src/**'
+      - 'tests/**'
+      - 'FlorisDeV.BackupApi.sln'
+      - 'Dockerfile'
+      - '.dockerignore'
   push:
     branches:
       - main
@@ -14,6 +25,8 @@ on:
       - '.github/workflows/deploy.yml'
       - 'deploy/bicep/**'
       - 'src/**'
+      - 'tests/**'
+      - 'FlorisDeV.BackupApi.sln'
       - 'Dockerfile'
       - '.dockerignore'
 
@@ -41,9 +54,35 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  validate:
-    name: Validate Bicep
+  ci:
+    name: CI - Build and test
     runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore solution
+        run: dotnet restore FlorisDeV.BackupApi.sln
+
+      - name: Build solution
+        run: dotnet build FlorisDeV.BackupApi.sln --configuration Release --no-restore
+
+      - name: Build Gateway
+        run: dotnet build src/services/gateway/Gateway.csproj --configuration Release
+
+      - name: Test solution
+        run: dotnet test FlorisDeV.BackupApi.sln --configuration Release --no-build --verbosity normal
+
+  validate:
+    name: CD - Validate Bicep
+    runs-on: ubuntu-latest
+    needs: ci
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -126,7 +165,7 @@ jobs:
             --output none
 
   deploy-foundation:
-    name: Deploy foundation
+    name: CD - Deploy foundation
     runs-on: ubuntu-latest
     needs: validate
     environment: production
@@ -168,7 +207,7 @@ jobs:
           echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
 
   build-and-push:
-    name: Build and push images
+    name: CD - Build and push images
     runs-on: ubuntu-latest
     needs: deploy-foundation
     steps:
@@ -234,7 +273,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=gateway
 
   deploy-apps:
-    name: Deploy Container Apps
+    name: CD - Deploy Container Apps
     runs-on: ubuntu-latest
     needs:
       - deploy-foundation

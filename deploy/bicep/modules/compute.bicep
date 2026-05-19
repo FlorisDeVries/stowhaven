@@ -506,6 +506,11 @@ resource gatewayAuthConfig 'Microsoft.App/containerApps/authConfigs@2024-03-01' 
     globalValidation: {
       unauthenticatedClientAction: 'RedirectToLoginPage'
     }
+    login: {
+      tokenStore: {
+        enabled: true
+      }
+    }
     identityProviders: {
       azureActiveDirectory: {
         enabled: true

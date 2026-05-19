@@ -102,7 +102,9 @@ public static class JwtBearerAuthenticationHandler
                     context.Fail("Missing required scope or app role: backup.client, backup.admin, or backup.gateway");
                 }
 
-                var userId = context.Principal?.GetUserId();
+                var userId = context.Principal?.TryGetUserId(out var resolvedUserId) == true
+                    ? resolvedUserId
+                    : "unknown";
                 logger.LogDebug("JWT token validated for user: {UserId}", userId);
 
                 return Task.CompletedTask;
@@ -149,4 +151,19 @@ public static class ClaimsPrincipalExtensions
     public static string GetTenantId(this ClaimsPrincipal user)
         => user.FindFirst("tid")?.Value
         ?? throw new SecurityException("Tenant ID not found in token");
+
+    public static bool TryGetUserId(this ClaimsPrincipal user, out string userId)
+    {
+        userId = user.FindFirst("oid")?.Value
+                 ?? user.FindFirst("sub")?.Value
+                 ?? string.Empty;
+
+        return !string.IsNullOrWhiteSpace(userId);
+    }
+
+    public static bool TryGetTenantId(this ClaimsPrincipal user, out string tenantId)
+    {
+        tenantId = user.FindFirst("tid")?.Value ?? string.Empty;
+        return !string.IsNullOrWhiteSpace(tenantId);
+    }
 }

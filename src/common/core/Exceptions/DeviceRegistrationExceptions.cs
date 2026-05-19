@@ -22,6 +22,11 @@ public sealed class DeviceAccessDeniedException(Guid deviceId)
     public Guid DeviceId { get; } = deviceId;
 }
 
+public sealed class UserIdentityRequiredException()
+    : Exception("A delegated user token is required for this operation")
+{
+}
+
 public sealed class DeviceAlreadyRegisteredExceptionHandler : ExceptionHandlerBase
 {
     public override bool CanHandle(Exception exception) => exception is DeviceAlreadyRegisteredException;
@@ -57,6 +62,22 @@ public sealed class DeviceAccessDeniedExceptionHandler : ExceptionHandlerBase
         var deviceEx = (DeviceAccessDeniedException)exception;
         var problemDetails = CreateProblemDetails(context, StatusCodes.Status403Forbidden, "Device access denied", exception.Message);
         problemDetails.Extensions["deviceId"] = deviceEx.DeviceId;
+        return (StatusCodes.Status403Forbidden, problemDetails);
+    }
+}
+
+public sealed class UserIdentityRequiredExceptionHandler : ExceptionHandlerBase
+{
+    public override bool CanHandle(Exception exception) => exception is UserIdentityRequiredException;
+
+    public override (int statusCode, ProblemDetails problemDetails) Handle(Exception exception, ExceptionContext context)
+    {
+        var problemDetails = CreateProblemDetails(
+            context,
+            StatusCodes.Status403Forbidden,
+            "User identity required",
+            exception.Message);
+
         return (StatusCodes.Status403Forbidden, problemDetails);
     }
 }
