@@ -1,0 +1,33 @@
+using FlorisDeV.BackupContracts.Api.Requests;
+using FlorisDeV.BackupContracts.Api.Responses;
+using Refit;
+
+namespace FlorisDeV.BackupClient.Clients.BackupApi;
+
+public interface IBackupApiClient
+{
+    [Post("/api/devices")]
+    Task<DeviceRegistrationResponse> RegisterDevice(RegisterDeviceRequest request,
+        CancellationToken cancellationToken = default);
+
+    [Post("/api/devices/{deviceId}/backup/start-run")]
+    Task<StartBackupRunResponse> StartBackupRun(Guid deviceId,
+        CancellationToken cancellationToken = default);
+
+    [Post("/api/devices/{deviceId}/backup/commit-run")]
+    Task<CommitBackupRunResponse> CommitBackupRun(Guid deviceId, CommitBackupRunRequest request,
+        CancellationToken cancellationToken = default);
+
+    [Get("/api/devices/{deviceId}/backup/commit-status/{commitId}")]
+    Task<CommitStatusResponse> GetCommitStatus(Guid deviceId, Guid commitId,
+        CancellationToken cancellationToken = default);
+
+    [Get("/api/devices/{deviceId}/restore/files")]
+    Task<ListRestoreFilesResponse> ListRestoreFiles(Guid deviceId, [Query] int pageSize = 100,
+        [Query] string? continuationToken = null,
+        CancellationToken cancellationToken = default);
+
+    [Post("/api/devices/{deviceId}/restore/start")]
+    Task<StartRestoreResponse> StartRestore(Guid deviceId, StartRestoreRequest request,
+        CancellationToken cancellationToken = default);
+}
