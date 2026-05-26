@@ -72,6 +72,10 @@ param gatewayAuthClientSecret string = ''
 @description('Optional allowed token audiences for Gateway built-in auth. Defaults to the Gateway auth client ID when auth is enabled.')
 param gatewayAuthAllowedAudiences array = []
 
+@description('SAS URL for the Blob Storage container used by Container Apps Easy Auth token store.')
+@secure()
+param gatewayAuthTokenStoreSasUrl string = ''
+
 @description('Header name used by the Gateway to access otherwise hidden service Swagger endpoints.')
 param gatewayProxyHeaderName string = 'X-Backup-Gateway'
 
@@ -107,11 +111,16 @@ param apiAuthClientId string = '906eb0e3-e351-47c0-a68a-690207f4cccb'
 param apiAuthAudience string = 'api://${apiAuthClientId}'
 
 var gatewayAuthEnabled = !empty(gatewayAuthClientId) && !empty(gatewayAuthClientSecret)
+var gatewayAuthTokenStoreSasUrlSecretName = 'gateway-auth-token-store-sas-url'
 var gatewayProxyHeaderValueEffective = empty(gatewayProxyHeaderValue) ? uniqueString(subscription().id, resourceGroup().id, nameSuffix, 'gateway') : gatewayProxyHeaderValue
 var gatewayAuthSecrets = gatewayAuthEnabled ? [
   {
     name: 'gateway-auth-client-secret'
     value: gatewayAuthClientSecret
+  }
+  {
+    name: gatewayAuthTokenStoreSasUrlSecretName
+    value: gatewayAuthTokenStoreSasUrl
   }
 ] : []
 
@@ -509,6 +518,9 @@ resource gatewayAuthConfig 'Microsoft.App/containerApps/authConfigs@2024-03-01' 
     login: {
       tokenStore: {
         enabled: true
+        azureBlobStorage: {
+          sasUrlSettingName: gatewayAuthTokenStoreSasUrlSecretName
+        }
       }
     }
     identityProviders: {
