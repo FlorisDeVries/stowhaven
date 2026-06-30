@@ -12,6 +12,12 @@ param lifecycleArchiveAfterDays int
 @description('Common resource tags')
 param tags object
 
+@description('Name for the gateway auth token store blob container')
+param gatewayAuthTokenStoreContainerName string = 'gateway-auth-tokens'
+
+@description('Expiry timestamp for the gateway auth token store SAS URL')
+param gatewayAuthTokenStoreSasExpiry string
+
 // ---------------------------------------------------------------------------
 // Data storage account
 // ---------------------------------------------------------------------------
@@ -45,6 +51,22 @@ resource backupsContainer 'Microsoft.Storage/storageAccounts/blobServices/contai
     publicAccess: 'None'
   }
 }
+
+resource gatewayAuthTokenStoreContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-01-01' = {
+  parent: dataStorageBlobService
+  name: gatewayAuthTokenStoreContainerName
+  properties: {
+    publicAccess: 'None'
+  }
+}
+
+var gatewayAuthTokenStoreSasToken = gatewayAuthTokenStoreContainer.listServiceSas('2023-01-01', {
+  canonicalizedResource: '/blob/${dataStorageAccount.name}/${gatewayAuthTokenStoreContainerName}'
+  signedResource: 'c'
+  signedPermission: 'racwdl'
+  signedProtocol: 'https'
+  signedExpiry: gatewayAuthTokenStoreSasExpiry
+}).serviceSasToken
 
 resource dataStorageQueueService 'Microsoft.Storage/storageAccounts/queueServices@2023-01-01' = {
   parent: dataStorageAccount
@@ -156,3 +178,4 @@ output dataStorageAccountName string = dataStorageAccount.name
 output dataStorageAccountId string = dataStorageAccount.id
 output containerName string = backupsContainer.name
 output backupEventsQueueName string = backupEventsQueue.name
+output gatewayAuthTokenStoreSasUrl string = 'https://${dataStorageAccount.name}.blob.${environment().suffixes.storage}/${gatewayAuthTokenStoreContainerName}?${gatewayAuthTokenStoreSasToken}'

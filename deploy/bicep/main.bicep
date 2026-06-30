@@ -131,8 +131,6 @@ var commonTags = {
 var keyVaultName = 'kv-${nameSuffix}'
 var cosmosAccountNameEffective = empty(cosmosAccountName) ? 'cosmos-${nameSuffix}' : cosmosAccountName
 var dataStorageAccountName = 'stabackup${nameSuffixStr}'
-var gatewayAuthTokenStoreContainerName = 'gateway-auth-tokens'
-
 // Role definition IDs (built-in)
 var roleStorageBlobDataContributor = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
 var roleStorageBlobDelegator       = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'db58b8e5-c6ad-4a2a-8342-4190687cbf4a')
@@ -150,6 +148,7 @@ module storage 'modules/storage.bicep' = {
     location: location
     nameSuffixStr: nameSuffixStr
     lifecycleArchiveAfterDays: lifecycleArchiveAfterDays
+    gatewayAuthTokenStoreSasExpiry: gatewayAuthTokenStoreSasExpiry
     tags: commonTags
   }
 }
@@ -194,31 +193,6 @@ resource cosmosAccount 'Microsoft.DocumentDB/databaseAccounts@2024-05-15' existi
 resource dataStorageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' existing = {
   name: dataStorageAccountName
 }
-
-resource dataStorageBlobService 'Microsoft.Storage/storageAccounts/blobServices@2023-01-01' existing = {
-  parent: dataStorageAccount
-  name: 'default'
-}
-
-resource gatewayAuthTokenStoreContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-01-01' = {
-  parent: dataStorageBlobService
-  name: gatewayAuthTokenStoreContainerName
-  properties: {
-    publicAccess: 'None'
-  }
-  dependsOn: [
-    storage
-  ]
-}
-
-var gatewayAuthTokenStoreSasToken = gatewayAuthTokenStoreContainer.listServiceSas('2023-01-01', {
-  canonicalizedResource: '/blob/${dataStorageAccountName}/${gatewayAuthTokenStoreContainerName}'
-  signedResource: 'c'
-  signedPermission: 'racwdl'
-  signedProtocol: 'https'
-  signedExpiry: gatewayAuthTokenStoreSasExpiry
-}).serviceSasToken
-var gatewayAuthTokenStoreSasUrl = 'https://${dataStorageAccountName}.blob.${environment().suffixes.storage}/${gatewayAuthTokenStoreContainerName}?${gatewayAuthTokenStoreSasToken}'
 
 resource containerRegistry 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = {
   name: 'acr${nameSuffixStr}'
@@ -320,7 +294,7 @@ module compute 'modules/compute.bicep' = if (deployContainerApps) {
     gatewayAuthClientId: gatewayAuthClientId
     gatewayAuthClientSecret: gatewayAuthClientSecret
     gatewayAuthAllowedAudiences: gatewayAuthAllowedAudiences
-    gatewayAuthTokenStoreSasUrl: gatewayAuthTokenStoreSasUrl
+    gatewayAuthTokenStoreSasUrl: storage.outputs.gatewayAuthTokenStoreSasUrl
     gatewayProxyHeaderName: gatewayProxyHeaderName
     gatewayProxyHeaderValue: gatewayProxyHeaderValue
     cosmosAccountEndpoint: cosmosAccount.properties.documentEndpoint
