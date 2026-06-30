@@ -56,18 +56,21 @@ public static class ProgramExtensions
         services.AddSingleton<TokenCredential>(provider =>
         {
             var logger = provider.GetRequiredService<ILogger<Program>>();
-            
-            if (environment.IsDevelopment())
+            var apiConfig = provider.GetRequiredService<IOptions<BackupApiClientOptions>>().Value;
+
+            // Use no-op only when the API is a local endpoint (local dev with anonymous auth disabled).
+            // If the URL points at a deployed host, use real MSAL auth even in Development.
+            var apiUri = Uri.TryCreate(apiConfig.ApiUrl, UriKind.Absolute, out var u) ? u : null;
+            var isLocalApi = apiUri is not null && (apiUri.IsLoopback || apiUri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase));
+
+            if (environment.IsDevelopment() && isLocalApi)
             {
-                logger.LogInformation("Development mode: Using NoOpTokenCredential (authentication disabled)");
-                // Development: API disables authentication, so use no-op credential
+                logger.LogInformation("Development mode (local API): Using NoOpTokenCredential (authentication disabled)");
                 return new NoOpTokenCredential();
             }
 
-            logger.LogInformation("Production mode: Using MsalTokenCredential (interactive authentication)");
-            // Production: Use MSAL for interactive user authentication (distributed clients)
+            logger.LogInformation("Using MsalTokenCredential for {ApiUrl} (interactive authentication)", apiConfig.ApiUrl);
             var azureAdConfig = provider.GetRequiredService<IOptions<AzureAdOptions>>().Value;
-            var apiConfig = provider.GetRequiredService<IOptions<BackupApiClientOptions>>().Value;
 
             // MSAL credential creation is async, but we need sync registration
             // So we create it synchronously here (blocking is acceptable at startup)

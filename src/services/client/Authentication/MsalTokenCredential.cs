@@ -68,7 +68,7 @@ public sealed class MsalTokenCredential : TokenCredential
         CancellationToken cancellationToken)
     {
         // Use scopes from requestContext if provided, otherwise fall back to constructor scopes
-        var scopes = requestContext.Scopes.Length == 0
+        var scopes = requestContext.Scopes.Length > 0
             ? requestContext.Scopes.ToArray()
             : _scopes;
 
