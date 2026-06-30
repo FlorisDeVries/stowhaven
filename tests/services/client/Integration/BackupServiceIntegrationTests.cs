@@ -138,9 +138,9 @@ public class BackupServiceIntegrationTests : IDisposable
             IReadOnlyList<TaggedFile> files,
             CancellationToken cancellationToken)
         {
-            // Simulate successful uploads and track them
             foreach (var file in files)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 UploadedPaths.Add(file.GetStoragePath());
             }
             return Task.FromResult<IReadOnlyList<TaggedFile>>(files);
@@ -546,7 +546,7 @@ public class BackupServiceIntegrationTests : IDisposable
         var backupService = CreateBackupService(backupTargets);
 
         using var cts = new CancellationTokenSource();
-        cts.CancelAfter(10); // Cancel quickly
+        cts.Cancel(); // Pre-cancel so the test is deterministic regardless of machine speed
 
         // Act & Assert
         var act = async () => await backupService.Backup(cts.Token);
