@@ -1,0 +1,2205 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.43.8.12551",
+      "templateHash": "17976384524295194128"
+    }
+  },
+  "parameters": {
+    "location": {
+      "type": "string",
+      "defaultValue": "westeurope",
+      "metadata": {
+        "description": "Azure region for all resources"
+      }
+    },
+    "nameSuffix": {
+      "type": "string",
+      "defaultValue": "fdev-weu-prd",
+      "minLength": 1,
+      "metadata": {
+        "description": "Suffix for resource names (with dashes)"
+      }
+    },
+    "nameSuffixStr": {
+      "type": "string",
+      "defaultValue": "fdevweuprd",
+      "minLength": 2,
+      "metadata": {
+        "description": "Suffix for storage-account-style names (no dashes)"
+      }
+    },
+    "lifecycleArchiveAfterDays": {
+      "type": "int",
+      "defaultValue": 30,
+      "metadata": {
+        "description": "Days after which blobs are moved to archive tier"
+      }
+    },
+    "logAnalyticsRetentionDays": {
+      "type": "int",
+      "defaultValue": 30,
+      "metadata": {
+        "description": "Retention period for Log Analytics workspace in days"
+      }
+    },
+    "logAnalyticsDailyQuotaGb": {
+      "type": "int",
+      "defaultValue": 1,
+      "metadata": {
+        "description": "Daily ingestion quota for Log Analytics workspace in GB"
+      }
+    },
+    "imageTag": {
+      "type": "string",
+      "defaultValue": "latest",
+      "metadata": {
+        "description": "Container image tag to deploy"
+      }
+    },
+    "deployContainerApps": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Deploy Container Apps and their runtime role assignments. Set false for first-phase infrastructure bootstrap before images exist in ACR."
+      }
+    },
+    "allowCopyDeleteFallback": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Explicitly allow copy/delete fallback when ADLS Gen2 rename fails. Keep false in production unless early deletion cost and partial-failure risks are accepted."
+      }
+    },
+    "enableSasIpRestriction": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Restrict upload SAS URLs to the API-observed client IP. Keep false for SaaS clients unless proxy/client IP behavior has been validated."
+      }
+    },
+    "staleStagingCleanupCronSchedule": {
+      "type": "string",
+      "defaultValue": "@every 24h",
+      "metadata": {
+        "description": "Dapr cron schedule for automatic stale staging cleanup. Use @every syntax or a cron expression supported by the Dapr cron binding."
+      }
+    },
+    "staleStagingCleanupOlderThanHours": {
+      "type": "int",
+      "defaultValue": 24,
+      "metadata": {
+        "description": "Delete staging blobs older than this many hours during scheduled cleanup."
+      }
+    },
+    "staleStagingCleanupMaxDeletes": {
+      "type": "int",
+      "defaultValue": 500,
+      "metadata": {
+        "description": "Maximum number of stale staging blobs deleted by one scheduled cleanup invocation."
+      }
+    },
+    "staleStagingCleanupDryRun": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Run scheduled stale staging cleanup as a dry run instead of deleting blobs."
+      }
+    },
+    "apiMinReplicas": {
+      "type": "int",
+      "defaultValue": 0,
+      "metadata": {
+        "description": "Minimum API replicas. Use 0 for beta/development cost reduction; set at least 1 when Dapr cron bindings must fire without external traffic."
+      }
+    },
+    "gatewayMinReplicas": {
+      "type": "int",
+      "defaultValue": 0,
+      "metadata": {
+        "description": "Minimum Gateway replicas. Keep 0 for lowest cost; the app scales up on HTTP requests."
+      }
+    },
+    "gatewayAuthClientId": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional Microsoft Entra application client ID for Container Apps built-in authentication on the Gateway. Leave empty to deploy without built-in auth."
+      }
+    },
+    "gatewayAuthClientSecret": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional Microsoft Entra application client secret for Container Apps built-in authentication on the Gateway."
+      }
+    },
+    "gatewayAuthAllowedAudiences": {
+      "type": "array",
+      "defaultValue": [],
+      "metadata": {
+        "description": "Optional allowed token audiences for Gateway built-in auth. Defaults to the Gateway auth client ID when auth is enabled."
+      }
+    },
+    "gatewayAuthTokenStoreSasExpiry": {
+      "type": "string",
+      "defaultValue": "2036-01-01T00:00:00Z",
+      "metadata": {
+        "description": "Expiry timestamp for the Gateway Easy Auth Blob Storage token store SAS URL."
+      }
+    },
+    "gatewayProxyHeaderName": {
+      "type": "string",
+      "defaultValue": "X-Backup-Gateway",
+      "metadata": {
+        "description": "Header name used by the Gateway to access otherwise hidden service Swagger endpoints."
+      }
+    },
+    "gatewayProxyHeaderValue": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional shared header value used by the Gateway to access otherwise hidden service Swagger endpoints. Leave empty to derive a stable deployment-specific value."
+      }
+    },
+    "cosmosAccountName": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Name of the existing, manually created Cosmos DB account used by the production Dapr state-store components. Leave empty to derive from the deployment name suffix."
+      }
+    },
+    "cosmosDatabaseName": {
+      "type": "string",
+      "defaultValue": "backup-state",
+      "metadata": {
+        "description": "Cosmos DB SQL database name for Dapr state."
+      }
+    },
+    "cosmosDatabaseThroughput": {
+      "type": "int",
+      "defaultValue": 400,
+      "minValue": 400,
+      "metadata": {
+        "description": "Cosmos DB shared database throughput in RU/s for the Dapr state containers. Use 400 for the lowest provisioned throughput tier/free-tier-friendly setup."
+      }
+    },
+    "cosmosManifestContainerName": {
+      "type": "string",
+      "defaultValue": "manifest-state",
+      "metadata": {
+        "description": "Cosmos DB SQL container name for manifest-state-store."
+      }
+    },
+    "cosmosDeviceRegistryContainerName": {
+      "type": "string",
+      "defaultValue": "device-registry",
+      "metadata": {
+        "description": "Cosmos DB SQL container name for device-registry-state-store."
+      }
+    },
+    "daprAzureClientId": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Optional Azure client ID for a user-assigned managed identity used by Dapr Azure components. Leave empty for system-assigned Container App identities."
+      }
+    },
+    "keyVaultNetworkDefaultAction": {
+      "type": "string",
+      "defaultValue": "Allow",
+      "allowedValues": [
+        "Allow",
+        "Deny"
+      ],
+      "metadata": {
+        "description": "Key Vault network ACL default action. Keep Allow until Container Apps/Dapr access through private networking has been configured; set Deny with private endpoints/VNet integration."
+      }
+    },
+    "apiAuthTenantId": {
+      "type": "string",
+      "defaultValue": "[tenant().tenantId]",
+      "metadata": {
+        "description": "Microsoft Entra tenant ID used by the Backup API for JWT validation."
+      }
+    },
+    "apiAuthClientId": {
+      "type": "string",
+      "defaultValue": "906eb0e3-e351-47c0-a68a-690207f4cccb",
+      "metadata": {
+        "description": "Microsoft Entra application/client ID of the Backup API app registration."
+      }
+    },
+    "apiAuthAudience": {
+      "type": "string",
+      "defaultValue": "[format('api://{0}', parameters('apiAuthClientId'))]",
+      "metadata": {
+        "description": "JWT audience accepted by the Backup API. Defaults to api://{apiAuthClientId}."
+      }
+    }
+  },
+  "variables": {
+    "commonTags": {
+      "Environment": "Production",
+      "Project": "BackupAPI"
+    },
+    "keyVaultName": "[format('kv-{0}', parameters('nameSuffix'))]",
+    "cosmosAccountNameEffective": "[if(empty(parameters('cosmosAccountName')), format('cosmos-{0}', parameters('nameSuffix')), parameters('cosmosAccountName'))]",
+    "dataStorageAccountName": "[format('stabackup{0}', parameters('nameSuffixStr'))]",
+    "roleStorageBlobDataContributor": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')]",
+    "roleStorageBlobDelegator": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'db58b8e5-c6ad-4a2a-8342-4190687cbf4a')]",
+    "roleStorageQueueDataContributor": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '974c5e8b-45b9-4653-ba55-5f855dd0fb88')]",
+    "roleAcrPull": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')]",
+    "roleKeyVaultSecretsUser": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+      "apiVersion": "2023-01-31",
+      "name": "[format('id-acrpull-{0}', parameters('nameSuffix'))]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('commonTags')]"
+    },
+    {
+      "type": "Microsoft.DocumentDB/databaseAccounts/sqlDatabases",
+      "apiVersion": "2024-05-15",
+      "name": "[format('{0}/{1}', variables('cosmosAccountNameEffective'), parameters('cosmosDatabaseName'))]",
+      "properties": {
+        "resource": {
+          "id": "[parameters('cosmosDatabaseName')]"
+        },
+        "options": {
+          "throughput": "[parameters('cosmosDatabaseThroughput')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers",
+      "apiVersion": "2024-05-15",
+      "name": "[format('{0}/{1}/{2}', variables('cosmosAccountNameEffective'), parameters('cosmosDatabaseName'), parameters('cosmosManifestContainerName'))]",
+      "properties": {
+        "resource": {
+          "id": "[parameters('cosmosManifestContainerName')]",
+          "partitionKey": {
+            "paths": [
+              "/partitionKey"
+            ],
+            "kind": "Hash"
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.DocumentDB/databaseAccounts/sqlDatabases', variables('cosmosAccountNameEffective'), parameters('cosmosDatabaseName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers",
+      "apiVersion": "2024-05-15",
+      "name": "[format('{0}/{1}/{2}', variables('cosmosAccountNameEffective'), parameters('cosmosDatabaseName'), parameters('cosmosDeviceRegistryContainerName'))]",
+      "properties": {
+        "resource": {
+          "id": "[parameters('cosmosDeviceRegistryContainerName')]",
+          "partitionKey": {
+            "paths": [
+              "/partitionKey"
+            ],
+            "kind": "Hash"
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.DocumentDB/databaseAccounts/sqlDatabases', variables('cosmosAccountNameEffective'), parameters('cosmosDatabaseName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.ContainerRegistry/registries', format('acr{0}', parameters('nameSuffixStr')))]",
+      "name": "[guid(resourceId('Microsoft.ContainerRegistry/registries', format('acr{0}', parameters('nameSuffixStr'))), format('id-acrpull-{0}', parameters('nameSuffix')), 'acr-pull')]",
+      "properties": {
+        "roleDefinitionId": "[variables('roleAcrPull')]",
+        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-acrpull-{0}', parameters('nameSuffix'))), '2023-01-31').principalId]",
+        "principalType": "ServicePrincipal",
+        "description": "Container Apps registry pull identity - AcrPull on container registry"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Resources/deployments', 'registry')]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-acrpull-{0}', parameters('nameSuffix')))]"
+      ]
+    },
+    {
+      "condition": "[parameters('deployContainerApps')]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('dataStorageAccountName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('dataStorageAccountName')), format('ca-{0}', parameters('nameSuffix')), 'storage-contributor')]",
+      "properties": {
+        "roleDefinitionId": "[variables('roleStorageBlobDataContributor')]",
+        "principalId": "[reference(resourceId('Microsoft.Resources/deployments', 'compute'), '2025-04-01').outputs.principalId.value]",
+        "principalType": "ServicePrincipal",
+        "description": "Container App – Storage Blob Data Contributor on data storage account"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Resources/deployments', 'compute')]"
+      ]
+    },
+    {
+      "condition": "[parameters('deployContainerApps')]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('dataStorageAccountName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('dataStorageAccountName')), format('ca-{0}-worker', parameters('nameSuffix')), 'storage-contributor')]",
+      "properties": {
+        "roleDefinitionId": "[variables('roleStorageBlobDataContributor')]",
+        "principalId": "[reference(resourceId('Microsoft.Resources/deployments', 'compute'), '2025-04-01').outputs.workerPrincipalId.value]",
+        "principalType": "ServicePrincipal",
+        "description": "Worker Container App – Storage Blob Data Contributor on data storage account"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Resources/deployments', 'compute')]"
+      ]
+    },
+    {
+      "condition": "[parameters('deployContainerApps')]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('dataStorageAccountName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('dataStorageAccountName')), format('ca-{0}', parameters('nameSuffix')), 'storage-delegator')]",
+      "properties": {
+        "roleDefinitionId": "[variables('roleStorageBlobDelegator')]",
+        "principalId": "[reference(resourceId('Microsoft.Resources/deployments', 'compute'), '2025-04-01').outputs.principalId.value]",
+        "principalType": "ServicePrincipal",
+        "description": "Container App – Storage Blob Delegator on data storage account"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Resources/deployments', 'compute')]"
+      ]
+    },
+    {
+      "condition": "[parameters('deployContainerApps')]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('dataStorageAccountName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('dataStorageAccountName')), format('ca-{0}', parameters('nameSuffix')), 'queue-contributor')]",
+      "properties": {
+        "roleDefinitionId": "[variables('roleStorageQueueDataContributor')]",
+        "principalId": "[reference(resourceId('Microsoft.Resources/deployments', 'compute'), '2025-04-01').outputs.principalId.value]",
+        "principalType": "ServicePrincipal",
+        "description": "Container App – Storage Queue Data Contributor on backup events queue"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Resources/deployments', 'compute')]"
+      ]
+    },
+    {
+      "condition": "[parameters('deployContainerApps')]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('dataStorageAccountName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('dataStorageAccountName')), format('ca-{0}-worker', parameters('nameSuffix')), 'queue-contributor')]",
+      "properties": {
+        "roleDefinitionId": "[variables('roleStorageQueueDataContributor')]",
+        "principalId": "[reference(resourceId('Microsoft.Resources/deployments', 'compute'), '2025-04-01').outputs.workerPrincipalId.value]",
+        "principalType": "ServicePrincipal",
+        "description": "Worker Container App – Storage Queue Data Contributor on backup events queue"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Resources/deployments', 'compute')]"
+      ]
+    },
+    {
+      "condition": "[parameters('deployContainerApps')]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]",
+      "name": "[guid(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), format('ca-{0}', parameters('nameSuffix')), 'kv-secrets-user')]",
+      "properties": {
+        "roleDefinitionId": "[variables('roleKeyVaultSecretsUser')]",
+        "principalId": "[reference(resourceId('Microsoft.Resources/deployments', 'compute'), '2025-04-01').outputs.principalId.value]",
+        "principalType": "ServicePrincipal",
+        "description": "Container App - Key Vault Secrets User"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Resources/deployments', 'compute')]"
+      ]
+    },
+    {
+      "condition": "[parameters('deployContainerApps')]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]",
+      "name": "[guid(resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName')), format('ca-{0}-worker', parameters('nameSuffix')), 'kv-secrets-user')]",
+      "properties": {
+        "roleDefinitionId": "[variables('roleKeyVaultSecretsUser')]",
+        "principalId": "[reference(resourceId('Microsoft.Resources/deployments', 'compute'), '2025-04-01').outputs.workerPrincipalId.value]",
+        "principalType": "ServicePrincipal",
+        "description": "Worker Container App - Key Vault Secrets User"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Resources/deployments', 'compute')]"
+      ]
+    },
+    {
+      "condition": "[parameters('deployContainerApps')]",
+      "type": "Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments",
+      "apiVersion": "2024-05-15",
+      "name": "[format('{0}/{1}', variables('cosmosAccountNameEffective'), guid(resourceGroup().id, variables('cosmosAccountNameEffective'), format('ca-{0}', parameters('nameSuffix')), 'cosmos-data-contributor'))]",
+      "properties": {
+        "roleDefinitionId": "[resourceId('Microsoft.DocumentDB/databaseAccounts/sqlRoleDefinitions', variables('cosmosAccountNameEffective'), '00000000-0000-0000-0000-000000000002')]",
+        "principalId": "[reference(resourceId('Microsoft.Resources/deployments', 'compute'), '2025-04-01').outputs.principalId.value]",
+        "scope": "[resourceId('Microsoft.DocumentDB/databaseAccounts', variables('cosmosAccountNameEffective'))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Resources/deployments', 'compute')]"
+      ]
+    },
+    {
+      "condition": "[parameters('deployContainerApps')]",
+      "type": "Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments",
+      "apiVersion": "2024-05-15",
+      "name": "[format('{0}/{1}', variables('cosmosAccountNameEffective'), guid(resourceGroup().id, variables('cosmosAccountNameEffective'), format('ca-{0}-worker', parameters('nameSuffix')), 'cosmos-data-contributor'))]",
+      "properties": {
+        "roleDefinitionId": "[resourceId('Microsoft.DocumentDB/databaseAccounts/sqlRoleDefinitions', variables('cosmosAccountNameEffective'), '00000000-0000-0000-0000-000000000002')]",
+        "principalId": "[reference(resourceId('Microsoft.Resources/deployments', 'compute'), '2025-04-01').outputs.workerPrincipalId.value]",
+        "scope": "[resourceId('Microsoft.DocumentDB/databaseAccounts', variables('cosmosAccountNameEffective'))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Resources/deployments', 'compute')]"
+      ]
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "storage",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "location": {
+            "value": "[parameters('location')]"
+          },
+          "nameSuffixStr": {
+            "value": "[parameters('nameSuffixStr')]"
+          },
+          "lifecycleArchiveAfterDays": {
+            "value": "[parameters('lifecycleArchiveAfterDays')]"
+          },
+          "tags": {
+            "value": "[variables('commonTags')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.43.8.12551",
+              "templateHash": "16306465867978575522"
+            }
+          },
+          "parameters": {
+            "location": {
+              "type": "string",
+              "metadata": {
+                "description": "Azure region for resources"
+              }
+            },
+            "nameSuffixStr": {
+              "type": "string",
+              "metadata": {
+                "description": "Suffix for storage account names (no dashes, e.g. fdevweuprd)"
+              }
+            },
+            "lifecycleArchiveAfterDays": {
+              "type": "int",
+              "metadata": {
+                "description": "Days after which blobs are moved to archive tier"
+              }
+            },
+            "tags": {
+              "type": "object",
+              "metadata": {
+                "description": "Common resource tags"
+              }
+            },
+            "gatewayAuthTokenStoreContainerName": {
+              "type": "string",
+              "defaultValue": "gateway-auth-tokens",
+              "metadata": {
+                "description": "Name for the gateway auth token store blob container"
+              }
+            }
+          },
+          "variables": {
+            "backupsContainerPrefix": "[format('{0}/', 'backups')]"
+          },
+          "resources": [
+            {
+              "type": "Microsoft.Storage/storageAccounts",
+              "apiVersion": "2023-01-01",
+              "name": "[format('stabackup{0}', parameters('nameSuffixStr'))]",
+              "location": "[parameters('location')]",
+              "kind": "StorageV2",
+              "sku": {
+                "name": "Standard_LRS"
+              },
+              "properties": {
+                "accessTier": "Cool",
+                "allowBlobPublicAccess": false,
+                "minimumTlsVersion": "TLS1_2",
+                "supportsHttpsTrafficOnly": true,
+                "isHnsEnabled": true
+              },
+              "tags": "[parameters('tags')]"
+            },
+            {
+              "type": "Microsoft.Storage/storageAccounts/blobServices",
+              "apiVersion": "2023-01-01",
+              "name": "[format('{0}/{1}', format('stabackup{0}', parameters('nameSuffixStr')), 'default')]",
+              "dependsOn": [
+                "[resourceId('Microsoft.Storage/storageAccounts', format('stabackup{0}', parameters('nameSuffixStr')))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+              "apiVersion": "2023-01-01",
+              "name": "[format('{0}/{1}/{2}', format('stabackup{0}', parameters('nameSuffixStr')), 'default', 'backups')]",
+              "properties": {
+                "publicAccess": "None"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Storage/storageAccounts/blobServices', format('stabackup{0}', parameters('nameSuffixStr')), 'default')]"
+              ]
+            },
+            {
+              "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+              "apiVersion": "2023-01-01",
+              "name": "[format('{0}/{1}/{2}', format('stabackup{0}', parameters('nameSuffixStr')), 'default', parameters('gatewayAuthTokenStoreContainerName'))]",
+              "properties": {
+                "publicAccess": "None"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Storage/storageAccounts/blobServices', format('stabackup{0}', parameters('nameSuffixStr')), 'default')]"
+              ]
+            },
+            {
+              "type": "Microsoft.Storage/storageAccounts/queueServices",
+              "apiVersion": "2023-01-01",
+              "name": "[format('{0}/{1}', format('stabackup{0}', parameters('nameSuffixStr')), 'default')]",
+              "dependsOn": [
+                "[resourceId('Microsoft.Storage/storageAccounts', format('stabackup{0}', parameters('nameSuffixStr')))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Storage/storageAccounts/queueServices/queues",
+              "apiVersion": "2023-01-01",
+              "name": "[format('{0}/{1}/{2}', format('stabackup{0}', parameters('nameSuffixStr')), 'default', 'backup-events')]",
+              "dependsOn": [
+                "[resourceId('Microsoft.Storage/storageAccounts/queueServices', format('stabackup{0}', parameters('nameSuffixStr')), 'default')]"
+              ]
+            },
+            {
+              "type": "Microsoft.Storage/storageAccounts/managementPolicies",
+              "apiVersion": "2023-01-01",
+              "name": "[format('{0}/{1}', format('stabackup{0}', parameters('nameSuffixStr')), 'default')]",
+              "properties": {
+                "policy": {
+                  "rules": [
+                    {
+                      "name": "devices-to-cold",
+                      "enabled": true,
+                      "type": "Lifecycle",
+                      "definition": {
+                        "filters": {
+                          "prefixMatch": [
+                            "[format('{0}devices/', variables('backupsContainerPrefix'))]"
+                          ],
+                          "blobTypes": [
+                            "blockBlob"
+                          ]
+                        },
+                        "actions": {
+                          "baseBlob": {
+                            "tierToCold": {
+                              "daysAfterCreationGreaterThan": 0
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "name": "backup-tier-promotion",
+                      "enabled": true,
+                      "type": "Lifecycle",
+                      "definition": {
+                        "filters": {
+                          "prefixMatch": [
+                            "[format('{0}devices/', variables('backupsContainerPrefix'))]"
+                          ],
+                          "blobTypes": [
+                            "blockBlob"
+                          ]
+                        },
+                        "actions": {
+                          "baseBlob": {
+                            "tierToArchive": {
+                              "daysAfterCreationGreaterThan": "[parameters('lifecycleArchiveAfterDays')]"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "name": "retired-cleanup",
+                      "enabled": true,
+                      "type": "Lifecycle",
+                      "definition": {
+                        "filters": {
+                          "prefixMatch": [
+                            "[format('{0}devices/', variables('backupsContainerPrefix'))]"
+                          ],
+                          "blobIndexMatch": [
+                            {
+                              "name": "state",
+                              "op": "==",
+                              "value": "retired"
+                            }
+                          ],
+                          "blobTypes": [
+                            "blockBlob"
+                          ]
+                        },
+                        "actions": {
+                          "baseBlob": {
+                            "delete": {
+                              "daysAfterCreationGreaterThan": 210
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "name": "staging-cleanup",
+                      "enabled": true,
+                      "type": "Lifecycle",
+                      "definition": {
+                        "filters": {
+                          "prefixMatch": [
+                            "[format('{0}staging/', variables('backupsContainerPrefix'))]"
+                          ],
+                          "blobTypes": [
+                            "blockBlob"
+                          ]
+                        },
+                        "actions": {
+                          "baseBlob": {
+                            "delete": {
+                              "daysAfterCreationGreaterThan": 7
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', format('stabackup{0}', parameters('nameSuffixStr')), 'default', 'backups')]",
+                "[resourceId('Microsoft.Storage/storageAccounts', format('stabackup{0}', parameters('nameSuffixStr')))]"
+              ]
+            }
+          ],
+          "outputs": {
+            "dataStorageAccountName": {
+              "type": "string",
+              "value": "[format('stabackup{0}', parameters('nameSuffixStr'))]"
+            },
+            "dataStorageAccountId": {
+              "type": "string",
+              "value": "[resourceId('Microsoft.Storage/storageAccounts', format('stabackup{0}', parameters('nameSuffixStr')))]"
+            },
+            "containerName": {
+              "type": "string",
+              "value": "backups"
+            },
+            "backupEventsQueueName": {
+              "type": "string",
+              "value": "backup-events"
+            },
+            "gatewayAuthTokenStoreContainerName": {
+              "type": "string",
+              "value": "[parameters('gatewayAuthTokenStoreContainerName')]"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "monitoring",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "location": {
+            "value": "[parameters('location')]"
+          },
+          "nameSuffix": {
+            "value": "[parameters('nameSuffix')]"
+          },
+          "retentionDays": {
+            "value": "[parameters('logAnalyticsRetentionDays')]"
+          },
+          "dailyQuotaGb": {
+            "value": "[parameters('logAnalyticsDailyQuotaGb')]"
+          },
+          "tags": {
+            "value": "[variables('commonTags')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.43.8.12551",
+              "templateHash": "1633190254708366155"
+            }
+          },
+          "parameters": {
+            "location": {
+              "type": "string",
+              "metadata": {
+                "description": "Azure region for resources"
+              }
+            },
+            "nameSuffix": {
+              "type": "string",
+              "metadata": {
+                "description": "Suffix for resource names (with dashes)"
+              }
+            },
+            "retentionDays": {
+              "type": "int",
+              "metadata": {
+                "description": "Retention period for Log Analytics workspace in days"
+              }
+            },
+            "dailyQuotaGb": {
+              "type": "int",
+              "metadata": {
+                "description": "Daily ingestion quota for Log Analytics workspace in GB"
+              }
+            },
+            "tags": {
+              "type": "object",
+              "metadata": {
+                "description": "Common resource tags"
+              }
+            }
+          },
+          "resources": [
+            {
+              "type": "Microsoft.OperationalInsights/workspaces",
+              "apiVersion": "2022-10-01",
+              "name": "[format('law-{0}', parameters('nameSuffix'))]",
+              "location": "[parameters('location')]",
+              "properties": {
+                "sku": {
+                  "name": "PerGB2018"
+                },
+                "retentionInDays": "[parameters('retentionDays')]",
+                "workspaceCapping": {
+                  "dailyQuotaGb": "[parameters('dailyQuotaGb')]"
+                }
+              },
+              "tags": "[parameters('tags')]"
+            },
+            {
+              "type": "Microsoft.Insights/components",
+              "apiVersion": "2020-02-02",
+              "name": "[format('appi-{0}', parameters('nameSuffix'))]",
+              "location": "[parameters('location')]",
+              "kind": "web",
+              "properties": {
+                "Application_Type": "web",
+                "WorkspaceResourceId": "[resourceId('Microsoft.OperationalInsights/workspaces', format('law-{0}', parameters('nameSuffix')))]"
+              },
+              "tags": "[parameters('tags')]",
+              "dependsOn": [
+                "[resourceId('Microsoft.OperationalInsights/workspaces', format('law-{0}', parameters('nameSuffix')))]"
+              ]
+            }
+          ],
+          "outputs": {
+            "workspaceId": {
+              "type": "string",
+              "value": "[resourceId('Microsoft.OperationalInsights/workspaces', format('law-{0}', parameters('nameSuffix')))]"
+            },
+            "workspaceName": {
+              "type": "string",
+              "value": "[format('law-{0}', parameters('nameSuffix'))]"
+            },
+            "appInsightsName": {
+              "type": "string",
+              "value": "[format('appi-{0}', parameters('nameSuffix'))]"
+            },
+            "appInsightsConnectionString": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.Insights/components', format('appi-{0}', parameters('nameSuffix'))), '2020-02-02').ConnectionString]"
+            },
+            "appInsightsInstrumentationKey": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.Insights/components', format('appi-{0}', parameters('nameSuffix'))), '2020-02-02').InstrumentationKey]"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "registry",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "location": {
+            "value": "[parameters('location')]"
+          },
+          "nameSuffixStr": {
+            "value": "[parameters('nameSuffixStr')]"
+          },
+          "tags": {
+            "value": "[variables('commonTags')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.43.8.12551",
+              "templateHash": "17064343815223828587"
+            }
+          },
+          "parameters": {
+            "location": {
+              "type": "string",
+              "metadata": {
+                "description": "Azure region for resources"
+              }
+            },
+            "nameSuffixStr": {
+              "type": "string",
+              "minLength": 2,
+              "metadata": {
+                "description": "Suffix for storage account-style names (no dashes)"
+              }
+            },
+            "tags": {
+              "type": "object",
+              "metadata": {
+                "description": "Common resource tags"
+              }
+            }
+          },
+          "resources": [
+            {
+              "type": "Microsoft.ContainerRegistry/registries",
+              "apiVersion": "2023-07-01",
+              "name": "[format('acr{0}', parameters('nameSuffixStr'))]",
+              "location": "[parameters('location')]",
+              "sku": {
+                "name": "Basic"
+              },
+              "properties": {
+                "adminUserEnabled": false
+              },
+              "tags": "[parameters('tags')]"
+            }
+          ],
+          "outputs": {
+            "name": {
+              "type": "string",
+              "value": "[format('acr{0}', parameters('nameSuffixStr'))]"
+            },
+            "loginServer": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.ContainerRegistry/registries', format('acr{0}', parameters('nameSuffixStr'))), '2023-07-01').loginServer]"
+            },
+            "id": {
+              "type": "string",
+              "value": "[resourceId('Microsoft.ContainerRegistry/registries', format('acr{0}', parameters('nameSuffixStr')))]"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "dapr-infra",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "location": {
+            "value": "[parameters('location')]"
+          },
+          "keyVaultName": {
+            "value": "[variables('keyVaultName')]"
+          },
+          "tenantId": {
+            "value": "[tenant().tenantId]"
+          },
+          "keyVaultNetworkDefaultAction": {
+            "value": "[parameters('keyVaultNetworkDefaultAction')]"
+          },
+          "tags": {
+            "value": "[variables('commonTags')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.43.8.12551",
+              "templateHash": "2148732230984839374"
+            }
+          },
+          "parameters": {
+            "location": {
+              "type": "string",
+              "metadata": {
+                "description": "Azure region for resources"
+              }
+            },
+            "keyVaultName": {
+              "type": "string",
+              "metadata": {
+                "description": "Pre-determined Key Vault name (passed from main.bicep to avoid circular deps)"
+              }
+            },
+            "tenantId": {
+              "type": "string",
+              "metadata": {
+                "description": "Azure AD tenant ID for Key Vault"
+              }
+            },
+            "keyVaultNetworkDefaultAction": {
+              "type": "string",
+              "defaultValue": "Allow",
+              "allowedValues": [
+                "Allow",
+                "Deny"
+              ],
+              "metadata": {
+                "description": "Key Vault network ACL default action. Allow is required unless private endpoint/VNet routing for Container Apps/Dapr has been configured."
+              }
+            },
+            "tags": {
+              "type": "object",
+              "metadata": {
+                "description": "Common resource tags"
+              }
+            }
+          },
+          "resources": [
+            {
+              "type": "Microsoft.KeyVault/vaults",
+              "apiVersion": "2023-07-01",
+              "name": "[parameters('keyVaultName')]",
+              "location": "[parameters('location')]",
+              "properties": {
+                "tenantId": "[parameters('tenantId')]",
+                "sku": {
+                  "family": "A",
+                  "name": "standard"
+                },
+                "enableRbacAuthorization": true,
+                "networkAcls": {
+                  "bypass": "AzureServices",
+                  "defaultAction": "[parameters('keyVaultNetworkDefaultAction')]"
+                }
+              },
+              "tags": "[parameters('tags')]"
+            }
+          ],
+          "outputs": {
+            "keyVaultName": {
+              "type": "string",
+              "value": "[parameters('keyVaultName')]"
+            },
+            "keyVaultId": {
+              "type": "string",
+              "value": "[resourceId('Microsoft.KeyVault/vaults', parameters('keyVaultName'))]"
+            }
+          }
+        }
+      }
+    },
+    {
+      "condition": "[parameters('deployContainerApps')]",
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "gateway-auth-sas",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "storageAccountName": {
+            "value": "[reference(resourceId('Microsoft.Resources/deployments', 'storage'), '2025-04-01').outputs.dataStorageAccountName.value]"
+          },
+          "containerName": {
+            "value": "[reference(resourceId('Microsoft.Resources/deployments', 'storage'), '2025-04-01').outputs.gatewayAuthTokenStoreContainerName.value]"
+          },
+          "sasExpiry": {
+            "value": "[parameters('gatewayAuthTokenStoreSasExpiry')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.43.8.12551",
+              "templateHash": "3264004166938681653"
+            }
+          },
+          "parameters": {
+            "storageAccountName": {
+              "type": "string",
+              "metadata": {
+                "description": "Name of the storage account that holds the token store container"
+              }
+            },
+            "containerName": {
+              "type": "string",
+              "metadata": {
+                "description": "Name of the blob container used as the Easy Auth token store"
+              }
+            },
+            "sasExpiry": {
+              "type": "string",
+              "metadata": {
+                "description": "Expiry timestamp for the SAS URL (e.g. 2036-01-01T00:00:00Z)"
+              }
+            }
+          },
+          "resources": [],
+          "outputs": {
+            "sasUrl": {
+              "type": "string",
+              "value": "[format('https://{0}.blob.{1}/{2}?{3}', parameters('storageAccountName'), environment().suffixes.storage, parameters('containerName'), listServiceSas(resourceId('Microsoft.Storage/storageAccounts/blobServices/containers', parameters('storageAccountName'), 'default', parameters('containerName')), '2023-01-01', createObject('canonicalizedResource', format('/blob/{0}/{1}', parameters('storageAccountName'), parameters('containerName')), 'signedResource', 'c', 'signedPermission', 'racwdl', 'signedProtocol', 'https', 'signedExpiry', parameters('sasExpiry'))).serviceSasToken)]"
+            }
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Resources/deployments', 'storage')]"
+      ]
+    },
+    {
+      "condition": "[parameters('deployContainerApps')]",
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "compute",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "location": {
+            "value": "[parameters('location')]"
+          },
+          "nameSuffix": {
+            "value": "[parameters('nameSuffix')]"
+          },
+          "logAnalyticsWorkspaceId": {
+            "value": "[reference(resourceId('Microsoft.Resources/deployments', 'monitoring'), '2025-04-01').outputs.workspaceId.value]"
+          },
+          "appInsightsConnectionString": {
+            "value": "[reference(resourceId('Microsoft.Resources/deployments', 'monitoring'), '2025-04-01').outputs.appInsightsConnectionString.value]"
+          },
+          "registryLoginServer": {
+            "value": "[reference(resourceId('Microsoft.Resources/deployments', 'registry'), '2025-04-01').outputs.loginServer.value]"
+          },
+          "registryPullIdentityId": {
+            "value": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-acrpull-{0}', parameters('nameSuffix')))]"
+          },
+          "dataStorageAccountName": {
+            "value": "[reference(resourceId('Microsoft.Resources/deployments', 'storage'), '2025-04-01').outputs.dataStorageAccountName.value]"
+          },
+          "containerName": {
+            "value": "[reference(resourceId('Microsoft.Resources/deployments', 'storage'), '2025-04-01').outputs.containerName.value]"
+          },
+          "keyVaultName": {
+            "value": "[reference(resourceId('Microsoft.Resources/deployments', 'dapr-infra'), '2025-04-01').outputs.keyVaultName.value]"
+          },
+          "backupEventsQueueName": {
+            "value": "[reference(resourceId('Microsoft.Resources/deployments', 'storage'), '2025-04-01').outputs.backupEventsQueueName.value]"
+          },
+          "backupEventsQueueScaleConnectionString": {
+            "value": "[format('DefaultEndpointsProtocol=https;AccountName={0};AccountKey={1};EndpointSuffix={2}', reference(resourceId('Microsoft.Resources/deployments', 'storage'), '2025-04-01').outputs.dataStorageAccountName.value, listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('dataStorageAccountName')), '2023-01-01').keys[0].value, environment().suffixes.storage)]"
+          },
+          "imageTag": {
+            "value": "[parameters('imageTag')]"
+          },
+          "allowCopyDeleteFallback": {
+            "value": "[parameters('allowCopyDeleteFallback')]"
+          },
+          "enableSasIpRestriction": {
+            "value": "[parameters('enableSasIpRestriction')]"
+          },
+          "staleStagingCleanupCronSchedule": {
+            "value": "[parameters('staleStagingCleanupCronSchedule')]"
+          },
+          "staleStagingCleanupOlderThanHours": {
+            "value": "[parameters('staleStagingCleanupOlderThanHours')]"
+          },
+          "staleStagingCleanupMaxDeletes": {
+            "value": "[parameters('staleStagingCleanupMaxDeletes')]"
+          },
+          "staleStagingCleanupDryRun": {
+            "value": "[parameters('staleStagingCleanupDryRun')]"
+          },
+          "apiMinReplicas": {
+            "value": "[parameters('apiMinReplicas')]"
+          },
+          "gatewayMinReplicas": {
+            "value": "[parameters('gatewayMinReplicas')]"
+          },
+          "gatewayAuthClientId": {
+            "value": "[parameters('gatewayAuthClientId')]"
+          },
+          "gatewayAuthClientSecret": {
+            "value": "[parameters('gatewayAuthClientSecret')]"
+          },
+          "gatewayAuthAllowedAudiences": {
+            "value": "[parameters('gatewayAuthAllowedAudiences')]"
+          },
+          "gatewayAuthTokenStoreSasUrl": {
+            "value": "[reference(resourceId('Microsoft.Resources/deployments', 'gateway-auth-sas'), '2025-04-01').outputs.sasUrl.value]"
+          },
+          "gatewayProxyHeaderName": {
+            "value": "[parameters('gatewayProxyHeaderName')]"
+          },
+          "gatewayProxyHeaderValue": {
+            "value": "[parameters('gatewayProxyHeaderValue')]"
+          },
+          "cosmosAccountEndpoint": {
+            "value": "[reference(resourceId('Microsoft.DocumentDB/databaseAccounts', variables('cosmosAccountNameEffective')), '2024-05-15').documentEndpoint]"
+          },
+          "cosmosDatabaseName": {
+            "value": "[parameters('cosmosDatabaseName')]"
+          },
+          "cosmosManifestContainerName": {
+            "value": "[parameters('cosmosManifestContainerName')]"
+          },
+          "cosmosDeviceRegistryContainerName": {
+            "value": "[parameters('cosmosDeviceRegistryContainerName')]"
+          },
+          "daprAzureClientId": {
+            "value": "[parameters('daprAzureClientId')]"
+          },
+          "apiAuthTenantId": {
+            "value": "[parameters('apiAuthTenantId')]"
+          },
+          "apiAuthClientId": {
+            "value": "[parameters('apiAuthClientId')]"
+          },
+          "apiAuthAudience": {
+            "value": "[parameters('apiAuthAudience')]"
+          },
+          "tags": {
+            "value": "[variables('commonTags')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.43.8.12551",
+              "templateHash": "5522175981293620380"
+            }
+          },
+          "parameters": {
+            "location": {
+              "type": "string",
+              "metadata": {
+                "description": "Azure region for resources"
+              }
+            },
+            "nameSuffix": {
+              "type": "string",
+              "metadata": {
+                "description": "Suffix for resource names (with dashes)"
+              }
+            },
+            "logAnalyticsWorkspaceId": {
+              "type": "string",
+              "metadata": {
+                "description": "Log Analytics workspace resource ID"
+              }
+            },
+            "appInsightsConnectionString": {
+              "type": "securestring",
+              "metadata": {
+                "description": "Application Insights connection string"
+              }
+            },
+            "registryLoginServer": {
+              "type": "string",
+              "metadata": {
+                "description": "Container registry login server"
+              }
+            },
+            "registryPullIdentityId": {
+              "type": "string",
+              "metadata": {
+                "description": "Resource ID of the user-assigned managed identity used by Container Apps to pull images from ACR"
+              }
+            },
+            "dataStorageAccountName": {
+              "type": "string",
+              "metadata": {
+                "description": "Storage account name for data blobs"
+              }
+            },
+            "containerName": {
+              "type": "string",
+              "metadata": {
+                "description": "Blob container name"
+              }
+            },
+            "keyVaultName": {
+              "type": "string",
+              "metadata": {
+                "description": "Key Vault name for Dapr secret-store component"
+              }
+            },
+            "backupEventsQueueName": {
+              "type": "string",
+              "defaultValue": "backup-events",
+              "metadata": {
+                "description": "Storage Queue name for backup events."
+              }
+            },
+            "backupEventsQueueScaleConnectionString": {
+              "type": "securestring",
+              "metadata": {
+                "description": "Storage account connection string used only by the Container Apps queue scaler."
+              }
+            },
+            "imageTag": {
+              "type": "string",
+              "defaultValue": "latest",
+              "metadata": {
+                "description": "Container image tag to deploy"
+              }
+            },
+            "allowCopyDeleteFallback": {
+              "type": "bool",
+              "defaultValue": false,
+              "metadata": {
+                "description": "Explicitly allow copy/delete fallback when ADLS Gen2 rename fails. Keep false in production unless early deletion cost and partial-failure risks are accepted."
+              }
+            },
+            "enableSasIpRestriction": {
+              "type": "bool",
+              "defaultValue": false,
+              "metadata": {
+                "description": "Restrict upload SAS URLs to the API-observed client IP. Keep false for SaaS clients unless proxy/client IP behavior has been validated."
+              }
+            },
+            "staleStagingCleanupCronSchedule": {
+              "type": "string",
+              "defaultValue": "@every 24h",
+              "metadata": {
+                "description": "Dapr cron schedule for automatic stale staging cleanup. Use @every syntax or a cron expression supported by the Dapr cron binding."
+              }
+            },
+            "staleStagingCleanupOlderThanHours": {
+              "type": "int",
+              "defaultValue": 24,
+              "metadata": {
+                "description": "Delete staging blobs older than this many hours during scheduled cleanup."
+              }
+            },
+            "staleStagingCleanupMaxDeletes": {
+              "type": "int",
+              "defaultValue": 500,
+              "metadata": {
+                "description": "Maximum number of stale staging blobs deleted by one scheduled cleanup invocation."
+              }
+            },
+            "staleStagingCleanupDryRun": {
+              "type": "bool",
+              "defaultValue": false,
+              "metadata": {
+                "description": "Run scheduled stale staging cleanup as a dry run instead of deleting blobs."
+              }
+            },
+            "apiMinReplicas": {
+              "type": "int",
+              "defaultValue": 0,
+              "metadata": {
+                "description": "Minimum API replicas. Use 0 for beta/development cost reduction; set at least 1 when Dapr cron bindings must fire without external traffic."
+              }
+            },
+            "gatewayMinReplicas": {
+              "type": "int",
+              "defaultValue": 0,
+              "metadata": {
+                "description": "Minimum Gateway replicas. Keep 0 for lowest cost; the app scales up on HTTP requests."
+              }
+            },
+            "gatewayAuthClientId": {
+              "type": "string",
+              "defaultValue": "",
+              "metadata": {
+                "description": "Optional Microsoft Entra application client ID for Container Apps built-in authentication on the Gateway. Leave empty to deploy without built-in auth."
+              }
+            },
+            "gatewayAuthClientSecret": {
+              "type": "securestring",
+              "defaultValue": "",
+              "metadata": {
+                "description": "Optional Microsoft Entra application client secret for Container Apps built-in authentication on the Gateway."
+              }
+            },
+            "gatewayAuthAllowedAudiences": {
+              "type": "array",
+              "defaultValue": [],
+              "metadata": {
+                "description": "Optional allowed token audiences for Gateway built-in auth. Defaults to the Gateway auth client ID when auth is enabled."
+              }
+            },
+            "gatewayAuthTokenStoreSasUrl": {
+              "type": "securestring",
+              "defaultValue": "",
+              "metadata": {
+                "description": "SAS URL for the Blob Storage container used by Container Apps Easy Auth token store."
+              }
+            },
+            "gatewayProxyHeaderName": {
+              "type": "string",
+              "defaultValue": "X-Backup-Gateway",
+              "metadata": {
+                "description": "Header name used by the Gateway to access otherwise hidden service Swagger endpoints."
+              }
+            },
+            "gatewayProxyHeaderValue": {
+              "type": "securestring",
+              "defaultValue": "",
+              "metadata": {
+                "description": "Optional shared header value used by the Gateway to access otherwise hidden service Swagger endpoints. Leave empty to derive a stable deployment-specific value."
+              }
+            },
+            "cosmosAccountEndpoint": {
+              "type": "string",
+              "metadata": {
+                "description": "Cosmos DB account endpoint for the Dapr manifest-state-store component."
+              }
+            },
+            "cosmosDatabaseName": {
+              "type": "string",
+              "defaultValue": "backup-state",
+              "metadata": {
+                "description": "Cosmos DB SQL database name for Dapr state."
+              }
+            },
+            "cosmosManifestContainerName": {
+              "type": "string",
+              "defaultValue": "manifest-state",
+              "metadata": {
+                "description": "Cosmos DB SQL container name for manifest-state-store."
+              }
+            },
+            "cosmosDeviceRegistryContainerName": {
+              "type": "string",
+              "defaultValue": "device-registry",
+              "metadata": {
+                "description": "Cosmos DB SQL container name for device-registry-state-store."
+              }
+            },
+            "daprAzureClientId": {
+              "type": "string",
+              "defaultValue": "",
+              "metadata": {
+                "description": "Optional Azure client ID for a user-assigned managed identity used by Dapr Azure components. Leave empty for system-assigned Container App identities."
+              }
+            },
+            "tags": {
+              "type": "object",
+              "metadata": {
+                "description": "Common resource tags"
+              }
+            },
+            "apiAuthTenantId": {
+              "type": "string",
+              "defaultValue": "[tenant().tenantId]",
+              "metadata": {
+                "description": "Microsoft Entra tenant ID used by the Backup API for JWT validation."
+              }
+            },
+            "apiAuthClientId": {
+              "type": "string",
+              "defaultValue": "906eb0e3-e351-47c0-a68a-690207f4cccb",
+              "metadata": {
+                "description": "Microsoft Entra application/client ID of the Backup API app registration."
+              }
+            },
+            "apiAuthAudience": {
+              "type": "string",
+              "defaultValue": "[format('api://{0}', parameters('apiAuthClientId'))]",
+              "metadata": {
+                "description": "JWT audience accepted by the Backup API. Defaults to api://{apiAuthClientId}."
+              }
+            }
+          },
+          "variables": {
+            "gatewayAuthEnabled": "[and(not(empty(parameters('gatewayAuthClientId'))), not(empty(parameters('gatewayAuthClientSecret'))))]",
+            "gatewayAuthTokenStoreSasUrlSecretName": "gateway-auth-token-store-sas-url",
+            "gatewayProxyHeaderValueEffective": "[if(empty(parameters('gatewayProxyHeaderValue')), uniqueString(subscription().id, resourceGroup().id, parameters('nameSuffix'), 'gateway'), parameters('gatewayProxyHeaderValue'))]",
+            "gatewayAuthSecrets": "[if(variables('gatewayAuthEnabled'), createArray(createObject('name', 'gateway-auth-client-secret', 'value', parameters('gatewayAuthClientSecret')), createObject('name', variables('gatewayAuthTokenStoreSasUrlSecretName'), 'value', parameters('gatewayAuthTokenStoreSasUrl'))), createArray())]"
+          },
+          "resources": [
+            {
+              "type": "Microsoft.App/managedEnvironments",
+              "apiVersion": "2023-05-01",
+              "name": "[format('cae-{0}', parameters('nameSuffix'))]",
+              "location": "[parameters('location')]",
+              "properties": {
+                "appLogsConfiguration": {
+                  "destination": "log-analytics",
+                  "logAnalyticsConfiguration": {
+                    "customerId": "[reference(parameters('logAnalyticsWorkspaceId'), '2022-10-01').customerId]",
+                    "sharedKey": "[listKeys(parameters('logAnalyticsWorkspaceId'), '2022-10-01').primarySharedKey]"
+                  }
+                },
+                "daprAIConnectionString": "[parameters('appInsightsConnectionString')]"
+              },
+              "tags": "[parameters('tags')]"
+            },
+            {
+              "type": "Microsoft.App/containerApps",
+              "apiVersion": "2023-05-01",
+              "name": "[format('ca-{0}', parameters('nameSuffix'))]",
+              "location": "[parameters('location')]",
+              "identity": {
+                "type": "SystemAssigned, UserAssigned",
+                "userAssignedIdentities": {
+                  "[format('{0}', parameters('registryPullIdentityId'))]": {}
+                }
+              },
+              "properties": {
+                "managedEnvironmentId": "[resourceId('Microsoft.App/managedEnvironments', format('cae-{0}', parameters('nameSuffix')))]",
+                "configuration": {
+                  "activeRevisionsMode": "Single",
+                  "dapr": {
+                    "enabled": true,
+                    "appId": "backup-api",
+                    "appPort": 8080,
+                    "appProtocol": "http"
+                  },
+                  "ingress": {
+                    "external": false,
+                    "targetPort": 8080,
+                    "transport": "http",
+                    "traffic": [
+                      {
+                        "weight": 100,
+                        "latestRevision": true
+                      }
+                    ]
+                  },
+                  "registries": [
+                    {
+                      "server": "[parameters('registryLoginServer')]",
+                      "identity": "[parameters('registryPullIdentityId')]"
+                    }
+                  ]
+                },
+                "template": {
+                  "scale": {
+                    "minReplicas": "[parameters('apiMinReplicas')]",
+                    "maxReplicas": 10
+                  },
+                  "containers": [
+                    {
+                      "name": "backup-api",
+                      "image": "[format('{0}/backup-api:{1}', parameters('registryLoginServer'), parameters('imageTag'))]",
+                      "resources": {
+                        "cpu": "[json('0.5')]",
+                        "memory": "1Gi"
+                      },
+                      "env": [
+                        {
+                          "name": "DATA_STORAGE_ACCOUNT",
+                          "value": "[parameters('dataStorageAccountName')]"
+                        },
+                        {
+                          "name": "DATA_CONTAINER",
+                          "value": "[parameters('containerName')]"
+                        },
+                        {
+                          "name": "ALLOW_COPY_DELETE_FALLBACK",
+                          "value": "[string(parameters('allowCopyDeleteFallback'))]"
+                        },
+                        {
+                          "name": "Backup__Sas__EnableIpRestriction",
+                          "value": "[string(parameters('enableSasIpRestriction'))]"
+                        },
+                        {
+                          "name": "Operations__StaleStagingCleanup__OlderThanHours",
+                          "value": "[string(parameters('staleStagingCleanupOlderThanHours'))]"
+                        },
+                        {
+                          "name": "Operations__StaleStagingCleanup__MaxDeletes",
+                          "value": "[string(parameters('staleStagingCleanupMaxDeletes'))]"
+                        },
+                        {
+                          "name": "Operations__StaleStagingCleanup__DryRun",
+                          "value": "[string(parameters('staleStagingCleanupDryRun'))]"
+                        },
+                        {
+                          "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",
+                          "value": "[parameters('appInsightsConnectionString')]"
+                        },
+                        {
+                          "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+                          "value": ""
+                        },
+                        {
+                          "name": "OTEL_EXPORTER_ZIPKIN_ENDPOINT",
+                          "value": ""
+                        },
+                        {
+                          "name": "OTEL_EXPORTER_AZURE_MONITOR_CONNECTION",
+                          "value": ""
+                        },
+                        {
+                          "name": "ASPNETCORE_ENVIRONMENT",
+                          "value": "Production"
+                        },
+                        {
+                          "name": "AzureAd__TenantId",
+                          "value": "[parameters('apiAuthTenantId')]"
+                        },
+                        {
+                          "name": "AzureAd__ClientId",
+                          "value": "[parameters('apiAuthClientId')]"
+                        },
+                        {
+                          "name": "AzureAd__Audience",
+                          "value": "[parameters('apiAuthAudience')]"
+                        },
+                        {
+                          "name": "DaprHealth__EnablePubSubProbe",
+                          "value": "false"
+                        },
+                        {
+                          "name": "Swagger__RequiredGatewayHeaderName",
+                          "value": "[parameters('gatewayProxyHeaderName')]"
+                        },
+                        {
+                          "name": "Swagger__RequiredGatewayHeaderValue",
+                          "value": "[variables('gatewayProxyHeaderValueEffective')]"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              },
+              "tags": "[parameters('tags')]",
+              "dependsOn": [
+                "[resourceId('Microsoft.App/managedEnvironments', format('cae-{0}', parameters('nameSuffix')))]"
+              ]
+            },
+            {
+              "type": "Microsoft.App/containerApps",
+              "apiVersion": "2023-05-01",
+              "name": "[format('ca-{0}-worker', parameters('nameSuffix'))]",
+              "location": "[parameters('location')]",
+              "identity": {
+                "type": "SystemAssigned, UserAssigned",
+                "userAssignedIdentities": {
+                  "[format('{0}', parameters('registryPullIdentityId'))]": {}
+                }
+              },
+              "properties": {
+                "managedEnvironmentId": "[resourceId('Microsoft.App/managedEnvironments', format('cae-{0}', parameters('nameSuffix')))]",
+                "configuration": {
+                  "activeRevisionsMode": "Single",
+                  "dapr": {
+                    "enabled": true,
+                    "appId": "backup-worker",
+                    "appPort": 8080,
+                    "appProtocol": "http"
+                  },
+                  "ingress": {
+                    "external": false,
+                    "targetPort": 8080,
+                    "transport": "http",
+                    "traffic": [
+                      {
+                        "weight": 100,
+                        "latestRevision": true
+                      }
+                    ]
+                  },
+                  "registries": [
+                    {
+                      "server": "[parameters('registryLoginServer')]",
+                      "identity": "[parameters('registryPullIdentityId')]"
+                    }
+                  ],
+                  "secrets": [
+                    {
+                      "name": "backup-events-queue-scale-connection-string",
+                      "value": "[parameters('backupEventsQueueScaleConnectionString')]"
+                    }
+                  ]
+                },
+                "template": {
+                  "scale": {
+                    "minReplicas": 0,
+                    "maxReplicas": 3,
+                    "rules": [
+                      {
+                        "name": "backup-events",
+                        "custom": {
+                          "type": "azure-queue",
+                          "metadata": {
+                            "accountName": "[parameters('dataStorageAccountName')]",
+                            "queueName": "[parameters('backupEventsQueueName')]",
+                            "queueLength": "1"
+                          },
+                          "auth": [
+                            {
+                              "secretRef": "backup-events-queue-scale-connection-string",
+                              "triggerParameter": "connection"
+                            }
+                          ]
+                        }
+                      }
+                    ]
+                  },
+                  "containers": [
+                    {
+                      "name": "backup-worker",
+                      "image": "[format('{0}/backup-worker:{1}', parameters('registryLoginServer'), parameters('imageTag'))]",
+                      "resources": {
+                        "cpu": "[json('0.5')]",
+                        "memory": "1Gi"
+                      },
+                      "env": [
+                        {
+                          "name": "DATA_STORAGE_ACCOUNT",
+                          "value": "[parameters('dataStorageAccountName')]"
+                        },
+                        {
+                          "name": "DATA_CONTAINER",
+                          "value": "[parameters('containerName')]"
+                        },
+                        {
+                          "name": "ALLOW_COPY_DELETE_FALLBACK",
+                          "value": "[string(parameters('allowCopyDeleteFallback'))]"
+                        },
+                        {
+                          "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",
+                          "value": "[parameters('appInsightsConnectionString')]"
+                        },
+                        {
+                          "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+                          "value": ""
+                        },
+                        {
+                          "name": "OTEL_EXPORTER_ZIPKIN_ENDPOINT",
+                          "value": ""
+                        },
+                        {
+                          "name": "OTEL_EXPORTER_AZURE_MONITOR_CONNECTION",
+                          "value": ""
+                        },
+                        {
+                          "name": "ASPNETCORE_ENVIRONMENT",
+                          "value": "Production"
+                        },
+                        {
+                          "name": "DaprHealth__EnablePubSubProbe",
+                          "value": "false"
+                        },
+                        {
+                          "name": "Swagger__RequiredGatewayHeaderName",
+                          "value": "[parameters('gatewayProxyHeaderName')]"
+                        },
+                        {
+                          "name": "Swagger__RequiredGatewayHeaderValue",
+                          "value": "[variables('gatewayProxyHeaderValueEffective')]"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              },
+              "tags": "[parameters('tags')]",
+              "dependsOn": [
+                "[resourceId('Microsoft.App/managedEnvironments', format('cae-{0}', parameters('nameSuffix')))]"
+              ]
+            },
+            {
+              "type": "Microsoft.App/containerApps",
+              "apiVersion": "2023-05-01",
+              "name": "[format('ca-{0}-gateway', parameters('nameSuffix'))]",
+              "location": "[parameters('location')]",
+              "identity": {
+                "type": "SystemAssigned, UserAssigned",
+                "userAssignedIdentities": {
+                  "[format('{0}', parameters('registryPullIdentityId'))]": {}
+                }
+              },
+              "properties": {
+                "managedEnvironmentId": "[resourceId('Microsoft.App/managedEnvironments', format('cae-{0}', parameters('nameSuffix')))]",
+                "configuration": {
+                  "activeRevisionsMode": "Single",
+                  "ingress": {
+                    "external": true,
+                    "targetPort": 8080,
+                    "transport": "http",
+                    "traffic": [
+                      {
+                        "weight": 100,
+                        "latestRevision": true
+                      }
+                    ]
+                  },
+                  "registries": [
+                    {
+                      "server": "[parameters('registryLoginServer')]",
+                      "identity": "[parameters('registryPullIdentityId')]"
+                    }
+                  ],
+                  "secrets": "[variables('gatewayAuthSecrets')]"
+                },
+                "template": {
+                  "scale": {
+                    "minReplicas": "[parameters('gatewayMinReplicas')]",
+                    "maxReplicas": 2
+                  },
+                  "containers": [
+                    {
+                      "name": "gateway",
+                      "image": "[format('{0}/gateway:{1}', parameters('registryLoginServer'), parameters('imageTag'))]",
+                      "resources": {
+                        "cpu": "[json('0.25')]",
+                        "memory": "0.5Gi"
+                      },
+                      "env": [
+                        {
+                          "name": "ASPNETCORE_ENVIRONMENT",
+                          "value": "Production"
+                        },
+                        {
+                          "name": "Gateway__ApiBaseUrl",
+                          "value": "[format('https://{0}', reference(resourceId('Microsoft.App/containerApps', format('ca-{0}', parameters('nameSuffix'))), '2023-05-01').configuration.ingress.fqdn)]"
+                        },
+                        {
+                          "name": "Gateway__WorkerBaseUrl",
+                          "value": "[format('https://{0}', reference(resourceId('Microsoft.App/containerApps', format('ca-{0}-worker', parameters('nameSuffix'))), '2023-05-01').configuration.ingress.fqdn)]"
+                        },
+                        {
+                          "name": "Gateway__HeaderName",
+                          "value": "[parameters('gatewayProxyHeaderName')]"
+                        },
+                        {
+                          "name": "Gateway__HeaderValue",
+                          "value": "[variables('gatewayProxyHeaderValueEffective')]"
+                        },
+                        {
+                          "name": "Gateway__ApiTokenScope",
+                          "value": "[format('{0}/.default', parameters('apiAuthAudience'))]"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              },
+              "tags": "[parameters('tags')]",
+              "dependsOn": [
+                "[resourceId('Microsoft.App/containerApps', format('ca-{0}', parameters('nameSuffix')))]",
+                "[resourceId('Microsoft.App/managedEnvironments', format('cae-{0}', parameters('nameSuffix')))]",
+                "[resourceId('Microsoft.App/containerApps', format('ca-{0}-worker', parameters('nameSuffix')))]"
+              ]
+            },
+            {
+              "condition": "[variables('gatewayAuthEnabled')]",
+              "type": "Microsoft.App/containerApps/authConfigs",
+              "apiVersion": "2024-03-01",
+              "name": "[format('{0}/{1}', format('ca-{0}-gateway', parameters('nameSuffix')), 'current')]",
+              "properties": {
+                "platform": {
+                  "enabled": true
+                },
+                "globalValidation": {
+                  "unauthenticatedClientAction": "RedirectToLoginPage"
+                },
+                "login": {
+                  "tokenStore": {
+                    "enabled": true,
+                    "azureBlobStorage": {
+                      "sasUrlSettingName": "[variables('gatewayAuthTokenStoreSasUrlSecretName')]"
+                    }
+                  }
+                },
+                "identityProviders": {
+                  "azureActiveDirectory": {
+                    "enabled": true,
+                    "registration": {
+                      "clientId": "[parameters('gatewayAuthClientId')]",
+                      "clientSecretSettingName": "gateway-auth-client-secret",
+                      "openIdIssuer": "[format('{0}{1}/v2.0', environment().authentication.loginEndpoint, tenant().tenantId)]"
+                    },
+                    "validation": {
+                      "allowedAudiences": "[if(empty(parameters('gatewayAuthAllowedAudiences')), createArray(parameters('gatewayAuthClientId'), format('api://{0}', parameters('gatewayAuthClientId')), parameters('apiAuthClientId'), parameters('apiAuthAudience')), parameters('gatewayAuthAllowedAudiences'))]"
+                    }
+                  }
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.App/containerApps', format('ca-{0}-gateway', parameters('nameSuffix')))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Resources/deployments",
+              "apiVersion": "2025-04-01",
+              "name": "dapr-components",
+              "properties": {
+                "expressionEvaluationOptions": {
+                  "scope": "inner"
+                },
+                "mode": "Incremental",
+                "parameters": {
+                  "managedEnvironmentName": {
+                    "value": "[format('cae-{0}', parameters('nameSuffix'))]"
+                  },
+                  "keyVaultName": {
+                    "value": "[parameters('keyVaultName')]"
+                  },
+                  "cosmosAccountEndpoint": {
+                    "value": "[parameters('cosmosAccountEndpoint')]"
+                  },
+                  "cosmosDatabaseName": {
+                    "value": "[parameters('cosmosDatabaseName')]"
+                  },
+                  "cosmosManifestContainerName": {
+                    "value": "[parameters('cosmosManifestContainerName')]"
+                  },
+                  "cosmosDeviceRegistryContainerName": {
+                    "value": "[parameters('cosmosDeviceRegistryContainerName')]"
+                  },
+                  "dataStorageAccountName": {
+                    "value": "[parameters('dataStorageAccountName')]"
+                  },
+                  "backupEventsQueueName": {
+                    "value": "[parameters('backupEventsQueueName')]"
+                  },
+                  "staleStagingCleanupCronSchedule": {
+                    "value": "[parameters('staleStagingCleanupCronSchedule')]"
+                  },
+                  "daprAzureClientId": {
+                    "value": "[parameters('daprAzureClientId')]"
+                  }
+                },
+                "template": {
+                  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+                  "contentVersion": "1.0.0.0",
+                  "metadata": {
+                    "_generator": {
+                      "name": "bicep",
+                      "version": "0.43.8.12551",
+                      "templateHash": "4705587597826541330"
+                    }
+                  },
+                  "parameters": {
+                    "managedEnvironmentName": {
+                      "type": "string",
+                      "metadata": {
+                        "description": "Name of the existing Container Apps Environment that hosts these Dapr components."
+                      }
+                    },
+                    "keyVaultName": {
+                      "type": "string",
+                      "metadata": {
+                        "description": "Key Vault name for Dapr secret-store component."
+                      }
+                    },
+                    "cosmosAccountEndpoint": {
+                      "type": "string",
+                      "metadata": {
+                        "description": "Cosmos DB account endpoint for Dapr state-store components."
+                      }
+                    },
+                    "cosmosDatabaseName": {
+                      "type": "string",
+                      "metadata": {
+                        "description": "Cosmos DB SQL database name for Dapr state."
+                      }
+                    },
+                    "cosmosManifestContainerName": {
+                      "type": "string",
+                      "metadata": {
+                        "description": "Cosmos DB SQL container name for manifest-state-store."
+                      }
+                    },
+                    "cosmosDeviceRegistryContainerName": {
+                      "type": "string",
+                      "metadata": {
+                        "description": "Cosmos DB SQL container name for device-registry-state-store."
+                      }
+                    },
+                    "dataStorageAccountName": {
+                      "type": "string",
+                      "metadata": {
+                        "description": "Storage account name for backup event queue bindings."
+                      }
+                    },
+                    "backupEventsQueueName": {
+                      "type": "string",
+                      "defaultValue": "backup-events",
+                      "metadata": {
+                        "description": "Storage Queue name for backup events."
+                      }
+                    },
+                    "staleStagingCleanupCronSchedule": {
+                      "type": "string",
+                      "defaultValue": "@every 24h",
+                      "metadata": {
+                        "description": "Dapr cron schedule for automatic stale staging cleanup. Use @every syntax or a cron expression supported by the Dapr cron binding."
+                      }
+                    },
+                    "daprAzureClientId": {
+                      "type": "string",
+                      "defaultValue": "",
+                      "metadata": {
+                        "description": "Optional Azure client ID for a user-assigned managed identity used by Dapr Azure components. Leave empty for system-assigned Container App identities."
+                      }
+                    }
+                  },
+                  "variables": {
+                    "daprAzureIdentityMetadata": "[if(empty(parameters('daprAzureClientId')), createArray(), createArray(createObject('name', 'azureClientId', 'value', parameters('daprAzureClientId'))))]"
+                  },
+                  "resources": [
+                    {
+                      "type": "Microsoft.App/managedEnvironments/daprComponents",
+                      "apiVersion": "2023-05-01",
+                      "name": "[format('{0}/{1}', parameters('managedEnvironmentName'), 'secret-store')]",
+                      "properties": {
+                        "componentType": "secretstores.azure.keyvault",
+                        "version": "v1",
+                        "metadata": "[concat(createArray(createObject('name', 'vaultName', 'value', parameters('keyVaultName'))), variables('daprAzureIdentityMetadata'))]"
+                      }
+                    },
+                    {
+                      "type": "Microsoft.App/managedEnvironments/daprComponents",
+                      "apiVersion": "2023-05-01",
+                      "name": "[format('{0}/{1}', parameters('managedEnvironmentName'), 'manifest-state-store')]",
+                      "properties": {
+                        "componentType": "state.azure.cosmosdb",
+                        "version": "v1",
+                        "initTimeout": "5m",
+                        "metadata": "[concat(createArray(createObject('name', 'url', 'value', parameters('cosmosAccountEndpoint')), createObject('name', 'database', 'value', parameters('cosmosDatabaseName')), createObject('name', 'collection', 'value', parameters('cosmosManifestContainerName')), createObject('name', 'partitionKey', 'value', 'partitionKey')), variables('daprAzureIdentityMetadata'))]"
+                      }
+                    },
+                    {
+                      "type": "Microsoft.App/managedEnvironments/daprComponents",
+                      "apiVersion": "2023-05-01",
+                      "name": "[format('{0}/{1}', parameters('managedEnvironmentName'), 'device-registry-state-store')]",
+                      "properties": {
+                        "componentType": "state.azure.cosmosdb",
+                        "version": "v1",
+                        "initTimeout": "5m",
+                        "metadata": "[concat(createArray(createObject('name', 'url', 'value', parameters('cosmosAccountEndpoint')), createObject('name', 'database', 'value', parameters('cosmosDatabaseName')), createObject('name', 'collection', 'value', parameters('cosmosDeviceRegistryContainerName')), createObject('name', 'partitionKey', 'value', 'partitionKey')), variables('daprAzureIdentityMetadata'))]"
+                      }
+                    },
+                    {
+                      "type": "Microsoft.App/managedEnvironments/daprComponents",
+                      "apiVersion": "2023-05-01",
+                      "name": "[format('{0}/{1}', parameters('managedEnvironmentName'), 'backup-events-output')]",
+                      "properties": {
+                        "componentType": "bindings.azure.storagequeues",
+                        "version": "v1",
+                        "metadata": "[concat(createArray(createObject('name', 'accountName', 'value', parameters('dataStorageAccountName')), createObject('name', 'queueName', 'value', parameters('backupEventsQueueName')), createObject('name', 'direction', 'value', 'output'), createObject('name', 'ttlInSeconds', 'value', '604800')), variables('daprAzureIdentityMetadata'))]",
+                        "scopes": [
+                          "backup-api"
+                        ]
+                      }
+                    },
+                    {
+                      "type": "Microsoft.App/managedEnvironments/daprComponents",
+                      "apiVersion": "2023-05-01",
+                      "name": "[format('{0}/{1}', parameters('managedEnvironmentName'), 'backup-events-input')]",
+                      "properties": {
+                        "componentType": "bindings.azure.storagequeues",
+                        "version": "v1",
+                        "metadata": "[concat(createArray(createObject('name', 'accountName', 'value', parameters('dataStorageAccountName')), createObject('name', 'queueName', 'value', parameters('backupEventsQueueName')), createObject('name', 'direction', 'value', 'input'), createObject('name', 'route', 'value', '/api/backupevents/backup-run-committed'), createObject('name', 'pollingInterval', 'value', '10s'), createObject('name', 'visibilityTimeout', 'value', '10m')), variables('daprAzureIdentityMetadata'))]",
+                        "scopes": [
+                          "backup-worker"
+                        ]
+                      }
+                    },
+                    {
+                      "type": "Microsoft.App/managedEnvironments/daprComponents",
+                      "apiVersion": "2023-05-01",
+                      "name": "[format('{0}/{1}', parameters('managedEnvironmentName'), 'cleanup-staging-cron')]",
+                      "properties": {
+                        "componentType": "bindings.cron",
+                        "version": "v1",
+                        "metadata": [
+                          {
+                            "name": "schedule",
+                            "value": "[parameters('staleStagingCleanupCronSchedule')]"
+                          }
+                        ],
+                        "scopes": [
+                          "backup-api"
+                        ]
+                      }
+                    }
+                  ]
+                }
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.App/managedEnvironments', format('cae-{0}', parameters('nameSuffix')))]"
+              ]
+            }
+          ],
+          "outputs": {
+            "containerAppName": {
+              "type": "string",
+              "value": "[format('ca-{0}', parameters('nameSuffix'))]"
+            },
+            "containerAppFqdn": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.App/containerApps', format('ca-{0}', parameters('nameSuffix'))), '2023-05-01').configuration.ingress.fqdn]"
+            },
+            "principalId": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.App/containerApps', format('ca-{0}', parameters('nameSuffix'))), '2023-05-01', 'full').identity.principalId]"
+            },
+            "workerContainerAppName": {
+              "type": "string",
+              "value": "[format('ca-{0}-worker', parameters('nameSuffix'))]"
+            },
+            "workerContainerAppFqdn": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.App/containerApps', format('ca-{0}-worker', parameters('nameSuffix'))), '2023-05-01').configuration.ingress.fqdn]"
+            },
+            "workerPrincipalId": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.App/containerApps', format('ca-{0}-worker', parameters('nameSuffix'))), '2023-05-01', 'full').identity.principalId]"
+            },
+            "gatewayContainerAppName": {
+              "type": "string",
+              "value": "[format('ca-{0}-gateway', parameters('nameSuffix'))]"
+            },
+            "gatewayContainerAppFqdn": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.App/containerApps', format('ca-{0}-gateway', parameters('nameSuffix'))), '2023-05-01').configuration.ingress.fqdn]"
+            },
+            "gatewayPrincipalId": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.App/containerApps', format('ca-{0}-gateway', parameters('nameSuffix'))), '2023-05-01', 'full').identity.principalId]"
+            }
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers', variables('cosmosAccountNameEffective'), parameters('cosmosDatabaseName'), parameters('cosmosDeviceRegistryContainerName'))]",
+        "[resourceId('Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers', variables('cosmosAccountNameEffective'), parameters('cosmosDatabaseName'), parameters('cosmosManifestContainerName'))]",
+        "[resourceId('Microsoft.Resources/deployments', 'dapr-infra')]",
+        "[resourceId('Microsoft.Resources/deployments', 'gateway-auth-sas')]",
+        "[resourceId('Microsoft.Resources/deployments', 'monitoring')]",
+        "[resourceId('Microsoft.Resources/deployments', 'registry')]",
+        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-acrpull-{0}', parameters('nameSuffix')))]",
+        "[extensionResourceId(resourceId('Microsoft.ContainerRegistry/registries', format('acr{0}', parameters('nameSuffixStr'))), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.ContainerRegistry/registries', format('acr{0}', parameters('nameSuffixStr'))), format('id-acrpull-{0}', parameters('nameSuffix')), 'acr-pull'))]",
+        "[resourceId('Microsoft.Resources/deployments', 'storage')]"
+      ]
+    }
+  ],
+  "outputs": {
+    "containerAppName": {
+      "type": "string",
+      "value": "[if(parameters('deployContainerApps'), reference(resourceId('Microsoft.Resources/deployments', 'compute'), '2025-04-01').outputs.containerAppName.value, '')]"
+    },
+    "containerAppUrl": {
+      "type": "string",
+      "value": "[if(parameters('deployContainerApps'), format('https://{0}', reference(resourceId('Microsoft.Resources/deployments', 'compute'), '2025-04-01').outputs.containerAppFqdn.value), '')]"
+    },
+    "workerContainerAppName": {
+      "type": "string",
+      "value": "[if(parameters('deployContainerApps'), reference(resourceId('Microsoft.Resources/deployments', 'compute'), '2025-04-01').outputs.workerContainerAppName.value, '')]"
+    },
+    "gatewayContainerAppName": {
+      "type": "string",
+      "value": "[if(parameters('deployContainerApps'), reference(resourceId('Microsoft.Resources/deployments', 'compute'), '2025-04-01').outputs.gatewayContainerAppName.value, '')]"
+    },
+    "gatewayContainerAppUrl": {
+      "type": "string",
+      "value": "[if(parameters('deployContainerApps'), format('https://{0}', reference(resourceId('Microsoft.Resources/deployments', 'compute'), '2025-04-01').outputs.gatewayContainerAppFqdn.value), '')]"
+    },
+    "gatewayPrincipalId": {
+      "type": "string",
+      "value": "[if(parameters('deployContainerApps'), reference(resourceId('Microsoft.Resources/deployments', 'compute'), '2025-04-01').outputs.gatewayPrincipalId.value, '')]"
+    },
+    "dataStorageAccountName": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Resources/deployments', 'storage'), '2025-04-01').outputs.dataStorageAccountName.value]"
+    },
+    "containerName": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Resources/deployments', 'storage'), '2025-04-01').outputs.containerName.value]"
+    },
+    "containerRegistryName": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Resources/deployments', 'registry'), '2025-04-01').outputs.name.value]"
+    },
+    "containerRegistryLoginServer": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Resources/deployments', 'registry'), '2025-04-01').outputs.loginServer.value]"
+    },
+    "logAnalyticsWorkspaceName": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Resources/deployments', 'monitoring'), '2025-04-01').outputs.workspaceName.value]"
+    },
+    "appInsightsName": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Resources/deployments', 'monitoring'), '2025-04-01').outputs.appInsightsName.value]"
+    }
+  }
+}

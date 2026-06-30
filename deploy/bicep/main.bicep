@@ -148,7 +148,6 @@ module storage 'modules/storage.bicep' = {
     location: location
     nameSuffixStr: nameSuffixStr
     lifecycleArchiveAfterDays: lifecycleArchiveAfterDays
-    gatewayAuthTokenStoreSasExpiry: gatewayAuthTokenStoreSasExpiry
     tags: commonTags
   }
 }
@@ -183,6 +182,18 @@ module daprInfra 'modules/dapr-infra.bicep' = {
     tenantId: tenant().tenantId
     keyVaultNetworkDefaultAction: keyVaultNetworkDefaultAction
     tags: commonTags
+  }
+}
+
+// Generates the gateway Easy Auth token store SAS URL against the already-existing
+// container. Runs only when deploying container apps so that listServiceSas is never
+// called in the same deployment that first creates the container.
+module gatewayAuthSas 'modules/gateway-auth-sas.bicep' = if (deployContainerApps) {
+  name: 'gateway-auth-sas'
+  params: {
+    storageAccountName: storage.outputs.dataStorageAccountName
+    containerName: storage.outputs.gatewayAuthTokenStoreContainerName
+    sasExpiry: gatewayAuthTokenStoreSasExpiry
   }
 }
 
@@ -294,7 +305,7 @@ module compute 'modules/compute.bicep' = if (deployContainerApps) {
     gatewayAuthClientId: gatewayAuthClientId
     gatewayAuthClientSecret: gatewayAuthClientSecret
     gatewayAuthAllowedAudiences: gatewayAuthAllowedAudiences
-    gatewayAuthTokenStoreSasUrl: storage.outputs.gatewayAuthTokenStoreSasUrl
+    gatewayAuthTokenStoreSasUrl: gatewayAuthSas!.outputs.sasUrl
     gatewayProxyHeaderName: gatewayProxyHeaderName
     gatewayProxyHeaderValue: gatewayProxyHeaderValue
     cosmosAccountEndpoint: cosmosAccount.properties.documentEndpoint
