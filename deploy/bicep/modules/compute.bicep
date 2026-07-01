@@ -497,6 +497,20 @@ resource gatewayContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
               name: 'Gateway__ApiTokenScope'
               value: '${apiAuthAudience}/.default'
             }
+            ...(gatewayAuthEnabled ? [
+              {
+                name: 'Gateway__OboClientId'
+                value: gatewayAuthClientId
+              }
+              {
+                name: 'Gateway__OboTenantId'
+                value: apiAuthTenantId
+              }
+              {
+                name: 'Gateway__OboClientSecret'
+                secretRef: 'gateway-auth-client-secret'
+              }
+            ] : [])
           ]
         }
       ]

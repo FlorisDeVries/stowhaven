@@ -26,6 +26,16 @@ var apiTokenCredential = string.IsNullOrWhiteSpace(apiTokenScope)
     ? null
     : CreateTokenCredential(managedIdentityClientId);
 
+var oboClientId = configuration["Gateway:OboClientId"];
+var oboClientSecret = configuration["Gateway:OboClientSecret"];
+var oboTenantId = configuration["Gateway:OboTenantId"];
+OboOptions? oboOptions = !string.IsNullOrWhiteSpace(oboClientId)
+    && !string.IsNullOrWhiteSpace(oboClientSecret)
+    && !string.IsNullOrWhiteSpace(oboTenantId)
+    && !string.IsNullOrWhiteSpace(apiTokenScope)
+    ? new OboOptions(oboClientId, oboClientSecret, oboTenantId)
+    : null;
+
 app.MapGet("/", () => Results.Redirect("/swagger"));
 app.MapGet("/healthz", () => Results.Ok(new { status = "Healthy" }));
 
@@ -39,7 +49,7 @@ app.UseSwaggerUI(options =>
 
 app.Map("/api/{**path}", async context =>
 {
-    await ProxyAsync(context, apiBaseUrl, "/api", "/api", "/", gatewayHeaderName, gatewayHeaderValue, apiTokenCredential, apiTokenScope);
+    await ProxyAsync(context, apiBaseUrl, "/api", "/api", "/", gatewayHeaderName, gatewayHeaderValue, apiTokenCredential, apiTokenScope, oboOptions);
 });
 
 app.Map("/worker/{**path}", async context =>
@@ -68,7 +78,8 @@ static async Task ProxyAsync(
     string gatewayHeaderName,
     string gatewayHeaderValue,
     TokenCredential? tokenCredential,
-    string? tokenScope)
+    string? tokenScope,
+    OboOptions? oboOptions = null)
 {
     var httpClientFactory = context.RequestServices.GetRequiredService<IHttpClientFactory>();
     var logger = context.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("GatewayProxy");
@@ -90,22 +101,25 @@ static async Task ProxyAsync(
     var hasAuthorizationHeader = context.Request.Headers.ContainsKey("Authorization");
     var useManagedIdentity = tokenCredential is not null && !string.IsNullOrWhiteSpace(tokenScope) && !isSwaggerDocument;
 
-    if (!isSwaggerDocument &&
-        context.Request.Headers.TryGetValue(EasyAuthAccessTokenHeader, out var accessToken) &&
-        !string.IsNullOrWhiteSpace(accessToken.ToString()))
+    context.Request.Headers.TryGetValue(EasyAuthAccessTokenHeader, out var easyAuthToken);
+    var hasEasyAuthToken = !isSwaggerDocument && !string.IsNullOrWhiteSpace(easyAuthToken.ToString());
+
+    if (hasEasyAuthToken && oboOptions is not null)
     {
-        // Easy Auth token store provides the user's validated access token. Prefer this
-        // delegated token over the Gateway managed identity so user-identity claims
-        // (tid, oid) reach the API — managed identity tokens carry no user context.
-        // The incoming Authorization header is suppressed below (it carries the Gateway
-        // audience and would be rejected by the upstream API).
-        requestMessage.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken.ToString());
-        logger.LogDebug("Proxying {Method} {Path} with Easy Auth access token", context.Request.Method, context.Request.Path);
+        // Exchange the user's gateway-scoped token for an API-scoped delegated token.
+        // OBO preserves user identity claims (tid, oid) that app-only managed identity
+        // tokens lack, which is required by user-specific API endpoints.
+        var oboCredential = new OnBehalfOfCredential(oboOptions.TenantId, oboOptions.ClientId, oboOptions.ClientSecret, easyAuthToken.ToString());
+        var oboResult = await oboCredential.GetTokenAsync(
+            new TokenRequestContext([tokenScope!]),
+            context.RequestAborted);
+        requestMessage.Headers.Authorization = new AuthenticationHeaderValue("Bearer", oboResult.Token);
+        logger.LogDebug("Proxying {Method} {Path} with OBO token (on behalf of user)", context.Request.Method, context.Request.Path);
     }
     else if (useManagedIdentity)
     {
-        // No user token in the Easy Auth token store (e.g. headless caller, or token
-        // store disabled); fall back to Gateway managed identity for service-to-service auth.
+        // No user token or OBO not configured; use Gateway managed identity for
+        // service-to-service calls (health checks, Dapr, headless callers, etc.).
         var token = await tokenCredential!.GetTokenAsync(
             new TokenRequestContext([tokenScope!]),
             context.RequestAborted).ConfigureAwait(false);
@@ -135,9 +149,10 @@ static async Task ProxyAsync(
             continue;
         }
 
-        // Suppress the incoming Authorization header when the Gateway has set its own —
-        // the original carries the Gateway audience token and would be rejected by the API.
-        if (useManagedIdentity && string.Equals(header.Key, "Authorization", StringComparison.OrdinalIgnoreCase))
+        // Suppress the incoming Authorization header whenever the Gateway sets its own
+        // (OBO or managed identity) — the original carries the Gateway audience and
+        // would be rejected by the upstream API.
+        if ((useManagedIdentity || hasEasyAuthToken) && string.Equals(header.Key, "Authorization", StringComparison.OrdinalIgnoreCase))
         {
             continue;
         }
@@ -292,3 +307,5 @@ static bool IsHopByHopHeader(string headerName)
            string.Equals(headerName, "Transfer-Encoding", StringComparison.OrdinalIgnoreCase) ||
            string.Equals(headerName, "Upgrade", StringComparison.OrdinalIgnoreCase);
 }
+
+record OboOptions(string ClientId, string ClientSecret, string TenantId);
