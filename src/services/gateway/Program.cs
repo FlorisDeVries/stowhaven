@@ -110,17 +110,26 @@ static async Task ProxyAsync(
     context.Request.Headers.TryGetValue(EasyAuthAccessTokenHeader, out var easyAuthToken);
     var hasEasyAuthToken = !isSwaggerDocument && !string.IsNullOrWhiteSpace(easyAuthToken.ToString());
 
-    if (hasEasyAuthToken && oboOptions is not null)
+    // Easy Auth only populates X-MS-TOKEN-AAD-ACCESS-TOKEN in session/cookie flows.
+    // For direct Bearer token calls the original Authorization header is the user assertion.
+    var userAssertionToken = hasEasyAuthToken
+        ? easyAuthToken.ToString()
+        : ExtractBearerToken(context.Request.Headers.Authorization.ToString());
+    var canUseObo = !isSwaggerDocument && oboOptions is not null && !string.IsNullOrWhiteSpace(userAssertionToken);
+
+    if (canUseObo)
     {
         // Exchange the user's gateway-scoped token for an API-scoped delegated token.
         // OBO preserves user identity claims (tid, oid) that app-only managed identity
         // tokens lack, which is required by user-specific API endpoints.
-        var oboCredential = new OnBehalfOfCredential(oboOptions.TenantId, oboOptions.ClientId, oboOptions.ClientSecret, easyAuthToken.ToString());
+        var oboCredential = new OnBehalfOfCredential(oboOptions!.TenantId, oboOptions.ClientId, oboOptions.ClientSecret, userAssertionToken!);
         var oboResult = await oboCredential.GetTokenAsync(
             new TokenRequestContext([tokenScope!]),
             context.RequestAborted);
         requestMessage.Headers.Authorization = new AuthenticationHeaderValue("Bearer", oboResult.Token);
-        logger.LogInformation("Proxying {Method} {Path} with OBO token (on behalf of user)", context.Request.Method, context.Request.Path);
+        logger.LogInformation("Proxying {Method} {Path} with OBO token (source: {Source})",
+            context.Request.Method, context.Request.Path,
+            hasEasyAuthToken ? "EasyAuth" : "Authorization");
     }
     else if (useManagedIdentity)
     {
@@ -131,8 +140,8 @@ static async Task ProxyAsync(
             context.RequestAborted).ConfigureAwait(false);
 
         requestMessage.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Token);
-        logger.LogInformation("Proxying {Method} {Path} with managed identity token (hasEasyAuthToken={HasEasyAuthToken}, oboConfigured={OboConfigured})",
-            context.Request.Method, context.Request.Path, hasEasyAuthToken, oboOptions is not null);
+        logger.LogInformation("Proxying {Method} {Path} with managed identity token (hasEasyAuthToken={HasEasyAuthToken}, canUseObo={CanUseObo})",
+            context.Request.Method, context.Request.Path, hasEasyAuthToken, canUseObo);
     }
     else if (hasAuthorizationHeader)
     {
@@ -159,7 +168,7 @@ static async Task ProxyAsync(
         // Suppress the incoming Authorization header whenever the Gateway sets its own
         // (OBO or managed identity) — the original carries the Gateway audience and
         // would be rejected by the upstream API.
-        if ((useManagedIdentity || hasEasyAuthToken) && string.Equals(header.Key, "Authorization", StringComparison.OrdinalIgnoreCase))
+        if ((useManagedIdentity || canUseObo) && string.Equals(header.Key, "Authorization", StringComparison.OrdinalIgnoreCase))
         {
             continue;
         }
@@ -314,5 +323,10 @@ static bool IsHopByHopHeader(string headerName)
            string.Equals(headerName, "Transfer-Encoding", StringComparison.OrdinalIgnoreCase) ||
            string.Equals(headerName, "Upgrade", StringComparison.OrdinalIgnoreCase);
 }
+
+static string? ExtractBearerToken(string? authorizationHeader) =>
+    authorizationHeader?.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) == true
+        ? authorizationHeader[7..].Trim()
+        : null;
 
 record OboOptions(string ClientId, string ClientSecret, string TenantId);
