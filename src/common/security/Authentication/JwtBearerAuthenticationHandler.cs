@@ -97,6 +97,9 @@ public static class JwtBearerAuthenticationHandler
 
                 var scopeClaim = context.Principal?.FindFirst("scp")?.Value;
                 var scopes = scopeClaim?.Split(' ', StringSplitOptions.RemoveEmptyEntries) ?? [];
+                logger.LogInformation("JWT token validation — roles: [{Roles}], scp: '{Scp}'",
+                    string.Join(", ", roleClaims),
+                    scopeClaim ?? "<null>");
                 if (!scopes.Contains("backup.client") && !scopes.Contains("backup.admin"))
                 {
                     context.Fail("Missing required scope or app role: backup.client, backup.admin, or backup.gateway");

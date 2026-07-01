@@ -127,6 +127,7 @@ static async Task ProxyAsync(
             new TokenRequestContext([tokenScope!]),
             context.RequestAborted);
         requestMessage.Headers.Authorization = new AuthenticationHeaderValue("Bearer", oboResult.Token);
+        LogJwtClaims(logger, oboResult.Token, "OBO");
         logger.LogInformation("Proxying {Method} {Path} with OBO token (source: {Source})",
             context.Request.Method, context.Request.Path,
             hasEasyAuthToken ? "EasyAuth" : "Authorization");
@@ -328,5 +329,26 @@ static string? ExtractBearerToken(string? authorizationHeader) =>
     authorizationHeader?.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) == true
         ? authorizationHeader[7..].Trim()
         : null;
+
+static void LogJwtClaims(ILogger logger, string token, string label)
+{
+    try
+    {
+        var parts = token.Split('.');
+        if (parts.Length < 2) return;
+        var padding = (4 - parts[1].Length % 4) % 4;
+        var payload = System.Text.Encoding.UTF8.GetString(
+            Convert.FromBase64String(parts[1] + new string('=', padding)));
+        using var doc = JsonDocument.Parse(payload);
+        var root = doc.RootElement;
+        logger.LogInformation("{Label} token claims — aud: {Aud}, scp: {Scp}, roles: {Roles}, oid: {Oid}",
+            label,
+            root.TryGetProperty("aud", out var aud) ? aud.ToString() : "<missing>",
+            root.TryGetProperty("scp", out var scp) ? scp.ToString() : "<missing>",
+            root.TryGetProperty("roles", out var roles) ? roles.ToString() : "<missing>",
+            root.TryGetProperty("oid", out var oid) ? oid.GetString()?[..8] + "..." : "<missing>");
+    }
+    catch { /* best-effort */ }
+}
 
 record OboOptions(string ClientId, string ClientSecret, string TenantId);
