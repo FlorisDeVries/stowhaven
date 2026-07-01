@@ -36,6 +36,12 @@ OboOptions? oboOptions = !string.IsNullOrWhiteSpace(oboClientId)
     ? new OboOptions(oboClientId, oboClientSecret, oboTenantId)
     : null;
 
+var startupLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("GatewayStartup");
+startupLogger.LogInformation("Gateway proxy auth mode: {Mode} (OboClientId={OboClientId}, ApiTokenScope={ApiTokenScope})",
+    oboOptions is not null ? "OBO" : (apiTokenCredential is not null ? "ManagedIdentity" : "PassThrough"),
+    string.IsNullOrWhiteSpace(oboClientId) ? "<missing>" : oboClientId,
+    string.IsNullOrWhiteSpace(apiTokenScope) ? "<missing>" : apiTokenScope);
+
 app.MapGet("/", () => Results.Redirect("/swagger"));
 app.MapGet("/healthz", () => Results.Ok(new { status = "Healthy" }));
 
@@ -114,7 +120,7 @@ static async Task ProxyAsync(
             new TokenRequestContext([tokenScope!]),
             context.RequestAborted);
         requestMessage.Headers.Authorization = new AuthenticationHeaderValue("Bearer", oboResult.Token);
-        logger.LogDebug("Proxying {Method} {Path} with OBO token (on behalf of user)", context.Request.Method, context.Request.Path);
+        logger.LogInformation("Proxying {Method} {Path} with OBO token (on behalf of user)", context.Request.Method, context.Request.Path);
     }
     else if (useManagedIdentity)
     {
@@ -125,11 +131,12 @@ static async Task ProxyAsync(
             context.RequestAborted).ConfigureAwait(false);
 
         requestMessage.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Token);
-        logger.LogDebug("Proxying {Method} {Path} with Gateway managed identity token", context.Request.Method, context.Request.Path);
+        logger.LogInformation("Proxying {Method} {Path} with managed identity token (hasEasyAuthToken={HasEasyAuthToken}, oboConfigured={OboConfigured})",
+            context.Request.Method, context.Request.Path, hasEasyAuthToken, oboOptions is not null);
     }
     else if (hasAuthorizationHeader)
     {
-        logger.LogDebug("Proxying {Method} {Path} with incoming Authorization header", context.Request.Method, context.Request.Path);
+        logger.LogInformation("Proxying {Method} {Path} with incoming Authorization header", context.Request.Method, context.Request.Path);
     }
 
     if (context.Request.ContentLength is > 0 || context.Request.Headers.ContainsKey("Transfer-Encoding"))
