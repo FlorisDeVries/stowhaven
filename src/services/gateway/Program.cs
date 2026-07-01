@@ -90,30 +90,28 @@ static async Task ProxyAsync(
     var hasAuthorizationHeader = context.Request.Headers.ContainsKey("Authorization");
     var useManagedIdentity = tokenCredential is not null && !string.IsNullOrWhiteSpace(tokenScope) && !isSwaggerDocument;
 
-    if (useManagedIdentity)
+    if (!isSwaggerDocument &&
+        context.Request.Headers.TryGetValue(EasyAuthAccessTokenHeader, out var accessToken) &&
+        !string.IsNullOrWhiteSpace(accessToken.ToString()))
     {
-        // Always use the Gateway managed identity when configured: the client authenticates
-        // against the Gateway (via Easy Auth) and the Gateway authenticates against the API
-        // with its own identity. The incoming Authorization header carries the Gateway
-        // audience and must not be forwarded — the API would reject it.
+        // Easy Auth token store provides the user's validated access token. Prefer this
+        // delegated token over the Gateway managed identity so user-identity claims
+        // (tid, oid) reach the API — managed identity tokens carry no user context.
+        // The incoming Authorization header is suppressed below (it carries the Gateway
+        // audience and would be rejected by the upstream API).
+        requestMessage.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken.ToString());
+        logger.LogDebug("Proxying {Method} {Path} with Easy Auth access token", context.Request.Method, context.Request.Path);
+    }
+    else if (useManagedIdentity)
+    {
+        // No user token in the Easy Auth token store (e.g. headless caller, or token
+        // store disabled); fall back to Gateway managed identity for service-to-service auth.
         var token = await tokenCredential!.GetTokenAsync(
             new TokenRequestContext([tokenScope!]),
             context.RequestAborted).ConfigureAwait(false);
 
         requestMessage.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Token);
         logger.LogDebug("Proxying {Method} {Path} with Gateway managed identity token", context.Request.Method, context.Request.Path);
-    }
-    else if (!hasAuthorizationHeader &&
-        context.Request.Headers.TryGetValue(EasyAuthAccessTokenHeader, out var accessToken) &&
-        !string.IsNullOrWhiteSpace(accessToken.ToString()))
-    {
-        // Container Apps Easy Auth may validate and remove the original
-        // Authorization header before the request reaches the Gateway. When
-        // token store is enabled, the validated access token is available via
-        // X-MS-TOKEN-AAD-ACCESS-TOKEN; prefer that delegated token over the
-        // Gateway managed identity so user-specific endpoints keep user claims.
-        requestMessage.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken.ToString());
-        logger.LogDebug("Proxying {Method} {Path} with Easy Auth access token", context.Request.Method, context.Request.Path);
     }
     else if (hasAuthorizationHeader)
     {
@@ -137,8 +135,8 @@ static async Task ProxyAsync(
             continue;
         }
 
-        // When using managed identity, suppress the incoming Authorization header —
-        // it carries the Gateway audience token and would be rejected by the upstream API.
+        // Suppress the incoming Authorization header when the Gateway has set its own —
+        // the original carries the Gateway audience token and would be rejected by the API.
         if (useManagedIdentity && string.Equals(header.Key, "Authorization", StringComparison.OrdinalIgnoreCase))
         {
             continue;
