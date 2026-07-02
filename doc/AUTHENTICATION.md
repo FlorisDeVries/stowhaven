@@ -1,206 +1,186 @@
 # Authentication Setup for Distributed Clients
 
-This document explains how to set up authentication for the Backup Client in production environments where it's distributed to end users.
+This document explains how authentication works in the Backup API stack and how to set up a new distributed client installation.
 
-## Overview
+## Architecture Overview
 
-The backup client uses **MSAL (Microsoft Authentication Library)** for interactive user authentication. This allows users to sign in with their Microsoft/Entra ID accounts and securely access the Backup API.
+Clients never talk directly to the API. All traffic goes through a **Gateway** (Azure Container App) that handles authentication and forwards requests to the internal API.
 
-## Architecture
+```
+Client  ──(gateway scope token)──▶  Gateway (Easy Auth)
+                                        │
+                                        │  OBO exchange
+                                        ▼
+                                    Entra ID
+                                        │
+                                        │  API scope token (user identity preserved)
+                                        ▼
+                                    Backup API  ──▶  Azure Blob
+```
+
+### Authentication Flow
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor User
-    participant Client as Windows Client
+    participant Client as Backup Client
     participant MSAL as MSAL Library
     participant Browser
-    participant EntraID as Entra ID
+    participant Entra as Entra ID
+    participant GW as Gateway (Easy Auth)
     participant API as Backup API
-    participant Blob as Azure Blob Storage
 
     User->>Client: Start backup
-    Client->>MSAL: Request token
-    
-    alt First time or token expired
+
+    alt First run or token expired
+        Client->>MSAL: Request gateway token
         MSAL->>Browser: Open sign-in page
-        Browser->>EntraID: Sign in with Microsoft account
-        User->>Browser: Enter credentials
-        EntraID-->>Browser: Auth code
-        Browser-->>MSAL: Auth code (redirect)
-        MSAL->>EntraID: Exchange code for token
-        EntraID-->>MSAL: JWT + Refresh token
-        MSAL->>MSAL: Cache tokens securely (DPAPI)
-    else Token cached and valid
-        MSAL->>MSAL: Load from cache
+        User->>Browser: Sign in
+        Browser->>Entra: Authenticate
+        Entra-->>Browser: Auth code
+        Browser-->>MSAL: Auth code (localhost redirect)
+        MSAL->>Entra: Exchange for token (gateway scope)
+        Entra-->>MSAL: Gateway-scoped JWT + refresh token
+        MSAL->>MSAL: Cache securely (DPAPI / Keychain / libsecret)
+    else Token in cache
+        MSAL->>MSAL: Load & silently refresh if needed
     end
-    
-    MSAL-->>Client: Access token (scope: backup.client or backup.admin)
-    Client->>API: POST /api/devices/{deviceId}/backup/start-run<br/>(Authorization: Bearer <token>)
-    API->>API: Validate JWT<br/>(audience, issuer, scope)
-    API->>Blob: Request User Delegation Key (Managed Identity)
-    Blob-->>API: Delegation key
-    API->>API: Generate SAS URL for staging/
-    API-->>Client: SAS URL (write-only, time-limited)
-    Client->>Blob: Upload files directly (using SAS)
-    Client->>API: POST /api/devices/{deviceId}/backup/commit-run
-    API-->>Client: 202 Accepted
+
+    MSAL-->>Client: Gateway-scoped access token
+    Client->>GW: POST /api/devices (Authorization: Bearer <gateway token>)
+    GW->>GW: Easy Auth validates gateway token
+    GW->>Entra: OBO exchange (gateway token → API token)
+    Entra-->>GW: API-scoped token (scp: backup.client, oid/tid preserved)
+    GW->>API: POST /api/devices (Authorization: Bearer <API token>)
+    API->>API: Validate JWT (audience, issuer, scope, user identity)
+    API-->>GW: 200 OK
+    GW-->>Client: 200 OK
 ```
 
-Key features:
-- **Interactive authentication**: Users sign in via browser
-- **Token caching**: Tokens are securely cached
-- **Automatic refresh**: Tokens are refreshed before expiry
-- **No secrets in client**: Public client flow (no client secrets stored)
+### Why OBO (On-Behalf-Of)?
 
-## Entra ID App Registration
+The Gateway exchanges the user's gateway-scoped token for an API-scoped token via the OAuth2 On-Behalf-Of flow. This serves two purposes:
 
-### 1. Register the Client Application
+1. **Audience isolation** — the client token targets the gateway (`api://5506a872...`); the API only accepts tokens for its own audience (`api://906eb0e3...`).
+2. **User identity preservation** — the OBO token carries the user's `oid` and `tid` claims, which the API uses to scope stored data per user.
 
-1. Go to [Azure Portal](https://portal.azure.com) → **Entra ID** → **App registrations**
-2. Click **New registration**
-3. Configure:
-   - **Name**: `Backup Client`
-   - **Supported account types**: `Accounts in this organizational directory only`
-   - **Redirect URI**: 
-     - Platform: `Public client/native`
-     - URI: `http://localhost`
-4. Click **Register**
-5. **Copy the Application (client) ID** - you'll need this for configuration
+Azure AD clips the OBO token's scopes to what the individual user has been consented for, so user-level access control is enforced at the Entra layer.
 
-### 2. Configure API Permissions
+---
 
-1. In your new app registration, go to **API permissions**
-2. Click **Add a permission** → **My APIs**
-3. Select your Backup API (the one with ClientId `906eb0e3-e351-47c0-a68a-690207f4cccb`)
-4. Select **Delegated permissions**
-5. Check `backup.client` for normal backup clients. Use `backup.admin` only for trusted administrative/operator clients.
-6. Click **Add permissions**
-7. **Optional**: Click **Grant admin consent** (if you want to pre-approve for all users)
+## App Registrations
 
-### 3. Configure Authentication
+Three app registrations are involved:
 
-1. Go to **Authentication** in your app registration
-2. Under **Advanced settings**:
-   - **Allow public client flows**: `Yes`
-   - **Default client type**: `Yes - treat as public client`
-3. Click **Save**
+| App | ID | Purpose |
+|-----|----|---------|
+| Backup Client (public) | `a862c3a8-8dfa-46b6-9a5a-5cea65652416` | MSAL public client — no secret |
+| Gateway | `5506a872-9273-48f8-8145-43181d406355` | Easy Auth + OBO credential |
+| Backup API | `906eb0e3-e351-47c0-a68a-690207f4cccb` | JWT audience, defines scopes |
 
-### 4. Update API App Registration (Allow Client Tokens)
+---
 
-The API also needs to accept tokens from the client app:
+## Setting Up a New Client Installation
 
-1. Go to your API's app registration (`906eb0e3-e351-47c0-a68a-690207f4cccb`)
-2. Go to **Expose an API**
-3. Under **Authorized client applications**, click **Add a client application**
-4. Enter the **Client App ID** from step 1.5
-5. Check the `backup.client` scope for the client app. Add `backup.admin` only for trusted administrative clients.
-6. Click **Add application**
+### 1. The MSAL public client app is already registered
+
+`a862c3a8-8dfa-46b6-9a5a-5cea65652416` — this is the shared public client used by all installations. No secrets are needed because it is a public client (desktop app flow).
+
+### 2. Grant the client permission on the Gateway
+
+The client must be authorised to request a gateway-scoped token:
+
+1. **Entra ID** → **App registrations** → `5506a872` (Gateway)
+2. **Expose an API** → **Authorized client applications**
+3. Add `a862c3a8-8dfa-46b6-9a5a-5cea65652416` with the `backup.access` scope
+
+### 3. Regular user access (backup.client)
+
+All users in the tenant are pre-consented for `backup.client` rights via an `AllPrincipals` admin consent grant on the Gateway → API permission. No per-user action is needed for standard backup clients.
+
+### 4. Admin user access (backup.admin)
+
+`backup.admin` is **not** granted to all users. It must be granted individually:
+
+1. **Entra ID** → **Enterprise applications** → `906eb0e3` (Backup API)
+2. **Permissions** → **Grant admin consent** → select the user
+3. Grant the `backup.admin` delegated scope for that specific user
+
+Or grant it to a security group and assign users to that group.
+
+---
 
 ## Client Configuration
 
-Update your client's `appsettings.json`:
+### Production (pointing at the hosted gateway)
+
+Store sensitive values in user secrets (`dotnet user-secrets`), not in committed config files:
 
 ```json
 {
-  "AzureAd": {
-    "Instance": "https://login.microsoftonline.com/",
-    "TenantId": "cf8adfe1-bb3b-4ef0-8ba9-44dcddb8ecb9",
-    "ClientId": "YOUR_CLIENT_APP_ID_FROM_STEP_1.5"
-  },
   "BackupApiClient": {
-    "ApiUrl": "https://your-container-app-url.azurecontainerapps.io",
-    "AuthenticationScope": "api://906eb0e3-e351-47c0-a68a-690207f4cccb/backup.client",
-    "AuthenticationTenant": "cf8adfe1-bb3b-4ef0-8ba9-44dcddb8ecb9",
-    "RetryOptions": {
-      "MaxRetryAttempts": 3,
-      "Delay": "00:00:02",
-      "BackoffType": "Exponential"
-    }
+    "ApiUrl": "https://<gateway-url>.azurecontainerapps.io",
+    "AuthenticationScope": "api://5506a872-9273-48f8-8145-43181d406355/backup.access",
+    "AuthenticationTenant": "cf8adfe1-bb3b-4ef0-8ba9-44dcddb8ecb9"
   }
 }
 ```
 
-## How Authentication Works
+> **Note** — `AuthenticationScope` targets the **Gateway** app (`5506a872`), not the API. The Gateway exchanges this token for an API-scoped token internally.
 
-### First Run (No Cached Token)
+### Development (local API, no auth)
 
-1. User launches the backup client
-2. Client detects no cached token
-3. **Browser window opens** showing Microsoft sign-in page
-4. User signs in with their Microsoft account
-5. User **consents to permissions** (if not pre-approved by admin)
-6. Browser redirects to `http://localhost` with auth code
-7. Client exchanges auth code for token
-8. **Token is cached securely** (Windows: DPAPI, macOS: Keychain, Linux: libsecret)
-9. Client calls Backup API with token
+`appsettings.Development.json` points `ApiUrl` at `localhost`. The client detects a local URL and skips MSAL, using `NoOpTokenCredential` instead. No Entra setup is needed for local development.
 
-### Subsequent Runs (Cached Token)
+---
 
-1. User launches the backup client
-2. Client loads token from secure cache
-3. If token is still valid → use it
-4. If token is expired → **silently refresh** using refresh token
-5. Client calls Backup API with token
-6. **No browser interaction needed!**
+## How Access Control Works End-to-End
 
-## Token Caching Locations
+1. **User authenticates** → MSAL acquires a JWT with `aud: api://5506a872...` and `scp: backup.access`
+2. **Gateway validates** via Easy Auth → confirms the token is a valid Entra token for this tenant
+3. **OBO exchange** → Gateway trades the user's gateway token for an API token:
+   - Requests both `backup.client` and `backup.admin` scopes
+   - Entra clips to only what that user has been individually consented for
+   - Resulting token has `aud: api://906eb0e3...`, `oid`/`tid` (user identity), and only the allowed `scp`
+4. **API validates** → checks audience, issuer, expiry, and that `scp` contains `backup.client` or `backup.admin`
+5. **Service layer** → uses `oid`+`tid` from the token to scope all data to that user
 
-Tokens are stored securely per platform:
+Regular users get `scp: "backup.client"`. Users individually granted `backup.admin` get `scp: "backup.admin backup.client"`. The API enforces which operations require which scope.
 
-- **Windows**: Encrypted with DPAPI (only current user can decrypt)
-- **macOS**: Keychain
-- **Linux**: libsecret
+---
 
-## Security Considerations
+## Token Caching
 
-### ✅ Secure Aspects
+MSAL caches tokens per platform:
 
-- **No client secrets**: Public client flow is appropriate for desktop apps
-- **Token caching**: Encrypted at rest using OS-provided secure storage
-- **Short-lived tokens**: Access tokens expire (typically 1 hour)
-- **Refresh tokens**: Longer-lived but revocable by admin
-- **Scope-based access**: normal clients use the narrow `backup.client` delegated scope; `backup.admin` is reserved for trusted operator/admin scenarios
-- **Per-user authentication**: Each user authenticates with their own account
+| Platform | Storage |
+|----------|---------|
+| Windows | DPAPI (current-user encrypted) |
+| macOS | Keychain |
+| Linux | libsecret |
 
-### ⚠️ Important Notes
+Cache location: `%LOCALAPPDATA%\FlorisDeV.BackupClient\backup-client.cache`
 
-- **Public client limitation**: Client app cannot securely store secrets (this is expected for desktop apps)
-- **Token extraction risk**: Advanced users could extract tokens from cache (but they're short-lived)
-- **Device trust**: No device-level authentication (relies on user authentication)
+On subsequent runs MSAL silently refreshes from cache — no browser window unless the refresh token has also expired or been revoked.
 
-### 🔒 API-Side Validation
+---
 
-The API validates:
-1. Token signature (from Entra ID)
-2. Audience (`api://906eb0e3-e351-47c0-a68a-690207f4cccb`)
-3. Issuer (correct tenant)
-4. Required scope (`backup.client` or `backup.admin`)
-5. Token expiry
+## Security Properties
 
-See [JwtBearerAuthenticationHandler.cs](../src/common/security/Authentication/JwtBearerAuthenticationHandler.cs)
+- **No client secrets** — public client flow is appropriate for unmanaged desktop installs
+- **Gateway isolation** — the internal API is not publicly reachable; all access goes through the gateway
+- **User identity in every request** — OBO preserves `oid`/`tid` so the API always knows which user is acting
+- **Least-privilege by default** — all users get `backup.client`; `backup.admin` requires an explicit per-user grant
+- **Short-lived tokens** — access tokens expire after ~1 hour; refresh tokens are revocable by an admin
+- **Audience separation** — client tokens and API tokens have different audiences; a stolen client token cannot be replayed directly against the API
 
-## Development vs Production
-
-### Development Mode
-
-- Uses `NoOpTokenCredential` in the client
-- Requires the local API to explicitly set `ALLOW_DEVELOPMENT_ANONYMOUS_AUTHENTICATION=true`
-- No MSAL setup needed for the local Docker Compose flow
-- Ideal for local API testing
-
-### Production Mode
-
-- Uses `MsalTokenCredential`
-- Interactive browser-based authentication
-- Token caching for better UX
-- Requires Entra ID app registration
-- Designed for distributed clients
-
-The client automatically selects the appropriate credential based on `IHostEnvironment.IsDevelopment()`.
+---
 
 ## References
 
-- [Microsoft Identity Platform - Public client apps](https://learn.microsoft.com/en-us/entra/identity-platform/msal-net-initializing-client-applications#initializing-a-public-client-application-from-code)
-- [MSAL.NET Token Cache Serialization](https://learn.microsoft.com/en-us/entra/msal/dotnet/how-to/token-cache-serialization)
-- [MSAL.NET Browser-based authentication](https://learn.microsoft.com/en-us/entra/msal/dotnet/acquiring-tokens/desktop-mobile/acquiring-tokens-interactively)
+- [JwtBearerAuthenticationHandler.cs](../src/common/security/Authentication/JwtBearerAuthenticationHandler.cs)
+- [Gateway Program.cs](../src/services/gateway/Program.cs) — OBO exchange implementation
+- [Microsoft identity platform — OBO flow](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-on-behalf-of-flow)
+- [MSAL.NET public client apps](https://learn.microsoft.com/en-us/entra/msal/dotnet/acquiring-tokens/desktop-mobile/acquiring-tokens-interactively)
+- [Container Apps Easy Auth](https://learn.microsoft.com/en-us/azure/container-apps/authentication)

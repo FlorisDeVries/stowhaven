@@ -29,11 +29,24 @@ var apiTokenCredential = string.IsNullOrWhiteSpace(apiTokenScope)
 var oboClientId = configuration["Gateway:OboClientId"];
 var oboClientSecret = configuration["Gateway:OboClientSecret"];
 var oboTenantId = configuration["Gateway:OboTenantId"];
+// Explicit scopes for OBO — must NOT use /.default; V1 assertion tokens
+// (gateway app has accessTokenAcceptedVersion=null) don't expand /.default correctly
+// in the OBO flow, producing a token with no scp claim.
+// Request ALL delegated scopes and let Azure AD clip them to only what
+// the individual user has been consented for — no blanket admin escalation.
+var oboApiScopesRaw = configuration["Gateway:OboApiScopes"]
+    ?? (string.IsNullOrWhiteSpace(apiTokenScope) ? null
+        : string.Join(" ", new[]
+        {
+            apiTokenScope!.Replace("/.default", "/backup.client", StringComparison.OrdinalIgnoreCase),
+            apiTokenScope!.Replace("/.default", "/backup.admin", StringComparison.OrdinalIgnoreCase),
+        }));
+var oboApiScopes = oboApiScopesRaw?.Split(' ', StringSplitOptions.RemoveEmptyEntries) ?? [];
 OboOptions? oboOptions = !string.IsNullOrWhiteSpace(oboClientId)
     && !string.IsNullOrWhiteSpace(oboClientSecret)
     && !string.IsNullOrWhiteSpace(oboTenantId)
-    && !string.IsNullOrWhiteSpace(apiTokenScope)
-    ? new OboOptions(oboClientId, oboClientSecret, oboTenantId)
+    && oboApiScopes.Length > 0
+    ? new OboOptions(oboClientId, oboClientSecret, oboTenantId, oboApiScopes)
     : null;
 
 var startupLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("GatewayStartup");
@@ -124,7 +137,7 @@ static async Task ProxyAsync(
         // tokens lack, which is required by user-specific API endpoints.
         var oboCredential = new OnBehalfOfCredential(oboOptions!.TenantId, oboOptions.ClientId, oboOptions.ClientSecret, userAssertionToken!);
         var oboResult = await oboCredential.GetTokenAsync(
-            new TokenRequestContext([tokenScope!]),
+            new TokenRequestContext(oboOptions.ApiScopes),
             context.RequestAborted);
         requestMessage.Headers.Authorization = new AuthenticationHeaderValue("Bearer", oboResult.Token);
         LogJwtClaims(logger, oboResult.Token, "OBO");
@@ -351,4 +364,4 @@ static void LogJwtClaims(ILogger logger, string token, string label)
     catch { /* best-effort */ }
 }
 
-record OboOptions(string ClientId, string ClientSecret, string TenantId);
+record OboOptions(string ClientId, string ClientSecret, string TenantId, string[] ApiScopes);
