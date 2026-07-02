@@ -32,15 +32,13 @@ var oboTenantId = configuration["Gateway:OboTenantId"];
 // Explicit scopes for OBO — must NOT use /.default; V1 assertion tokens
 // (gateway app has accessTokenAcceptedVersion=null) don't expand /.default correctly
 // in the OBO flow, producing a token with no scp claim.
-// Request ALL delegated scopes and let Azure AD clip them to only what
-// the individual user has been consented for — no blanket admin escalation.
+// Only request backup.client: Azure AD returns AADSTS65001 (consent_required) if any
+// listed scope has NO consent for the user (AllPrincipals covers backup.client only).
+// Clipping only happens when the user has partial consent — not when the scope is absent.
+// Override with Gateway:OboApiScopes for deployments where backup.admin is also required.
 var oboApiScopesRaw = configuration["Gateway:OboApiScopes"]
     ?? (string.IsNullOrWhiteSpace(apiTokenScope) ? null
-        : string.Join(" ", new[]
-        {
-            apiTokenScope!.Replace("/.default", "/backup.client", StringComparison.OrdinalIgnoreCase),
-            apiTokenScope!.Replace("/.default", "/backup.admin", StringComparison.OrdinalIgnoreCase),
-        }));
+        : apiTokenScope!.Replace("/.default", "/backup.client", StringComparison.OrdinalIgnoreCase));
 var oboApiScopes = oboApiScopesRaw?.Split(' ', StringSplitOptions.RemoveEmptyEntries) ?? [];
 OboOptions? oboOptions = !string.IsNullOrWhiteSpace(oboClientId)
     && !string.IsNullOrWhiteSpace(oboClientSecret)

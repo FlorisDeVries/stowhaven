@@ -140,13 +140,13 @@ Store sensitive values in user secrets (`dotnet user-secrets`), not in committed
 1. **User authenticates** → MSAL acquires a JWT with `aud: api://5506a872...` and `scp: backup.access`
 2. **Gateway validates** via Easy Auth → confirms the token is a valid Entra token for this tenant
 3. **OBO exchange** → Gateway trades the user's gateway token for an API token:
-   - Requests both `backup.client` and `backup.admin` scopes
-   - Entra clips to only what that user has been individually consented for
-   - Resulting token has `aud: api://906eb0e3...`, `oid`/`tid` (user identity), and only the allowed `scp`
+   - Requests only `backup.client` (the scope covered by the `AllPrincipals` admin consent)
+   - Resulting token has `aud: api://906eb0e3...`, `oid`/`tid` (user identity), and `scp: backup.client`
+   - Note: Azure AD returns `AADSTS65001` if a requested scope has *no* consent for that user — it does not silently clip absent scopes
 4. **API validates** → checks audience, issuer, expiry, and that `scp` contains `backup.client` or `backup.admin`
 5. **Service layer** → uses `oid`+`tid` from the token to scope all data to that user
 
-Regular users get `scp: "backup.client"`. Users individually granted `backup.admin` get `scp: "backup.admin backup.client"`. The API enforces which operations require which scope.
+All users routed through the gateway get `scp: "backup.client"`. The API's scope gate accepts either `backup.client` or `backup.admin`. To request `backup.admin` in the OBO token (for a deployment where all users have that consent), set `Gateway__OboApiScopes` explicitly in the container app environment.
 
 ---
 
