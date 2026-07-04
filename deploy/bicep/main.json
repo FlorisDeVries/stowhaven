@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "7282465389383999359"
+      "templateHash": "3331792623156303834"
     }
   },
   "parameters": {
@@ -1148,7 +1148,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.44.1.10279",
-              "templateHash": "6289194954976409564"
+              "templateHash": "11585817685550495970"
             }
           },
           "parameters": {
@@ -1468,6 +1468,10 @@
                           "value": "[string(parameters('allowCopyDeleteFallback'))]"
                         },
                         {
+                          "name": "USE_AZURITE",
+                          "value": "false"
+                        },
+                        {
                           "name": "Backup__Sas__EnableIpRestriction",
                           "value": "[string(parameters('enableSasIpRestriction'))]"
                         },
@@ -1626,6 +1630,10 @@
                         {
                           "name": "ALLOW_COPY_DELETE_FALLBACK",
                           "value": "[string(parameters('allowCopyDeleteFallback'))]"
+                        },
+                        {
+                          "name": "USE_AZURITE",
+                          "value": "false"
                         },
                         {
                           "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",

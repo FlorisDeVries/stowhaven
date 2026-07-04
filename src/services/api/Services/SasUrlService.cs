@@ -93,18 +93,21 @@ public partial class SasUrlService(
             else
             {
                 // PRODUCTION (Azure Storage with HNS / ADLS Gen2): use a directory-scoped SAS
-                // (Resource="d") so the token is cryptographically bound to the staging path and
+                // (sr=d) so the token is cryptographically bound to the staging path and
                 // cannot be used to read or overwrite blobs outside of it.
-                var dirSasBuilder = new BlobSasBuilder
+                // DataLakeSasBuilder is required here: sr=d is only valid with the sdd
+                // (signed directory depth) parameter, which BlobSasBuilder cannot emit —
+                // storage rejects such tokens with AuthenticationFailed.
+                var dirSasBuilder = new DataLakeSasBuilder
                 {
-                    BlobContainerName = containerName,
-                    BlobName          = path,
-                    Resource          = "d",
-                    ExpiresOn         = expiresAt,
-                    StartsOn          = DateTimeOffset.UtcNow.AddMinutes(-5),
-                    Protocol          = SasProtocol.Https
+                    FileSystemName = containerName,
+                    Path           = path,
+                    IsDirectory    = true,
+                    ExpiresOn      = expiresAt,
+                    StartsOn       = DateTimeOffset.UtcNow.AddMinutes(-5),
+                    Protocol       = SasProtocol.Https
                 };
-                dirSasBuilder.SetPermissions(BlobSasPermissions.Create | BlobSasPermissions.Write);
+                dirSasBuilder.SetPermissions(DataLakeSasPermissions.Create | DataLakeSasPermissions.Write);
 
                 // Add IP restriction if client IP is provided
                 if (!string.IsNullOrEmpty(clientIp))
@@ -114,7 +117,7 @@ public partial class SasUrlService(
                 }
 
                 // Use User Delegation Key for enhanced security (no account key exposure)
-                var key = await blobStorageService.GetUserDelegationKeyAsync(expiresAt, cancellationToken);
+                var key = await blobStorageService.GetDataLakeUserDelegationKeyAsync(expiresAt, cancellationToken);
                 var sasToken = dirSasBuilder.ToSasQueryParameters(key, storageAccount).ToString();
 
                 // Directory-level URL — path IS embedded so BlobContainerClient resolves correctly
@@ -208,16 +211,17 @@ public partial class SasUrlService(
             }
             else
             {
-                var dirSasBuilder = new BlobSasBuilder
+                // See GenerateUploadSasUrlAsync: sr=d requires DataLakeSasBuilder for sdd.
+                var dirSasBuilder = new DataLakeSasBuilder
                 {
-                    BlobContainerName = containerName,
-                    BlobName          = path,
-                    Resource          = "d",
-                    ExpiresOn         = expiresAt,
-                    StartsOn          = DateTimeOffset.UtcNow.AddMinutes(-5),
-                    Protocol          = SasProtocol.Https
+                    FileSystemName = containerName,
+                    Path           = path,
+                    IsDirectory    = true,
+                    ExpiresOn      = expiresAt,
+                    StartsOn       = DateTimeOffset.UtcNow.AddMinutes(-5),
+                    Protocol       = SasProtocol.Https
                 };
-                dirSasBuilder.SetPermissions(BlobSasPermissions.Read);
+                dirSasBuilder.SetPermissions(DataLakeSasPermissions.Read);
 
                 if (!string.IsNullOrEmpty(clientIp))
                 {
@@ -225,7 +229,7 @@ public partial class SasUrlService(
                     LogSasWithIpRestriction(logger, clientIp);
                 }
 
-                var key = await blobStorageService.GetUserDelegationKeyAsync(expiresAt, cancellationToken);
+                var key = await blobStorageService.GetDataLakeUserDelegationKeyAsync(expiresAt, cancellationToken);
                 var sasToken = dirSasBuilder.ToSasQueryParameters(key, storageAccount).ToString();
                 sasUrl = new Uri($"{blobServiceClient.Uri}/{containerName}/{path}?{sasToken}");
             }

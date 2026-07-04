@@ -8,6 +8,7 @@ using Azure.Storage.Files.DataLake;
 using Azure.Storage.Sas;
 using FlorisDeV.BackupApi.Telemetry;
 using FlorisDeV.Logging.OpenTelemetry;
+using DataLakeUserDelegationKey = Azure.Storage.Files.DataLake.Models.UserDelegationKey;
 
 namespace FlorisDeV.BackupApi.Services;
 
@@ -36,6 +37,11 @@ public interface IBlobStorageService
     /// Gets a user delegation key for generating SAS tokens (Azure only).
     /// </summary>
     Task<UserDelegationKey> GetUserDelegationKeyAsync(DateTimeOffset expiresAt, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Gets a user delegation key for generating directory-scoped (ADLS Gen2) SAS tokens (Azure only).
+    /// </summary>
+    Task<DataLakeUserDelegationKey> GetDataLakeUserDelegationKeyAsync(DateTimeOffset expiresAt, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Gets the storage account name.
@@ -77,6 +83,8 @@ public partial class BlobStorageService(
     private bool? _isUsingAzurite;
     private UserDelegationKey? _cachedDelegationKey;
     private DateTimeOffset _delegationKeyExpiresAt;
+    private DataLakeUserDelegationKey? _cachedDataLakeDelegationKey;
+    private DateTimeOffset _dataLakeDelegationKeyExpiresAt;
 
     public async Task<BlobServiceClient> GetBlobServiceClientAsync(CancellationToken cancellationToken = default)
     {
@@ -203,6 +211,43 @@ public partial class BlobStorageService(
             LogDelegationKeyRetrieved(logger, keyExpiry);
 
             return _cachedDelegationKey;
+        }
+        catch (Exception ex)
+        {
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.AddException(ex);
+
+            LogDelegationKeyRetrievalFailed(logger, ex);
+            throw;
+        }
+    }
+
+    public async Task<DataLakeUserDelegationKey> GetDataLakeUserDelegationKeyAsync(DateTimeOffset expiresAt, CancellationToken cancellationToken = default)
+    {
+        if (_cachedDataLakeDelegationKey != null && _dataLakeDelegationKeyExpiresAt > expiresAt.AddMinutes(5))
+        {
+            return _cachedDataLakeDelegationKey;
+        }
+
+        using var activity = telemetry.ActivitySource.StartActivity("GetDataLakeUserDelegationKey");
+
+        try
+        {
+            var dataLakeServiceClient = await GetDataLakeServiceClientAsync(cancellationToken);
+            var keyExpiry = DateTimeOffset.UtcNow.AddHours(2);
+            _cachedDataLakeDelegationKey = await dataLakeServiceClient.GetUserDelegationKeyAsync(
+                DateTimeOffset.UtcNow.AddMinutes(-5),
+                keyExpiry,
+                cancellationToken);
+
+            _dataLakeDelegationKeyExpiresAt = keyExpiry;
+
+            activity?.SetTag(ActivityAttributes.OperationStatus, "success");
+            activity?.SetTag("delegation_key.expires_at", keyExpiry);
+
+            LogDelegationKeyRetrieved(logger, keyExpiry);
+
+            return _cachedDataLakeDelegationKey;
         }
         catch (Exception ex)
         {

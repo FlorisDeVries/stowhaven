@@ -223,6 +223,12 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
               value: string(allowCopyDeleteFallback)
             }
             {
+              // Resolved via SecretService config-first lookup. Must be set as an
+              // env var: the Key Vault fallback rejects underscore names (BadParameter).
+              name: 'USE_AZURITE'
+              value: 'false'
+            }
+            {
               name: 'Backup__Sas__EnableIpRestriction'
               value: string(enableSasIpRestriction)
             }
@@ -377,6 +383,12 @@ resource workerContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
             {
               name: 'ALLOW_COPY_DELETE_FALLBACK'
               value: string(allowCopyDeleteFallback)
+            }
+            {
+              // Resolved via SecretService config-first lookup. Must be set as an
+              // env var: the Key Vault fallback rejects underscore names (BadParameter).
+              name: 'USE_AZURITE'
+              value: 'false'
             }
             {
               name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
