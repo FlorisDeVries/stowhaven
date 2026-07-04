@@ -65,7 +65,7 @@ The Gateway exchanges the user's gateway-scoped token for an API-scoped token vi
 1. **Audience isolation** — the client token targets the gateway (`api://5506a872...`); the API only accepts tokens for its own audience (`api://906eb0e3...`).
 2. **User identity preservation** — the OBO token carries the user's `oid` and `tid` claims, which the API uses to scope stored data per user.
 
-Azure AD clips the OBO token's scopes to what the individual user has been consented for, so user-level access control is enforced at the Entra layer.
+The Gateway requests only the scopes covered by tenant-wide consent (`backup.client`). Azure AD rejects the OBO exchange with `AADSTS65001` (consent_required) if any requested scope has no consent for that user — it does not silently drop unconsented scopes — so user-level access control is enforced at the Entra layer.
 
 ---
 
@@ -78,6 +78,8 @@ Three app registrations are involved:
 | Backup Client (public) | `a862c3a8-8dfa-46b6-9a5a-5cea65652416` | MSAL public client — no secret |
 | Gateway | `5506a872-9273-48f8-8145-43181d406355` | Easy Auth + OBO credential |
 | Backup API | `906eb0e3-e351-47c0-a68a-690207f4cccb` | JWT audience, defines scopes |
+
+> **Important** — both the Gateway and API app registrations must have `requestedAccessTokenVersion: 2` in their manifest (`api` section). With the v1 default (`null`), client tokens carry the `sts.windows.net` issuer, which conflicts with Easy Auth's v2 issuer configuration and breaks `/.default` scope expansion in the OBO flow.
 
 ---
 

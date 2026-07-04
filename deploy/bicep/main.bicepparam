@@ -17,6 +17,12 @@ param staleStagingCleanupMaxDeletes = 500
 param staleStagingCleanupDryRun = false
 param apiMinReplicas = 0
 param gatewayMinReplicas = 0
+// Gateway auth values are injected at deploy time by the GitHub workflow from
+// repo vars/secrets (GATEWAY_AUTH_CLIENT_ID / GATEWAY_AUTH_CLIENT_SECRET) —
+// the empty values below are placeholders, not the deployed configuration.
+// WARNING: deploying this file directly (e.g. via `az deployment group create`
+// without those overrides) disables Easy Auth AND the OBO exchange on the
+// Gateway, silently falling back to its managed-identity token.
 param gatewayAuthClientId = ''
 param gatewayAuthClientSecret = ''
 param gatewayAuthAllowedAudiences = []

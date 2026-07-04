@@ -12,9 +12,6 @@ param lifecycleArchiveAfterDays int
 @description('Common resource tags')
 param tags object
 
-@description('Name for the gateway auth token store blob container')
-param gatewayAuthTokenStoreContainerName string = 'gateway-auth-tokens'
-
 // ---------------------------------------------------------------------------
 // Data storage account
 // ---------------------------------------------------------------------------
@@ -44,14 +41,6 @@ resource dataStorageBlobService 'Microsoft.Storage/storageAccounts/blobServices@
 resource backupsContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-01-01' = {
   parent: dataStorageBlobService
   name: 'backups'
-  properties: {
-    publicAccess: 'None'
-  }
-}
-
-resource gatewayAuthTokenStoreContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-01-01' = {
-  parent: dataStorageBlobService
-  name: gatewayAuthTokenStoreContainerName
   properties: {
     publicAccess: 'None'
   }
@@ -167,4 +156,3 @@ output dataStorageAccountName string = dataStorageAccount.name
 output dataStorageAccountId string = dataStorageAccount.id
 output containerName string = backupsContainer.name
 output backupEventsQueueName string = backupEventsQueue.name
-output gatewayAuthTokenStoreContainerName string = gatewayAuthTokenStoreContainer.name

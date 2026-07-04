@@ -1,8 +1,10 @@
 using System.Net.Http.Headers;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Azure.Core;
 using Azure.Identity;
+using Microsoft.Extensions.Caching.Memory;
 
 const string EasyAuthAccessTokenHeader = "X-MS-TOKEN-AAD-ACCESS-TOKEN";
 
@@ -12,6 +14,7 @@ builder.Services.AddHttpClient("gateway-proxy", client =>
 {
     client.Timeout = TimeSpan.FromSeconds(30);
 });
+builder.Services.AddMemoryCache();
 
 var app = builder.Build();
 
@@ -133,12 +136,8 @@ static async Task ProxyAsync(
         // Exchange the user's gateway-scoped token for an API-scoped delegated token.
         // OBO preserves user identity claims (tid, oid) that app-only managed identity
         // tokens lack, which is required by user-specific API endpoints.
-        var oboCredential = new OnBehalfOfCredential(oboOptions!.TenantId, oboOptions.ClientId, oboOptions.ClientSecret, userAssertionToken!);
-        var oboResult = await oboCredential.GetTokenAsync(
-            new TokenRequestContext(oboOptions.ApiScopes),
-            context.RequestAborted);
-        requestMessage.Headers.Authorization = new AuthenticationHeaderValue("Bearer", oboResult.Token);
-        LogJwtClaims(logger, oboResult.Token, "OBO");
+        var oboToken = await GetOboTokenAsync(context, oboOptions!, userAssertionToken!, logger);
+        requestMessage.Headers.Authorization = new AuthenticationHeaderValue("Bearer", oboToken);
         logger.LogInformation("Proxying {Method} {Path} with OBO token (source: {Source})",
             context.Request.Method, context.Request.Path,
             hasEasyAuthToken ? "EasyAuth" : "Authorization");
@@ -334,6 +333,30 @@ static bool IsHopByHopHeader(string headerName)
            string.Equals(headerName, "Trailer", StringComparison.OrdinalIgnoreCase) ||
            string.Equals(headerName, "Transfer-Encoding", StringComparison.OrdinalIgnoreCase) ||
            string.Equals(headerName, "Upgrade", StringComparison.OrdinalIgnoreCase);
+}
+
+static async Task<string> GetOboTokenAsync(HttpContext context, OboOptions oboOptions, string userAssertionToken, ILogger logger)
+{
+    // Cache exchanged tokens per user assertion — without this every proxied
+    // request costs an Entra round-trip and risks AADSTS throttling.
+    var cache = context.RequestServices.GetRequiredService<IMemoryCache>();
+    var cacheKey = "obo:" + Convert.ToBase64String(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(userAssertionToken)));
+
+    if (cache.TryGetValue(cacheKey, out AccessToken cached) &&
+        cached.ExpiresOn > DateTimeOffset.UtcNow.AddMinutes(5))
+    {
+        return cached.Token;
+    }
+
+    var oboCredential = new OnBehalfOfCredential(oboOptions.TenantId, oboOptions.ClientId, oboOptions.ClientSecret, userAssertionToken);
+    var oboResult = await oboCredential.GetTokenAsync(
+        new TokenRequestContext(oboOptions.ApiScopes),
+        context.RequestAborted);
+
+    cache.Set(cacheKey, oboResult, oboResult.ExpiresOn - TimeSpan.FromMinutes(5));
+    LogJwtClaims(logger, oboResult.Token, "OBO");
+
+    return oboResult.Token;
 }
 
 static string? ExtractBearerToken(string? authorizationHeader) =>

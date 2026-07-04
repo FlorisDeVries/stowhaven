@@ -31,6 +31,12 @@ public static class JwtBearerAuthenticationHandler
         var authority = $"{instance}{tenantId}/v2.0";
 
         options.Authority = authority;
+
+        // Keep raw JWT claim names (scp, oid, tid, roles). The default inbound
+        // claim mapping renames them to legacy SOAP URIs, which breaks the scope
+        // gate below and GetUserId()/GetTenantId().
+        options.MapInboundClaims = false;
+
         options.TokenValidationParameters = new TokenValidationParameters
         {
             // Delegated v2 tokens use the Application ID URI (api://...), while
@@ -41,6 +47,9 @@ public static class JwtBearerAuthenticationHandler
             ValidateAudience = true,
             ValidateLifetime = true,
             ValidateIssuerSigningKey = true,
+
+            NameClaimType = "name",
+            RoleClaimType = "roles",
 
             IssuerValidator = (issuer, token, parameters) =>
             {

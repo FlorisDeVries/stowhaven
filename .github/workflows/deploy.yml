@@ -297,33 +297,6 @@ jobs:
           tenant-id: ${{ env.AZURE_TENANT_ID }}
           subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Generate gateway auth token store SAS URL
-        id: gateway-sas
-        run: |
-          STORAGE_ACCOUNT_NAME="${{ needs.deploy-foundation.outputs.storage_account_name }}"
-          CONTAINER_NAME="gateway-auth-tokens"
-
-          # listServiceSas is not supported on HNS-enabled (ADLS Gen2) storage accounts,
-          # so we generate the SAS URL here using the account key instead.
-          STORAGE_KEY=$(az storage account keys list \
-            --resource-group "$AZURE_RESOURCE_GROUP" \
-            --account-name "$STORAGE_ACCOUNT_NAME" \
-            --query "[0].value" \
-            --output tsv)
-
-          SAS_TOKEN=$(az storage container generate-sas \
-            --account-name "$STORAGE_ACCOUNT_NAME" \
-            --account-key "$STORAGE_KEY" \
-            --name "$CONTAINER_NAME" \
-            --permissions racwdl \
-            --https-only \
-            --expiry "2036-01-01T00:00:00Z" \
-            --output tsv)
-
-          SAS_URL="https://${STORAGE_ACCOUNT_NAME}.blob.core.windows.net/${CONTAINER_NAME}?${SAS_TOKEN}"
-          echo "::add-mask::$SAS_URL"
-          echo "sas_url=$SAS_URL" >> "$GITHUB_OUTPUT"
-
       - name: Deploy full stack
         run: |
           DEPLOYMENT_NAME="apps-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
@@ -342,7 +315,6 @@ jobs:
             --parameters "$PARAMETERS_FILE" \
             --parameters imageTag="$IMAGE_TAG" deployContainerApps=true \
             --parameters gatewayAuthClientId="$GATEWAY_AUTH_CLIENT_ID" gatewayAuthClientSecret="$GATEWAY_AUTH_CLIENT_SECRET" \
-            --parameters gatewayAuthTokenStoreSasUrl="${{ steps.gateway-sas.outputs.sas_url }}" \
             "${API_AUTH_PARAMS[@]}" \
             --output table
 
