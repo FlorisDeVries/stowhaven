@@ -120,8 +120,14 @@ public partial class SasUrlService(
                 var key = await blobStorageService.GetDataLakeUserDelegationKeyAsync(expiresAt, cancellationToken);
                 var sasToken = dirSasBuilder.ToSasQueryParameters(key, storageAccount).ToString();
 
-                // Directory-level URL — path IS embedded so BlobContainerClient resolves correctly
-                sasUrl = new Uri($"{blobServiceClient.Uri}/{containerName}/{path}?{sasToken}");
+                // Attach the directory-scoped token to the container-level URL. The
+                // directory path must NOT be embedded in the URL: BlobContainerClient
+                // parses extra segments as a blob name and GetBlobClient() replaces
+                // them, so requests silently escape the signed directory and fail
+                // signature validation. The client prepends BasePath to each blob
+                // name instead; sr=d/sdd still confines access to that directory.
+                var productionContainerClient = blobServiceClient.GetBlobContainerClient(containerName);
+                sasUrl = new Uri($"{productionContainerClient.Uri}?{sasToken}");
             }
 
             var result = new SasUrlInfo
@@ -130,7 +136,7 @@ public partial class SasUrlService(
                 ExpiresAt  = expiresAt,
                 TtlMinutes = ttl,
                 BasePath   = path,
-                IsPathEmbedded = !isAzurite
+                IsPathEmbedded = false
             };
 
             stopwatch.Stop();
@@ -231,7 +237,10 @@ public partial class SasUrlService(
 
                 var key = await blobStorageService.GetDataLakeUserDelegationKeyAsync(expiresAt, cancellationToken);
                 var sasToken = dirSasBuilder.ToSasQueryParameters(key, storageAccount).ToString();
-                sasUrl = new Uri($"{blobServiceClient.Uri}/{containerName}/{path}?{sasToken}");
+
+                // Container-level URL for the same reason as GenerateUploadSasUrlAsync.
+                var productionContainerClient = blobServiceClient.GetBlobContainerClient(containerName);
+                sasUrl = new Uri($"{productionContainerClient.Uri}?{sasToken}");
             }
 
             var result = new SasUrlInfo
@@ -240,7 +249,7 @@ public partial class SasUrlService(
                 ExpiresAt = expiresAt,
                 TtlMinutes = ttl,
                 BasePath = path,
-                IsPathEmbedded = !isAzurite
+                IsPathEmbedded = false
             };
 
             stopwatch.Stop();
