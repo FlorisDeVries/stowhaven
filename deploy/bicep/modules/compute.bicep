@@ -13,11 +13,15 @@ param logAnalyticsWorkspaceId string
 @secure()
 param appInsightsConnectionString string
 
-@description('Container registry login server')
-param registryLoginServer string
+@description('Container image registry path that service image names are appended to (e.g. ghcr.io/owner/repo).')
+param containerImageRegistry string
 
-@description('Resource ID of the user-assigned managed identity used by Container Apps to pull images from ACR')
-param registryPullIdentityId string
+@description('Username owning the GHCR pull token. Only used when ghcrPullToken is provided.')
+param ghcrPullUsername string = ''
+
+@description('GitHub token with read:packages used by Container Apps to pull images. Leave empty when the packages are public.')
+@secure()
+param ghcrPullToken string = ''
 
 @description('Storage account name for data blobs')
 param dataStorageAccountName string
@@ -106,6 +110,23 @@ param apiAuthClientId string = '906eb0e3-e351-47c0-a68a-690207f4cccb'
 @description('JWT audience accepted by the Backup API. Defaults to api://{apiAuthClientId}.')
 param apiAuthAudience string = 'api://${apiAuthClientId}'
 
+var ghcrAuthEnabled = !empty(ghcrPullToken) && !empty(ghcrPullUsername)
+var ghcrPullTokenSecretName = 'ghcr-pull-token'
+// With no token configured the packages must be publicly pullable.
+var containerRegistries = ghcrAuthEnabled ? [
+  {
+    server: 'ghcr.io'
+    username: ghcrPullUsername
+    passwordSecretRef: ghcrPullTokenSecretName
+  }
+] : []
+var ghcrPullSecrets = ghcrAuthEnabled ? [
+  {
+    name: ghcrPullTokenSecretName
+    value: ghcrPullToken
+  }
+] : []
+
 var gatewayAuthEnabled = !empty(gatewayAuthClientId) && !empty(gatewayAuthClientSecret)
 var gatewayProxyHeaderValueEffective = empty(gatewayProxyHeaderValue) ? uniqueString(subscription().id, resourceGroup().id, nameSuffix, 'gateway') : gatewayProxyHeaderValue
 var gatewayAuthSecrets = gatewayAuthEnabled ? [
@@ -159,15 +180,13 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
   name: 'ca-${nameSuffix}'
   location: location
   identity: {
-    type: 'SystemAssigned, UserAssigned'
-    userAssignedIdentities: {
-      '${registryPullIdentityId}': {}
-    }
+    type: 'SystemAssigned'
   }
   properties: {
     managedEnvironmentId: containerAppEnv.id
     configuration: {
       activeRevisionsMode: 'Single'
+      secrets: ghcrPullSecrets
       dapr: {
         enabled: true
         appId: 'backup-api'
@@ -185,12 +204,7 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
           }
         ]
       }
-      registries: [
-        {
-          server: registryLoginServer
-          identity: registryPullIdentityId
-        }
-      ]
+      registries: containerRegistries
     }
     template: {
       scale: {
@@ -200,7 +214,7 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
       containers: [
         {
           name: 'backup-api'
-          image: '${registryLoginServer}/backup-api:${imageTag}'
+          image: '${containerImageRegistry}/backup-api:${imageTag}'
           resources: {
             cpu: json('0.5')
             memory: '1Gi'
@@ -316,10 +330,7 @@ resource workerContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
   name: 'ca-${nameSuffix}-worker'
   location: location
   identity: {
-    type: 'SystemAssigned, UserAssigned'
-    userAssignedIdentities: {
-      '${registryPullIdentityId}': {}
-    }
+    type: 'SystemAssigned'
   }
   properties: {
     managedEnvironmentId: containerAppEnv.id
@@ -342,18 +353,13 @@ resource workerContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
           }
         ]
       }
-      registries: [
-        {
-          server: registryLoginServer
-          identity: registryPullIdentityId
-        }
-      ]
-      secrets: [
+      registries: containerRegistries
+      secrets: concat([
         {
           name: 'backup-events-queue-scale-connection-string'
           value: backupEventsQueueScaleConnectionString
         }
-      ]
+      ], ghcrPullSecrets)
     }
     template: {
       scale: {
@@ -382,7 +388,7 @@ resource workerContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
       containers: [
         {
           name: 'backup-worker'
-          image: '${registryLoginServer}/backup-worker:${imageTag}'
+          image: '${containerImageRegistry}/backup-worker:${imageTag}'
           resources: {
             cpu: json('0.5')
             memory: '1Gi'
@@ -470,10 +476,7 @@ resource gatewayContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
   name: 'ca-${nameSuffix}-gateway'
   location: location
   identity: {
-    type: 'SystemAssigned, UserAssigned'
-    userAssignedIdentities: {
-      '${registryPullIdentityId}': {}
-    }
+    type: 'SystemAssigned'
   }
   properties: {
     managedEnvironmentId: containerAppEnv.id
@@ -490,13 +493,8 @@ resource gatewayContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
           }
         ]
       }
-      registries: [
-        {
-          server: registryLoginServer
-          identity: registryPullIdentityId
-        }
-      ]
-      secrets: gatewayAuthSecrets
+      registries: containerRegistries
+      secrets: concat(gatewayAuthSecrets, ghcrPullSecrets)
     }
     template: {
       scale: {
@@ -506,7 +504,7 @@ resource gatewayContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
       containers: [
         {
           name: 'gateway'
-          image: '${registryLoginServer}/gateway:${imageTag}'
+          image: '${containerImageRegistry}/gateway:${imageTag}'
           resources: {
             cpu: json('0.25')
             memory: '0.5Gi'

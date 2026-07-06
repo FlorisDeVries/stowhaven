@@ -35,7 +35,17 @@ param logAnalyticsDailyQuotaGb int = 1
 @description('Container image tag to deploy')
 param imageTag string = 'latest'
 
-@description('Deploy Container Apps and their runtime role assignments. Set false for first-phase infrastructure bootstrap before images exist in ACR.')
+@description('Container image registry path that service image names are appended to. GHCR requires a lowercase repository path.')
+param containerImageRegistry string = 'ghcr.io/florisdevries/backup-api'
+
+@description('Username owning the GHCR pull token. Only used when ghcrPullToken is provided.')
+param ghcrPullUsername string = 'FlorisDeVries'
+
+@description('GitHub token with read:packages used by Container Apps to pull images. Injected by the deploy workflow from the GHCR_PULL_TOKEN secret; leave empty when the packages are public.')
+@secure()
+param ghcrPullToken string = ''
+
+@description('Deploy Container Apps and their runtime role assignments. Set false for first-phase infrastructure bootstrap before images exist in the registry.')
 param deployContainerApps bool = true
 
 @description('Explicitly allow copy/delete fallback when ADLS Gen2 rename fails. Keep false in production unless early deletion cost and partial-failure risks are accepted.')
@@ -132,7 +142,6 @@ var dataStorageAccountName = 'stabackup${nameSuffixStr}'
 var roleStorageBlobDataContributor = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
 var roleStorageBlobDelegator       = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'db58b8e5-c6ad-4a2a-8342-4190687cbf4a')
 var roleStorageQueueDataContributor = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '974c5e8b-45b9-4653-ba55-5f855dd0fb88')
-var roleAcrPull                    = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')
 var roleKeyVaultSecretsUser        = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')
 
 // ---------------------------------------------------------------------------
@@ -160,15 +169,6 @@ module monitoring 'modules/monitoring.bicep' = {
   }
 }
 
-module registry 'modules/registry.bicep' = {
-  name: 'registry'
-  params: {
-    location: location
-    nameSuffixStr: nameSuffixStr
-    tags: commonTags
-  }
-}
-
 // Deploy Dapr infrastructure (Service Bus, Key Vault).
 // The Key Vault name is fixed in advance so compute.bicep can reference it.
 module daprInfra 'modules/dapr-infra.bicep' = {
@@ -190,18 +190,8 @@ resource dataStorageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' exist
   name: dataStorageAccountName
 }
 
-resource containerRegistry 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = {
-  name: 'acr${nameSuffixStr}'
-}
-
 resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
   name: keyVaultName
-}
-
-resource registryPullIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
-  name: 'id-acrpull-${nameSuffix}'
-  location: location
-  tags: commonTags
 }
 
 resource cosmosDatabase 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases@2024-05-15' = {
@@ -251,21 +241,7 @@ resource cosmosDeviceRegistryContainer 'Microsoft.DocumentDB/databaseAccounts/sq
   }
 }
 
-resource roleAssignRegistryPullIdentityAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(containerRegistry.id, registryPullIdentity.name, 'acr-pull')
-  scope: containerRegistry
-  properties: {
-    roleDefinitionId: roleAcrPull
-    principalId: registryPullIdentity.properties.principalId
-    principalType: 'ServicePrincipal'
-    description: 'Container Apps registry pull identity - AcrPull on container registry'
-  }
-  dependsOn: [
-    registry
-  ]
-}
-
-// Deploy Container App after monitoring, registry, storage, and dapr-infra.
+// Deploy Container App after monitoring, storage, and dapr-infra.
 module compute 'modules/compute.bicep' = if (deployContainerApps) {
   name: 'compute'
   params: {
@@ -273,8 +249,9 @@ module compute 'modules/compute.bicep' = if (deployContainerApps) {
     nameSuffix: nameSuffix
     logAnalyticsWorkspaceId: monitoring.outputs.workspaceId
     appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
-    registryLoginServer: registry.outputs.loginServer
-    registryPullIdentityId: registryPullIdentity.id
+    containerImageRegistry: containerImageRegistry
+    ghcrPullUsername: ghcrPullUsername
+    ghcrPullToken: ghcrPullToken
     dataStorageAccountName: storage.outputs.dataStorageAccountName
     containerName: storage.outputs.containerName
     keyVaultName: daprInfra.outputs.keyVaultName
@@ -307,7 +284,6 @@ module compute 'modules/compute.bicep' = if (deployContainerApps) {
   dependsOn: [
     cosmosManifestContainer
     cosmosDeviceRegistryContainer
-    roleAssignRegistryPullIdentityAcrPull
   ]
 }
 
@@ -424,7 +400,5 @@ output gatewayContainerAppUrl string = deployContainerApps ? 'https://${compute!
 output gatewayPrincipalId string = deployContainerApps ? compute!.outputs.gatewayPrincipalId : ''
 output dataStorageAccountName string = storage.outputs.dataStorageAccountName
 output containerName string = storage.outputs.containerName
-output containerRegistryName string = registry.outputs.name
-output containerRegistryLoginServer string = registry.outputs.loginServer
 output logAnalyticsWorkspaceName string = monitoring.outputs.workspaceName
 output appInsightsName string = monitoring.outputs.appInsightsName

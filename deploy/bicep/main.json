@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "5243599488297138395"
+      "templateHash": "12022232544970115751"
     }
   },
   "parameters": {
@@ -60,11 +60,32 @@
         "description": "Container image tag to deploy"
       }
     },
+    "containerImageRegistry": {
+      "type": "string",
+      "defaultValue": "ghcr.io/florisdevries/backup-api",
+      "metadata": {
+        "description": "Container image registry path that service image names are appended to. GHCR requires a lowercase repository path."
+      }
+    },
+    "ghcrPullUsername": {
+      "type": "string",
+      "defaultValue": "FlorisDeVries",
+      "metadata": {
+        "description": "Username owning the GHCR pull token. Only used when ghcrPullToken is provided."
+      }
+    },
+    "ghcrPullToken": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "GitHub token with read:packages used by Container Apps to pull images. Injected by the deploy workflow from the GHCR_PULL_TOKEN secret; leave empty when the packages are public."
+      }
+    },
     "deployContainerApps": {
       "type": "bool",
       "defaultValue": true,
       "metadata": {
-        "description": "Deploy Container Apps and their runtime role assignments. Set false for first-phase infrastructure bootstrap before images exist in ACR."
+        "description": "Deploy Container Apps and their runtime role assignments. Set false for first-phase infrastructure bootstrap before images exist in the registry."
       }
     },
     "allowCopyDeleteFallback": {
@@ -245,17 +266,9 @@
     "roleStorageBlobDataContributor": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')]",
     "roleStorageBlobDelegator": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'db58b8e5-c6ad-4a2a-8342-4190687cbf4a')]",
     "roleStorageQueueDataContributor": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '974c5e8b-45b9-4653-ba55-5f855dd0fb88')]",
-    "roleAcrPull": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')]",
     "roleKeyVaultSecretsUser": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')]"
   },
   "resources": [
-    {
-      "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
-      "apiVersion": "2023-01-31",
-      "name": "[format('id-acrpull-{0}', parameters('nameSuffix'))]",
-      "location": "[parameters('location')]",
-      "tags": "[variables('commonTags')]"
-    },
     {
       "type": "Microsoft.DocumentDB/databaseAccounts/sqlDatabases",
       "apiVersion": "2024-05-15",
@@ -307,22 +320,6 @@
       },
       "dependsOn": [
         "[resourceId('Microsoft.DocumentDB/databaseAccounts/sqlDatabases', variables('cosmosAccountNameEffective'), parameters('cosmosDatabaseName'))]"
-      ]
-    },
-    {
-      "type": "Microsoft.Authorization/roleAssignments",
-      "apiVersion": "2022-04-01",
-      "scope": "[resourceId('Microsoft.ContainerRegistry/registries', format('acr{0}', parameters('nameSuffixStr')))]",
-      "name": "[guid(resourceId('Microsoft.ContainerRegistry/registries', format('acr{0}', parameters('nameSuffixStr'))), format('id-acrpull-{0}', parameters('nameSuffix')), 'acr-pull')]",
-      "properties": {
-        "roleDefinitionId": "[variables('roleAcrPull')]",
-        "principalId": "[reference(resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-acrpull-{0}', parameters('nameSuffix'))), '2023-01-31').principalId]",
-        "principalType": "ServicePrincipal",
-        "description": "Container Apps registry pull identity - AcrPull on container registry"
-      },
-      "dependsOn": [
-        "[resourceId('Microsoft.Resources/deployments', 'registry')]",
-        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-acrpull-{0}', parameters('nameSuffix')))]"
       ]
     },
     {
@@ -842,89 +839,6 @@
     {
       "type": "Microsoft.Resources/deployments",
       "apiVersion": "2025-04-01",
-      "name": "registry",
-      "properties": {
-        "expressionEvaluationOptions": {
-          "scope": "inner"
-        },
-        "mode": "Incremental",
-        "parameters": {
-          "location": {
-            "value": "[parameters('location')]"
-          },
-          "nameSuffixStr": {
-            "value": "[parameters('nameSuffixStr')]"
-          },
-          "tags": {
-            "value": "[variables('commonTags')]"
-          }
-        },
-        "template": {
-          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
-          "contentVersion": "1.0.0.0",
-          "metadata": {
-            "_generator": {
-              "name": "bicep",
-              "version": "0.44.1.10279",
-              "templateHash": "15832284333470622195"
-            }
-          },
-          "parameters": {
-            "location": {
-              "type": "string",
-              "metadata": {
-                "description": "Azure region for resources"
-              }
-            },
-            "nameSuffixStr": {
-              "type": "string",
-              "minLength": 2,
-              "metadata": {
-                "description": "Suffix for storage account-style names (no dashes)"
-              }
-            },
-            "tags": {
-              "type": "object",
-              "metadata": {
-                "description": "Common resource tags"
-              }
-            }
-          },
-          "resources": [
-            {
-              "type": "Microsoft.ContainerRegistry/registries",
-              "apiVersion": "2023-07-01",
-              "name": "[format('acr{0}', parameters('nameSuffixStr'))]",
-              "location": "[parameters('location')]",
-              "sku": {
-                "name": "Basic"
-              },
-              "properties": {
-                "adminUserEnabled": false
-              },
-              "tags": "[parameters('tags')]"
-            }
-          ],
-          "outputs": {
-            "name": {
-              "type": "string",
-              "value": "[format('acr{0}', parameters('nameSuffixStr'))]"
-            },
-            "loginServer": {
-              "type": "string",
-              "value": "[reference(resourceId('Microsoft.ContainerRegistry/registries', format('acr{0}', parameters('nameSuffixStr'))), '2023-07-01').loginServer]"
-            },
-            "id": {
-              "type": "string",
-              "value": "[resourceId('Microsoft.ContainerRegistry/registries', format('acr{0}', parameters('nameSuffixStr')))]"
-            }
-          }
-        }
-      }
-    },
-    {
-      "type": "Microsoft.Resources/deployments",
-      "apiVersion": "2025-04-01",
       "name": "dapr-infra",
       "properties": {
         "expressionEvaluationOptions": {
@@ -1052,11 +966,14 @@
           "appInsightsConnectionString": {
             "value": "[reference(resourceId('Microsoft.Resources/deployments', 'monitoring'), '2025-04-01').outputs.appInsightsConnectionString.value]"
           },
-          "registryLoginServer": {
-            "value": "[reference(resourceId('Microsoft.Resources/deployments', 'registry'), '2025-04-01').outputs.loginServer.value]"
+          "containerImageRegistry": {
+            "value": "[parameters('containerImageRegistry')]"
           },
-          "registryPullIdentityId": {
-            "value": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-acrpull-{0}', parameters('nameSuffix')))]"
+          "ghcrPullUsername": {
+            "value": "[parameters('ghcrPullUsername')]"
+          },
+          "ghcrPullToken": {
+            "value": "[parameters('ghcrPullToken')]"
           },
           "dataStorageAccountName": {
             "value": "[reference(resourceId('Microsoft.Resources/deployments', 'storage'), '2025-04-01').outputs.dataStorageAccountName.value]"
@@ -1150,7 +1067,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.44.1.10279",
-              "templateHash": "15528317658879533379"
+              "templateHash": "3037138149604359324"
             }
           },
           "parameters": {
@@ -1178,16 +1095,24 @@
                 "description": "Application Insights connection string"
               }
             },
-            "registryLoginServer": {
+            "containerImageRegistry": {
               "type": "string",
               "metadata": {
-                "description": "Container registry login server"
+                "description": "Container image registry path that service image names are appended to (e.g. ghcr.io/owner/repo)."
               }
             },
-            "registryPullIdentityId": {
+            "ghcrPullUsername": {
               "type": "string",
+              "defaultValue": "",
               "metadata": {
-                "description": "Resource ID of the user-assigned managed identity used by Container Apps to pull images from ACR"
+                "description": "Username owning the GHCR pull token. Only used when ghcrPullToken is provided."
+              }
+            },
+            "ghcrPullToken": {
+              "type": "securestring",
+              "defaultValue": "",
+              "metadata": {
+                "description": "GitHub token with read:packages used by Container Apps to pull images. Leave empty when the packages are public."
               }
             },
             "dataStorageAccountName": {
@@ -1382,6 +1307,10 @@
             }
           },
           "variables": {
+            "ghcrAuthEnabled": "[and(not(empty(parameters('ghcrPullToken'))), not(empty(parameters('ghcrPullUsername'))))]",
+            "ghcrPullTokenSecretName": "ghcr-pull-token",
+            "containerRegistries": "[if(variables('ghcrAuthEnabled'), createArray(createObject('server', 'ghcr.io', 'username', parameters('ghcrPullUsername'), 'passwordSecretRef', variables('ghcrPullTokenSecretName'))), createArray())]",
+            "ghcrPullSecrets": "[if(variables('ghcrAuthEnabled'), createArray(createObject('name', variables('ghcrPullTokenSecretName'), 'value', parameters('ghcrPullToken'))), createArray())]",
             "gatewayAuthEnabled": "[and(not(empty(parameters('gatewayAuthClientId'))), not(empty(parameters('gatewayAuthClientSecret'))))]",
             "gatewayProxyHeaderValueEffective": "[if(empty(parameters('gatewayProxyHeaderValue')), uniqueString(subscription().id, resourceGroup().id, parameters('nameSuffix'), 'gateway'), parameters('gatewayProxyHeaderValue'))]",
             "gatewayAuthSecrets": "[if(variables('gatewayAuthEnabled'), createArray(createObject('name', 'gateway-auth-client-secret', 'value', parameters('gatewayAuthClientSecret'))), createArray())]"
@@ -1410,15 +1339,13 @@
               "name": "[format('ca-{0}', parameters('nameSuffix'))]",
               "location": "[parameters('location')]",
               "identity": {
-                "type": "SystemAssigned, UserAssigned",
-                "userAssignedIdentities": {
-                  "[format('{0}', parameters('registryPullIdentityId'))]": {}
-                }
+                "type": "SystemAssigned"
               },
               "properties": {
                 "managedEnvironmentId": "[resourceId('Microsoft.App/managedEnvironments', format('cae-{0}', parameters('nameSuffix')))]",
                 "configuration": {
                   "activeRevisionsMode": "Single",
+                  "secrets": "[variables('ghcrPullSecrets')]",
                   "dapr": {
                     "enabled": true,
                     "appId": "backup-api",
@@ -1436,12 +1363,7 @@
                       }
                     ]
                   },
-                  "registries": [
-                    {
-                      "server": "[parameters('registryLoginServer')]",
-                      "identity": "[parameters('registryPullIdentityId')]"
-                    }
-                  ]
+                  "registries": "[variables('containerRegistries')]"
                 },
                 "template": {
                   "scale": {
@@ -1451,7 +1373,7 @@
                   "containers": [
                     {
                       "name": "backup-api",
-                      "image": "[format('{0}/backup-api:{1}', parameters('registryLoginServer'), parameters('imageTag'))]",
+                      "image": "[format('{0}/backup-api:{1}', parameters('containerImageRegistry'), parameters('imageTag'))]",
                       "resources": {
                         "cpu": "[json('0.5')]",
                         "memory": "1Gi"
@@ -1569,10 +1491,7 @@
               "name": "[format('ca-{0}-worker', parameters('nameSuffix'))]",
               "location": "[parameters('location')]",
               "identity": {
-                "type": "SystemAssigned, UserAssigned",
-                "userAssignedIdentities": {
-                  "[format('{0}', parameters('registryPullIdentityId'))]": {}
-                }
+                "type": "SystemAssigned"
               },
               "properties": {
                 "managedEnvironmentId": "[resourceId('Microsoft.App/managedEnvironments', format('cae-{0}', parameters('nameSuffix')))]",
@@ -1595,18 +1514,8 @@
                       }
                     ]
                   },
-                  "registries": [
-                    {
-                      "server": "[parameters('registryLoginServer')]",
-                      "identity": "[parameters('registryPullIdentityId')]"
-                    }
-                  ],
-                  "secrets": [
-                    {
-                      "name": "backup-events-queue-scale-connection-string",
-                      "value": "[parameters('backupEventsQueueScaleConnectionString')]"
-                    }
-                  ]
+                  "registries": "[variables('containerRegistries')]",
+                  "secrets": "[concat(createArray(createObject('name', 'backup-events-queue-scale-connection-string', 'value', parameters('backupEventsQueueScaleConnectionString'))), variables('ghcrPullSecrets'))]"
                 },
                 "template": {
                   "scale": {
@@ -1635,7 +1544,7 @@
                   "containers": [
                     {
                       "name": "backup-worker",
-                      "image": "[format('{0}/backup-worker:{1}', parameters('registryLoginServer'), parameters('imageTag'))]",
+                      "image": "[format('{0}/backup-worker:{1}', parameters('containerImageRegistry'), parameters('imageTag'))]",
                       "resources": {
                         "cpu": "[json('0.5')]",
                         "memory": "1Gi"
@@ -1725,10 +1634,7 @@
               "name": "[format('ca-{0}-gateway', parameters('nameSuffix'))]",
               "location": "[parameters('location')]",
               "identity": {
-                "type": "SystemAssigned, UserAssigned",
-                "userAssignedIdentities": {
-                  "[format('{0}', parameters('registryPullIdentityId'))]": {}
-                }
+                "type": "SystemAssigned"
               },
               "properties": {
                 "managedEnvironmentId": "[resourceId('Microsoft.App/managedEnvironments', format('cae-{0}', parameters('nameSuffix')))]",
@@ -1745,13 +1651,8 @@
                       }
                     ]
                   },
-                  "registries": [
-                    {
-                      "server": "[parameters('registryLoginServer')]",
-                      "identity": "[parameters('registryPullIdentityId')]"
-                    }
-                  ],
-                  "secrets": "[variables('gatewayAuthSecrets')]"
+                  "registries": "[variables('containerRegistries')]",
+                  "secrets": "[concat(variables('gatewayAuthSecrets'), variables('ghcrPullSecrets'))]"
                 },
                 "template": {
                   "scale": {
@@ -1761,7 +1662,7 @@
                   "containers": [
                     {
                       "name": "gateway",
-                      "image": "[format('{0}/gateway:{1}', parameters('registryLoginServer'), parameters('imageTag'))]",
+                      "image": "[format('{0}/gateway:{1}', parameters('containerImageRegistry'), parameters('imageTag'))]",
                       "resources": {
                         "cpu": "[json('0.25')]",
                         "memory": "0.5Gi"
@@ -1999,9 +1900,6 @@
         "[resourceId('Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers', variables('cosmosAccountNameEffective'), parameters('cosmosDatabaseName'), parameters('cosmosManifestContainerName'))]",
         "[resourceId('Microsoft.Resources/deployments', 'dapr-infra')]",
         "[resourceId('Microsoft.Resources/deployments', 'monitoring')]",
-        "[resourceId('Microsoft.Resources/deployments', 'registry')]",
-        "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('id-acrpull-{0}', parameters('nameSuffix')))]",
-        "[extensionResourceId(resourceId('Microsoft.ContainerRegistry/registries', format('acr{0}', parameters('nameSuffixStr'))), 'Microsoft.Authorization/roleAssignments', guid(resourceId('Microsoft.ContainerRegistry/registries', format('acr{0}', parameters('nameSuffixStr'))), format('id-acrpull-{0}', parameters('nameSuffix')), 'acr-pull'))]",
         "[resourceId('Microsoft.Resources/deployments', 'storage')]"
       ]
     }
@@ -2038,14 +1936,6 @@
     "containerName": {
       "type": "string",
       "value": "[reference(resourceId('Microsoft.Resources/deployments', 'storage'), '2025-04-01').outputs.containerName.value]"
-    },
-    "containerRegistryName": {
-      "type": "string",
-      "value": "[reference(resourceId('Microsoft.Resources/deployments', 'registry'), '2025-04-01').outputs.name.value]"
-    },
-    "containerRegistryLoginServer": {
-      "type": "string",
-      "value": "[reference(resourceId('Microsoft.Resources/deployments', 'registry'), '2025-04-01').outputs.loginServer.value]"
     },
     "logAnalyticsWorkspaceName": {
       "type": "string",
