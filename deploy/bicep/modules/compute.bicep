@@ -144,10 +144,6 @@ module daprComponents 'dapr-components.bicep' = {
   params: {
     managedEnvironmentName: containerAppEnv.name
     keyVaultName: keyVaultName
-    cosmosAccountEndpoint: cosmosAccountEndpoint
-    cosmosDatabaseName: cosmosDatabaseName
-    cosmosManifestContainerName: cosmosManifestContainerName
-    cosmosDeviceRegistryContainerName: cosmosDeviceRegistryContainerName
     dataStorageAccountName: dataStorageAccountName
     backupEventsQueueName: backupEventsQueueName
     staleStagingCleanupCronSchedule: staleStagingCleanupCronSchedule
@@ -227,6 +223,26 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
               // env var: the Key Vault fallback rejects underscore names (BadParameter).
               name: 'USE_AZURITE'
               value: 'false'
+            }
+            {
+              name: 'Database__Provider'
+              value: 'Cosmos'
+            }
+            {
+              name: 'Database__Cosmos__AccountEndpoint'
+              value: cosmosAccountEndpoint
+            }
+            {
+              name: 'Database__Cosmos__DatabaseName'
+              value: cosmosDatabaseName
+            }
+            {
+              name: 'Database__Cosmos__ManifestContainerName'
+              value: cosmosManifestContainerName
+            }
+            {
+              name: 'Database__Cosmos__DeviceRegistryContainerName'
+              value: cosmosDeviceRegistryContainerName
             }
             {
               name: 'Backup__Sas__EnableIpRestriction'
@@ -389,6 +405,26 @@ resource workerContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
               // env var: the Key Vault fallback rejects underscore names (BadParameter).
               name: 'USE_AZURITE'
               value: 'false'
+            }
+            {
+              name: 'Database__Provider'
+              value: 'Cosmos'
+            }
+            {
+              name: 'Database__Cosmos__AccountEndpoint'
+              value: cosmosAccountEndpoint
+            }
+            {
+              name: 'Database__Cosmos__DatabaseName'
+              value: cosmosDatabaseName
+            }
+            {
+              name: 'Database__Cosmos__ManifestContainerName'
+              value: cosmosManifestContainerName
+            }
+            {
+              name: 'Database__Cosmos__DeviceRegistryContainerName'
+              value: cosmosDeviceRegistryContainerName
             }
             {
               name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'

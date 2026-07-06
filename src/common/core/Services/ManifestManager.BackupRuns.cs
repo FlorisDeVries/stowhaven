@@ -1,6 +1,6 @@
 using System.Diagnostics;
+using FlorisDeV.BackupApi.Data;
 using FlorisDeV.BackupApi.Exceptions;
-using FlorisDeV.BackupContracts.Constants;
 using FlorisDeV.BackupContracts.Manifest;
 using FlorisDeV.BackupContracts.State;
 using FlorisDeV.Logging.OpenTelemetry;
@@ -13,9 +13,6 @@ public partial class ManifestManager
         CancellationToken cancellationToken = default)
     {
         using var activity = telemetry.ActivitySource.StartActivity("CreateBackupRun");
-        var stateKey = GetBackupRunStateKey(deviceId, runId);
-
-        activity?.SetTag(ActivityAttributes.StateKey, stateKey);
         activity?.SetTag(ActivityAttributes.DeviceId, deviceId.ToString());
         activity?.SetTag(ActivityAttributes.RunId, runId.ToString());
 
@@ -27,10 +24,7 @@ public partial class ManifestManager
             Status = BackupRunStatus.Queued,
         };
 
-        await daprClient.SaveStateAsync(DaprComponents.ManifestStateStore, stateKey, state,
-            cancellationToken: cancellationToken);
-
-        await AddBackupRunToIndexesAsync(deviceId, runId, startedAt, cancellationToken);
+        state.ETag = await SaveBackupRunAsync(state, etag: null, cancellationToken);
 
         telemetry.StateOperations.Add(1, new TagList { { "operation", "create" }, { "store", "manifest" } });
 
@@ -41,21 +35,17 @@ public partial class ManifestManager
     public async Task<BackupRun> GetBackupRunAsync(Guid deviceId, Guid runId, CancellationToken cancellationToken = default)
     {
         using var activity = telemetry.ActivitySource.StartActivity("GetBackupRun");
-        var stateKey = GetBackupRunStateKey(deviceId, runId);
-
-        activity?.SetTag(ActivityAttributes.StateKey, stateKey);
         activity?.SetTag(ActivityAttributes.DeviceId, deviceId.ToString());
         activity?.SetTag(ActivityAttributes.RunId, runId.ToString());
 
-        var (run, etag) = await daprClient.GetStateAndETagAsync<BackupRun>(
-            DaprComponents.ManifestStateStore,
-            stateKey,
-            cancellationToken: cancellationToken);
+        var document = await store.GetAsync<BackupRun>(
+            BackupRunDocument, DevicePartition(deviceId), $"{runId:N}", cancellationToken);
 
-        if (run != null)
+        if (document != null)
         {
-            run.ETag = etag;
-            activity?.SetTag(ActivityAttributes.StateETag, etag);
+            var run = document.Data;
+            run.ETag = document.ETag;
+            activity?.SetTag(ActivityAttributes.StateETag, document.ETag);
             telemetry.StateOperations.Add(1, new TagList { { "operation", "get" }, { "store", "manifest" }, { "result", "found" } });
             return run;
         }
@@ -66,16 +56,7 @@ public partial class ManifestManager
 
     public async Task<BackupRun> CommitBackupRunAsync(Guid deviceId, Guid runId, CancellationToken cancellationToken = default)
     {
-        var stateKey = GetBackupRunStateKey(deviceId, runId);
-        var (run, etag) = await daprClient.GetStateAndETagAsync<BackupRun>(
-            DaprComponents.ManifestStateStore,
-            stateKey,
-            cancellationToken: cancellationToken);
-
-        if (run == null)
-        {
-            throw new BackupRunNotFoundException(deviceId, runId);
-        }
+        var run = await GetBackupRunAsync(deviceId, runId, cancellationToken);
 
         if (run.Status == BackupRunStatus.Succeeded)
         {
@@ -87,20 +68,18 @@ public partial class ManifestManager
             throw new InvalidBackupRunStateException(deviceId, runId, run.Status, BackupRunStatus.Queued);
         }
 
+        var expectedETag = run.ETag;
         run.Status = BackupRunStatus.Succeeded;
         run.CompletedAt = DateTimeOffset.UtcNow;
 
-        var success = await daprClient.TrySaveStateAsync(
-            DaprComponents.ManifestStateStore,
-            stateKey,
-            run,
-            etag,
-            cancellationToken: cancellationToken);
-
-        if (!success)
+        try
         {
-            LogConcurrentUpdateDetected(logger, runId, deviceId, etag);
-            throw new ConcurrentUpdateException(deviceId, runId, etag, actualETag: null);
+            run.ETag = await SaveBackupRunAsync(run, expectedETag, cancellationToken);
+        }
+        catch (StateConcurrencyException)
+        {
+            LogConcurrentUpdateDetected(logger, runId, deviceId, expectedETag);
+            throw new ConcurrentUpdateException(deviceId, runId, expectedETag, actualETag: null);
         }
 
         LogBackupRunCommitted(logger, runId, deviceId, run.Status);
@@ -111,34 +90,19 @@ public partial class ManifestManager
         CancellationToken cancellationToken = default)
     {
         using var activity = telemetry.ActivitySource.StartActivity("UpdateBackupRun");
-        var stateKey = GetBackupRunStateKey(deviceId, runId);
-
-        activity?.SetTag(ActivityAttributes.StateKey, stateKey);
         activity?.SetTag(ActivityAttributes.DeviceId, deviceId.ToString());
         activity?.SetTag(ActivityAttributes.RunId, runId.ToString());
 
-        if (!string.IsNullOrEmpty(updatedRun.ETag))
-        {
-            var success = await daprClient.TrySaveStateAsync(
-                DaprComponents.ManifestStateStore,
-                stateKey,
-                updatedRun,
-                updatedRun.ETag,
-                cancellationToken: cancellationToken);
+        var expectedETag = updatedRun.ETag;
 
-            if (!success)
-            {
-                LogConcurrentUpdateDetected(logger, runId, deviceId, updatedRun.ETag);
-                throw new ConcurrentUpdateException(deviceId, runId, updatedRun.ETag, actualETag: null);
-            }
-        }
-        else
+        try
         {
-            await daprClient.SaveStateAsync(
-                DaprComponents.ManifestStateStore,
-                stateKey,
-                updatedRun,
-                cancellationToken: cancellationToken);
+            updatedRun.ETag = await SaveBackupRunAsync(updatedRun, expectedETag, cancellationToken);
+        }
+        catch (StateConcurrencyException)
+        {
+            LogConcurrentUpdateDetected(logger, runId, deviceId, expectedETag);
+            throw new ConcurrentUpdateException(deviceId, runId, expectedETag, actualETag: null);
         }
 
         telemetry.StateOperations.Add(1, new TagList { { "operation", "update" }, { "store", "manifest" } });
@@ -151,78 +115,46 @@ public partial class ManifestManager
     {
         using var activity = telemetry.ActivitySource.StartActivity("GetBackupRunsPage");
         var pageSize = Math.Clamp(query.PageSize, 1, 500);
-        var indexKey = query.DeviceId.HasValue
-            ? GetBackupRunDeviceIndexKey(query.DeviceId.Value)
-            : GetBackupRunGlobalIndexKey();
-
-        activity?.SetTag(ActivityAttributes.StateKey, indexKey);
         activity?.SetTag("state.page_size", pageSize);
 
-        var index = await daprClient.GetStateAsync<BackupRunIndex>(
-            DaprComponents.ManifestStateStore,
-            indexKey,
-            cancellationToken: cancellationToken);
-
-        if (index == null || index.Runs.Count == 0)
+        var page = await store.QueryAsync<BackupRun>(new DocumentQuery
         {
-            return new BackupRunPage
-            {
-                Runs = [],
-                PageSize = pageSize,
-                ContinuationToken = query.ContinuationToken,
-                NextContinuationToken = null
-            };
-        }
+            Type = BackupRunDocument,
+            PartitionKey = query.DeviceId.HasValue ? DevicePartition(query.DeviceId.Value) : null,
+            SortValueFrom = query.StartedFromUtc?.ToUnixTimeMilliseconds(),
+            SortValueTo = query.StartedToUtc?.ToUnixTimeMilliseconds(),
+            Order = DocumentOrder.SortValueDescending,
+            PageSize = pageSize,
+            ContinuationToken = query.ContinuationToken
+        }, cancellationToken);
 
-        var indexedRuns = index.Runs
-            .Where(run => !query.DeviceId.HasValue || run.DeviceId == query.DeviceId.Value)
-            .Where(run => !query.StartedFromUtc.HasValue || run.StartedAt >= query.StartedFromUtc.Value)
-            .Where(run => !query.StartedToUtc.HasValue || run.StartedAt <= query.StartedToUtc.Value)
-            .OrderByDescending(run => run.StartedAt)
-            .ThenBy(run => run.DeviceId)
-            .ThenBy(run => run.RunId)
-            .ToArray();
-
-        var runs = new List<BackupRun>(indexedRuns.Length);
-        foreach (var indexedRun in indexedRuns)
+        var runs = new List<BackupRun>(page.Items.Count);
+        foreach (var document in page.Items)
         {
-            try
+            var run = document.Data;
+            run.ETag = document.ETag;
+
+            // The status filter is applied per page: filtered pages may contain fewer
+            // than pageSize items while a continuation token is still present.
+            if (!query.Status.HasValue || run.Status == query.Status.Value)
             {
-                var run = await GetBackupRunAsync(indexedRun.DeviceId, indexedRun.RunId, cancellationToken);
-                if (!query.Status.HasValue || run.Status == query.Status.Value)
-                {
-                    runs.Add(run);
-                }
-            }
-            catch (BackupRunNotFoundException)
-            {
-                // Keep listing resilient if an index entry points to a removed state item.
+                runs.Add(run);
             }
         }
 
-        var offset = DecodeContinuationToken(query.ContinuationToken);
-        var pageRuns = runs
-            .Skip(offset)
-            .Take(pageSize)
-            .ToArray();
-
-        var nextOffset = offset + pageRuns.Length;
         return new BackupRunPage
         {
-            Runs = pageRuns,
+            Runs = runs,
             PageSize = pageSize,
             ContinuationToken = query.ContinuationToken,
-            NextContinuationToken = nextOffset < runs.Count ? EncodeContinuationToken(nextOffset) : null
+            NextContinuationToken = page.NextContinuationToken
         };
     }
 
     public async Task SaveRunManifestAsync(Guid deviceId, Guid runId, RunManifest manifest, CancellationToken cancellationToken = default)
     {
-        var stateKey = GetRunManifestStateKey(deviceId, runId);
-        await daprClient.SaveStateAsync(
-            DaprComponents.ManifestStateStore,
-            stateKey,
-            manifest,
+        await store.UpsertAsync(
+            RunManifestDocument, DevicePartition(deviceId), $"{runId:N}", manifest,
             cancellationToken: cancellationToken);
 
         telemetry.StateOperations.Add(1, new TagList { { "operation", "save" }, { "store", "manifest" }, { "entity", "runmanifest" } });
@@ -230,20 +162,27 @@ public partial class ManifestManager
 
     public async Task<RunManifest?> GetRunManifestAsync(Guid deviceId, Guid runId, CancellationToken cancellationToken = default)
     {
-        var stateKey = GetRunManifestStateKey(deviceId, runId);
-        var manifest = await daprClient.GetStateAsync<RunManifest>(
-            DaprComponents.ManifestStateStore,
-            stateKey,
-            cancellationToken: cancellationToken);
+        var document = await store.GetAsync<RunManifest>(
+            RunManifestDocument, DevicePartition(deviceId), $"{runId:N}", cancellationToken);
 
         telemetry.StateOperations.Add(1, new TagList
         {
             { "operation", "get" },
             { "store", "manifest" },
             { "entity", "runmanifest" },
-            { "result", manifest == null ? "not_found" : "found" }
+            { "result", document == null ? "not_found" : "found" }
         });
 
-        return manifest;
+        return document?.Data;
     }
+
+    private Task<string> SaveBackupRunAsync(BackupRun run, string? etag, CancellationToken cancellationToken)
+        => store.UpsertAsync(
+            BackupRunDocument,
+            DevicePartition(run.DeviceId),
+            $"{run.RunId:N}",
+            run,
+            etag,
+            sortValue: run.StartedAt.ToUnixTimeMilliseconds(),
+            cancellationToken: cancellationToken);
 }

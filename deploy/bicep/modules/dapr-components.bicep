@@ -6,18 +6,6 @@ param managedEnvironmentName string
 @description('Key Vault name for Dapr secret-store component.')
 param keyVaultName string
 
-@description('Cosmos DB account endpoint for Dapr state-store components.')
-param cosmosAccountEndpoint string
-
-@description('Cosmos DB SQL database name for Dapr state.')
-param cosmosDatabaseName string
-
-@description('Cosmos DB SQL container name for manifest-state-store.')
-param cosmosManifestContainerName string
-
-@description('Cosmos DB SQL container name for device-registry-state-store.')
-param cosmosDeviceRegistryContainerName string
-
 @description('Storage account name for backup event queue bindings.')
 param dataStorageAccountName string
 
@@ -60,81 +48,9 @@ resource daprSecretStore 'Microsoft.App/managedEnvironments/daprComponents@2023-
   }
 }
 
-// ---------------------------------------------------------------------------
-// Dapr component: manifest state-store (Azure Cosmos DB for NoSQL via managed identity)
-// ---------------------------------------------------------------------------
-
-resource daprManifestStateStore 'Microsoft.App/managedEnvironments/daprComponents@2023-05-01' = {
-  parent: containerAppEnv
-  name: 'manifest-state-store'
-  properties: {
-    componentType: 'state.azure.cosmosdb'
-    version: 'v1'
-    initTimeout: '5m'
-    metadata: concat([
-      {
-        name: 'url'
-        value: cosmosAccountEndpoint
-      }
-      {
-        name: 'database'
-        value: cosmosDatabaseName
-      }
-      {
-        name: 'collection'
-        value: cosmosManifestContainerName
-      }
-      {
-        name: 'partitionKey'
-        value: 'partitionKey'
-      }
-      {
-        // Shared across backup-api (writes commit jobs) and backup-worker
-        // (reads them). The Dapr default 'appid' prefixes keys per app, which
-        // makes cross-app state invisible.
-        name: 'keyPrefix'
-        value: 'name'
-      }
-    ], daprAzureIdentityMetadata)
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Dapr component: device registry state-store (Azure Cosmos DB for NoSQL via managed identity)
-// ---------------------------------------------------------------------------
-
-resource daprDeviceRegistryStateStore 'Microsoft.App/managedEnvironments/daprComponents@2023-05-01' = {
-  parent: containerAppEnv
-  name: 'device-registry-state-store'
-  properties: {
-    componentType: 'state.azure.cosmosdb'
-    version: 'v1'
-    initTimeout: '5m'
-    metadata: concat([
-      {
-        name: 'url'
-        value: cosmosAccountEndpoint
-      }
-      {
-        name: 'database'
-        value: cosmosDatabaseName
-      }
-      {
-        name: 'collection'
-        value: cosmosDeviceRegistryContainerName
-      }
-      {
-        name: 'partitionKey'
-        value: 'partitionKey'
-      }
-      {
-        // Same rationale as manifest-state-store: keys must be app-agnostic.
-        name: 'keyPrefix'
-        value: 'name'
-      }
-    ], daprAzureIdentityMetadata)
-  }
-}
+// Dapr provides secrets, queue bindings, and cron. Application state is handled
+// in-app by the IStateDocumentStore repository layer (Cosmos in production,
+// SQLite locally), so no state components are defined here.
 
 // ---------------------------------------------------------------------------
 // Dapr component: output binding for backup events (Azure Storage Queue via managed identity)

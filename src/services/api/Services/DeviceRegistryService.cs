@@ -1,7 +1,6 @@
 using System.Security.Claims;
-using Dapr.Client;
+using FlorisDeV.BackupApi.Data;
 using FlorisDeV.BackupApi.Exceptions;
-using FlorisDeV.BackupContracts.Constants;
 using FlorisDeV.BackupContracts.State;
 using FlorisDeV.Security.Authentication;
 
@@ -18,8 +17,11 @@ public interface IDeviceRegistryService
     Task<DeviceRegistration> GetDeviceAsync(Guid deviceId, CancellationToken cancellationToken = default);
 }
 
-public sealed class DeviceRegistryService(DaprClient daprClient) : IDeviceRegistryService
+public sealed class DeviceRegistryService(
+    [FromKeyedServices(StateStores.DeviceRegistry)] IStateDocumentStore store) : IDeviceRegistryService
 {
+    private const string DeviceDocument = "device";
+
     public async Task<DeviceRegistration> RegisterDeviceAsync(
         ClaimsPrincipal principal,
         Guid? requestedDeviceId,
@@ -34,15 +36,13 @@ public sealed class DeviceRegistryService(DaprClient daprClient) : IDeviceRegist
             throw new ArgumentException("DeviceId cannot be empty", nameof(requestedDeviceId));
         }
 
-        var stateKey = GetDeviceStateKey(deviceId);
-        var (existing, etag) = await daprClient.GetStateAndETagAsync<DeviceRegistration>(
-            DaprComponents.DeviceRegistryStateStore,
-            stateKey,
-            cancellationToken: cancellationToken);
+        var document = await store.GetAsync<DeviceRegistration>(
+            DeviceDocument, DevicePartition(deviceId), $"{deviceId:N}", cancellationToken);
 
-        if (existing != null)
+        if (document != null)
         {
-            existing.ETag = etag;
+            var existing = document.Data;
+            existing.ETag = document.ETag;
 
             if (!IsOwner(existing, tenantId, userId))
             {
@@ -60,10 +60,8 @@ public sealed class DeviceRegistryService(DaprClient daprClient) : IDeviceRegist
                 LastSeenAt = DateTimeOffset.UtcNow
             };
 
-            await daprClient.SaveStateAsync(
-                DaprComponents.DeviceRegistryStateStore,
-                stateKey,
-                refreshed,
+            refreshed.ETag = await store.UpsertAsync(
+                DeviceDocument, DevicePartition(deviceId), $"{deviceId:N}", refreshed,
                 cancellationToken: cancellationToken);
 
             return refreshed;
@@ -81,10 +79,8 @@ public sealed class DeviceRegistryService(DaprClient daprClient) : IDeviceRegist
             LastSeenAt = now
         };
 
-        await daprClient.SaveStateAsync(
-            DaprComponents.DeviceRegistryStateStore,
-            stateKey,
-            registration,
+        registration.ETag = await store.UpsertAsync(
+            DeviceDocument, DevicePartition(deviceId), $"{deviceId:N}", registration,
             cancellationToken: cancellationToken);
 
         return registration;
@@ -92,18 +88,16 @@ public sealed class DeviceRegistryService(DaprClient daprClient) : IDeviceRegist
 
     public async Task<DeviceRegistration> GetDeviceAsync(Guid deviceId, CancellationToken cancellationToken = default)
     {
-        var stateKey = GetDeviceStateKey(deviceId);
-        var (registration, etag) = await daprClient.GetStateAndETagAsync<DeviceRegistration>(
-            DaprComponents.DeviceRegistryStateStore,
-            stateKey,
-            cancellationToken: cancellationToken);
+        var document = await store.GetAsync<DeviceRegistration>(
+            DeviceDocument, DevicePartition(deviceId), $"{deviceId:N}", cancellationToken);
 
-        if (registration == null)
+        if (document == null)
         {
             throw new DeviceNotRegisteredException(deviceId);
         }
 
-        registration.ETag = etag;
+        var registration = document.Data;
+        registration.ETag = document.ETag;
         return registration;
     }
 
@@ -111,7 +105,7 @@ public sealed class DeviceRegistryService(DaprClient daprClient) : IDeviceRegist
         => string.Equals(registration.TenantId, tenantId, StringComparison.OrdinalIgnoreCase)
            && string.Equals(registration.UserId, userId, StringComparison.OrdinalIgnoreCase);
 
-    private static string GetDeviceStateKey(Guid deviceId) => $"devices:{deviceId:N}";
+    private static string DevicePartition(Guid deviceId) => $"device:{deviceId:N}";
 }
 
 public interface IDeviceAuthorizationService

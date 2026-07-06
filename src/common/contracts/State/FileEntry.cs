@@ -42,13 +42,6 @@ public enum FileVersionState
     Retired
 }
 
-public sealed record FileEntryIndex
-{
-    public required Guid DeviceId { get; init; }
-    public required List<string> RelativePaths { get; init; }
-    public string? ETag { get; set; }
-}
-
 public sealed record FileEntryPage
 {
     public required IReadOnlyList<FileEntry> Entries { get; init; }

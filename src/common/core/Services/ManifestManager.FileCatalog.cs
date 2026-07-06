@@ -1,5 +1,5 @@
 using System.Diagnostics;
-using FlorisDeV.BackupContracts.Constants;
+using FlorisDeV.BackupApi.Data;
 using FlorisDeV.BackupContracts.State;
 using FlorisDeV.Logging.OpenTelemetry;
 
@@ -10,128 +10,98 @@ public partial class ManifestManager
     public async Task<FileEntry?> GetFileEntryAsync(Guid deviceId, string relativePath, CancellationToken cancellationToken = default)
     {
         using var activity = telemetry.ActivitySource.StartActivity("GetFileEntry");
-        var stateKey = GetFileEntryStateKey(deviceId, relativePath);
-
-        activity?.SetTag(ActivityAttributes.StateKey, stateKey);
         activity?.SetTag(ActivityAttributes.DeviceId, deviceId.ToString());
         activity?.SetTag("relative_path", relativePath);
 
-        var (fileEntry, etag) = await daprClient.GetStateAndETagAsync<FileEntry>(
-            DaprComponents.ManifestStateStore,
-            stateKey,
-            cancellationToken: cancellationToken);
+        var document = await store.GetAsync<FileEntry>(
+            FileEntryDocument, DevicePartition(deviceId), EncodeStateKeySegment(relativePath), cancellationToken);
 
-        if (fileEntry != null)
+        if (document != null)
         {
-            fileEntry.ETag = etag;
-            activity?.SetTag(ActivityAttributes.StateETag, etag);
+            var fileEntry = document.Data;
+            fileEntry.ETag = document.ETag;
+            activity?.SetTag(ActivityAttributes.StateETag, document.ETag);
             telemetry.StateOperations.Add(1, new TagList { { "operation", "get" }, { "store", "manifest" }, { "entity", "fileentry" }, { "result", "found" } });
-        }
-        else
-        {
-            telemetry.StateOperations.Add(1, new TagList { { "operation", "get" }, { "store", "manifest" }, { "entity", "fileentry" }, { "result", "not_found" } });
+            return fileEntry;
         }
 
-        return fileEntry;
+        telemetry.StateOperations.Add(1, new TagList { { "operation", "get" }, { "store", "manifest" }, { "entity", "fileentry" }, { "result", "not_found" } });
+        return null;
     }
 
     public async Task SaveFileEntryAsync(FileEntry fileEntry, CancellationToken cancellationToken = default)
     {
         using var activity = telemetry.ActivitySource.StartActivity("SaveFileEntry");
-        var stateKey = GetFileEntryStateKey(fileEntry.DeviceId, fileEntry.RelativePath);
-
-        activity?.SetTag(ActivityAttributes.StateKey, stateKey);
         activity?.SetTag(ActivityAttributes.DeviceId, fileEntry.DeviceId);
         activity?.SetTag("relative_path", fileEntry.RelativePath);
 
-        if (!string.IsNullOrEmpty(fileEntry.ETag))
-        {
-            var success = await daprClient.TrySaveStateAsync(
-                DaprComponents.ManifestStateStore,
-                stateKey,
-                fileEntry,
-                fileEntry.ETag,
-                cancellationToken: cancellationToken);
+        var expectedETag = fileEntry.ETag;
 
-            if (!success)
-            {
-                LogConcurrentFileEntryUpdate(logger, fileEntry.RelativePath, fileEntry.DeviceId, fileEntry.ETag);
-                throw new InvalidOperationException($"Concurrent update detected for FileEntry {fileEntry.RelativePath}");
-            }
-        }
-        else
+        try
         {
-            await daprClient.SaveStateAsync(
-                DaprComponents.ManifestStateStore,
-                stateKey,
+            fileEntry.ETag = await store.UpsertAsync(
+                FileEntryDocument,
+                DevicePartition(fileEntry.DeviceId),
+                EncodeStateKeySegment(fileEntry.RelativePath),
                 fileEntry,
+                expectedETag,
+                sortKey: fileEntry.RelativePath.ToLowerInvariant(),
                 cancellationToken: cancellationToken);
+        }
+        catch (StateConcurrencyException)
+        {
+            LogConcurrentFileEntryUpdate(logger, fileEntry.RelativePath, fileEntry.DeviceId, expectedETag);
+            throw new InvalidOperationException($"Concurrent update detected for FileEntry {fileEntry.RelativePath}");
         }
 
         telemetry.StateOperations.Add(1, new TagList { { "operation", "save" }, { "store", "manifest" }, { "entity", "fileentry" } });
-        await AddFileEntryToIndexAsync(fileEntry.DeviceId, fileEntry.RelativePath, cancellationToken);
         LogFileEntrySaved(logger, fileEntry.RelativePath, fileEntry.DeviceId);
     }
 
     public async Task<FileVersion?> GetFileVersionAsync(Guid deviceId, string uniqueFileId, CancellationToken cancellationToken = default)
     {
         using var activity = telemetry.ActivitySource.StartActivity("GetFileVersion");
-        var stateKey = GetFileVersionStateKey(deviceId, uniqueFileId);
-
-        activity?.SetTag(ActivityAttributes.StateKey, stateKey);
         activity?.SetTag(ActivityAttributes.DeviceId, deviceId.ToString());
         activity?.SetTag("unique_file_id", uniqueFileId);
 
-        var (fileVersion, etag) = await daprClient.GetStateAndETagAsync<FileVersion>(
-            DaprComponents.ManifestStateStore,
-            stateKey,
-            cancellationToken: cancellationToken);
+        var document = await store.GetAsync<FileVersion>(
+            FileVersionDocument, DevicePartition(deviceId), EncodeStateKeySegment(uniqueFileId), cancellationToken);
 
-        if (fileVersion != null)
+        if (document != null)
         {
-            fileVersion.ETag = etag;
-            activity?.SetTag(ActivityAttributes.StateETag, etag);
+            var fileVersion = document.Data;
+            fileVersion.ETag = document.ETag;
+            activity?.SetTag(ActivityAttributes.StateETag, document.ETag);
             telemetry.StateOperations.Add(1, new TagList { { "operation", "get" }, { "store", "manifest" }, { "entity", "fileversion" }, { "result", "found" } });
-        }
-        else
-        {
-            telemetry.StateOperations.Add(1, new TagList { { "operation", "get" }, { "store", "manifest" }, { "entity", "fileversion" }, { "result", "not_found" } });
+            return fileVersion;
         }
 
-        return fileVersion;
+        telemetry.StateOperations.Add(1, new TagList { { "operation", "get" }, { "store", "manifest" }, { "entity", "fileversion" }, { "result", "not_found" } });
+        return null;
     }
 
     public async Task SaveFileVersionAsync(FileVersion fileVersion, CancellationToken cancellationToken = default)
     {
         using var activity = telemetry.ActivitySource.StartActivity("SaveFileVersion");
-        var stateKey = GetFileVersionStateKey(fileVersion.DeviceId, fileVersion.UniqueFileId);
-
-        activity?.SetTag(ActivityAttributes.StateKey, stateKey);
         activity?.SetTag(ActivityAttributes.DeviceId, fileVersion.DeviceId);
         activity?.SetTag("unique_file_id", fileVersion.UniqueFileId);
 
-        if (!string.IsNullOrEmpty(fileVersion.ETag))
-        {
-            var success = await daprClient.TrySaveStateAsync(
-                DaprComponents.ManifestStateStore,
-                stateKey,
-                fileVersion,
-                fileVersion.ETag,
-                cancellationToken: cancellationToken);
+        var expectedETag = fileVersion.ETag;
 
-            if (!success)
-            {
-                LogConcurrentFileVersionUpdate(logger, fileVersion.UniqueFileId, fileVersion.DeviceId, fileVersion.ETag);
-                throw new InvalidOperationException($"Concurrent update detected for FileVersion {fileVersion.UniqueFileId}");
-            }
-        }
-        else
+        try
         {
-            await daprClient.SaveStateAsync(
-                DaprComponents.ManifestStateStore,
-                stateKey,
+            fileVersion.ETag = await store.UpsertAsync(
+                FileVersionDocument,
+                DevicePartition(fileVersion.DeviceId),
+                EncodeStateKeySegment(fileVersion.UniqueFileId),
                 fileVersion,
+                expectedETag,
                 cancellationToken: cancellationToken);
+        }
+        catch (StateConcurrencyException)
+        {
+            LogConcurrentFileVersionUpdate(logger, fileVersion.UniqueFileId, fileVersion.DeviceId, expectedETag);
+            throw new InvalidOperationException($"Concurrent update detected for FileVersion {fileVersion.UniqueFileId}");
         }
 
         telemetry.StateOperations.Add(1, new TagList { { "operation", "save" }, { "store", "manifest" }, { "entity", "fileversion" } });
@@ -166,61 +136,30 @@ public partial class ManifestManager
             throw new ArgumentOutOfRangeException(nameof(pageSize), "Page size must be greater than zero.");
         }
 
-        var indexKey = GetFileEntryIndexKey(deviceId);
-        var index = await daprClient.GetStateAsync<FileEntryIndex>(
-            DaprComponents.ManifestStateStore,
-            indexKey,
-            cancellationToken: cancellationToken);
-
-        if (index == null || index.RelativePaths.Count == 0)
+        var page = await store.QueryAsync<FileEntry>(new DocumentQuery
         {
-            LogFileEntriesQueried(logger, deviceId);
-            return new FileEntryPage
-            {
-                Entries = [],
-                PageSize = pageSize,
-                ContinuationToken = continuationToken,
-                NextContinuationToken = null
-            };
+            Type = FileEntryDocument,
+            PartitionKey = DevicePartition(deviceId),
+            Order = DocumentOrder.SortKeyAscending,
+            PageSize = pageSize,
+            ContinuationToken = continuationToken
+        }, cancellationToken);
+
+        var entries = new List<FileEntry>(page.Items.Count);
+        foreach (var document in page.Items)
+        {
+            var entry = document.Data;
+            entry.ETag = document.ETag;
+            entries.Add(entry);
         }
 
-        var offset = DecodeContinuationToken(continuationToken);
-        if (offset >= index.RelativePaths.Count)
-        {
-            LogFileEntriesQueried(logger, deviceId);
-            return new FileEntryPage
-            {
-                Entries = [],
-                PageSize = pageSize,
-                ContinuationToken = continuationToken,
-                NextContinuationToken = null
-            };
-        }
-
-        var relativePaths = index.RelativePaths
-            .Order(StringComparer.OrdinalIgnoreCase)
-            .Skip(offset)
-            .Take(pageSize)
-            .ToArray();
-
-        var entries = new List<FileEntry>(relativePaths.Length);
-        foreach (var relativePath in relativePaths)
-        {
-            var entry = await GetFileEntryAsync(deviceId, relativePath, cancellationToken);
-            if (entry != null)
-            {
-                entries.Add(entry);
-            }
-        }
-
-        var nextOffset = offset + relativePaths.Length;
         LogFileEntriesQueried(logger, deviceId);
         return new FileEntryPage
         {
             Entries = entries,
             PageSize = pageSize,
             ContinuationToken = continuationToken,
-            NextContinuationToken = nextOffset < index.RelativePaths.Count ? EncodeContinuationToken(nextOffset) : null
+            NextContinuationToken = page.NextContinuationToken
         };
     }
 }

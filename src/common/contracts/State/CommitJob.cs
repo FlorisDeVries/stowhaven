@@ -14,6 +14,8 @@ public class CommitJob
     public DateTimeOffset UpdatedAt { get; set; }
     public DateTimeOffset? CompletedAt { get; set; }
     public int FilesProcessed { get; set; }
+    public int TotalFiles { get; set; }
+    public int FilesFailed { get; set; }
     public int AttemptCount { get; set; }
     public string? FailureCategory { get; set; }
     public DateTimeOffset? LastErrorAt { get; set; }
@@ -28,20 +30,6 @@ public enum CommitJobStatus
     Processing,
     Succeeded,
     Failed
-}
-
-public sealed record CommitJobIndexEntry
-{
-    public required Guid CommitId { get; init; }
-    public required Guid DeviceId { get; init; }
-    public required Guid RunId { get; init; }
-    public required DateTimeOffset CreatedAt { get; init; }
-}
-
-public sealed record CommitJobIndex
-{
-    public required List<CommitJobIndexEntry> Commits { get; init; }
-    public string? ETag { get; set; }
 }
 
 public sealed record CommitJobQuery
@@ -87,13 +75,6 @@ public enum CommitFileStatus
     StateUpdated,
     Succeeded,
     Failed
-}
-
-public sealed record CommitFileProgressIndex
-{
-    public required Guid CommitId { get; init; }
-    public required List<string> UniqueFileIds { get; init; }
-    public string? ETag { get; set; }
 }
 
 public sealed record CommitFileProgressPage

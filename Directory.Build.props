@@ -1,0 +1,7 @@
+<Project>
+  <PropertyGroup>
+    <!-- The Cosmos SDK is used exclusively with its System.Text.Json serializer
+         (see StateDocumentStoreExtensions); skip its Newtonsoft.Json reference check. -->
+    <AzureCosmosDisableNewtonsoftJsonCheck>true</AzureCosmosDisableNewtonsoftJsonCheck>
+  </PropertyGroup>
+</Project>

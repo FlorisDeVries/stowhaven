@@ -1,5 +1,5 @@
 using System.Diagnostics;
-using FlorisDeV.BackupContracts.Constants;
+using FlorisDeV.BackupApi.Data;
 using FlorisDeV.BackupContracts.State;
 using FlorisDeV.Logging.OpenTelemetry;
 
@@ -11,23 +11,19 @@ public partial class ManifestManager
     {
         using var activity = telemetry.ActivitySource.StartActivity("CreateCommitJob");
         var commitId = CreateDeterministicCommitId(deviceId, runId);
-        var stateKey = GetCommitJobStateKey(commitId);
         var now = DateTimeOffset.UtcNow;
 
-        activity?.SetTag(ActivityAttributes.StateKey, stateKey);
         activity?.SetTag(ActivityAttributes.DeviceId, deviceId.ToString());
         activity?.SetTag(ActivityAttributes.RunId, runId.ToString());
         activity?.SetTag("commit_id", commitId.ToString());
 
-        var (existingCommitJob, existingEtag) = await daprClient.GetStateAndETagAsync<CommitJob>(
-            DaprComponents.ManifestStateStore,
-            stateKey,
-            cancellationToken: cancellationToken);
+        var existing = await store.GetAsync<CommitJob>(
+            CommitJobDocument, CommitPartition(commitId), $"{commitId:N}", cancellationToken);
 
-        if (existingCommitJob != null)
+        if (existing != null)
         {
-            existingCommitJob.ETag = existingEtag;
-            await AddCommitJobToIndexesAsync(existingCommitJob, cancellationToken);
+            var existingCommitJob = existing.Data;
+            existingCommitJob.ETag = existing.ETag;
             telemetry.StateOperations.Add(1, new TagList { { "operation", "get" }, { "store", "manifest" }, { "entity", "commitjob" }, { "result", "duplicate" } });
             LogCommitJobAlreadyExists(logger, commitId, deviceId, runId, existingCommitJob.Status);
             return existingCommitJob;
@@ -43,10 +39,7 @@ public partial class ManifestManager
             UpdatedAt = now
         };
 
-        await daprClient.SaveStateAsync(DaprComponents.ManifestStateStore, stateKey, commitJob,
-            cancellationToken: cancellationToken);
-
-        await AddCommitJobToIndexesAsync(commitJob, cancellationToken);
+        commitJob.ETag = await SaveCommitJobAsync(commitJob, etag: null, cancellationToken);
 
         telemetry.StateOperations.Add(1, new TagList { { "operation", "create" }, { "store", "manifest" }, { "entity", "commitjob" } });
 
@@ -57,22 +50,9 @@ public partial class ManifestManager
     public async Task<(bool Claimed, CommitJob CommitJob)> TryClaimCommitJobAsync(Guid commitId, CancellationToken cancellationToken = default)
     {
         using var activity = telemetry.ActivitySource.StartActivity("TryClaimCommitJob");
-        var stateKey = GetCommitJobStateKey(commitId);
-
-        activity?.SetTag(ActivityAttributes.StateKey, stateKey);
         activity?.SetTag("commit_id", commitId.ToString());
 
-        var (commitJob, etag) = await daprClient.GetStateAndETagAsync<CommitJob>(
-            DaprComponents.ManifestStateStore,
-            stateKey,
-            cancellationToken: cancellationToken);
-
-        if (commitJob == null)
-        {
-            throw new InvalidOperationException($"CommitJob {commitId} not found");
-        }
-
-        commitJob.ETag = etag;
+        var commitJob = await GetCommitJobAsync(commitId, cancellationToken);
 
         if (commitJob.Status != CommitJobStatus.Queued)
         {
@@ -80,48 +60,41 @@ public partial class ManifestManager
             return (false, commitJob);
         }
 
+        var expectedETag = commitJob.ETag;
         commitJob.Status = CommitJobStatus.Processing;
         commitJob.AttemptCount++;
         commitJob.UpdatedAt = DateTimeOffset.UtcNow;
 
-        var success = await daprClient.TrySaveStateAsync(
-            DaprComponents.ManifestStateStore,
-            stateKey,
-            commitJob,
-            etag,
-            cancellationToken: cancellationToken);
-
-        if (!success)
+        try
         {
-            LogConcurrentCommitJobUpdate(logger, commitId, etag);
+            commitJob.ETag = await SaveCommitJobAsync(commitJob, expectedETag, cancellationToken);
+        }
+        catch (StateConcurrencyException)
+        {
+            LogConcurrentCommitJobUpdate(logger, commitId, expectedETag);
             telemetry.StateOperations.Add(1, new TagList { { "operation", "claim" }, { "store", "manifest" }, { "entity", "commitjob" }, { "result", "conflict" } });
             return (false, commitJob);
         }
 
-        var claimedCommitJob = await GetCommitJobAsync(commitId, cancellationToken);
         telemetry.StateOperations.Add(1, new TagList { { "operation", "claim" }, { "store", "manifest" }, { "entity", "commitjob" }, { "result", "claimed" } });
         LogCommitJobClaimed(logger, commitId);
 
-        return (true, claimedCommitJob);
+        return (true, commitJob);
     }
 
     public async Task<CommitJob> GetCommitJobAsync(Guid commitId, CancellationToken cancellationToken = default)
     {
         using var activity = telemetry.ActivitySource.StartActivity("GetCommitJob");
-        var stateKey = GetCommitJobStateKey(commitId);
-
-        activity?.SetTag(ActivityAttributes.StateKey, stateKey);
         activity?.SetTag("commit_id", commitId.ToString());
 
-        var (commitJob, etag) = await daprClient.GetStateAndETagAsync<CommitJob>(
-            DaprComponents.ManifestStateStore,
-            stateKey,
-            cancellationToken: cancellationToken);
+        var document = await store.GetAsync<CommitJob>(
+            CommitJobDocument, CommitPartition(commitId), $"{commitId:N}", cancellationToken);
 
-        if (commitJob != null)
+        if (document != null)
         {
-            commitJob.ETag = etag;
-            activity?.SetTag(ActivityAttributes.StateETag, etag);
+            var commitJob = document.Data;
+            commitJob.ETag = document.ETag;
+            activity?.SetTag(ActivityAttributes.StateETag, document.ETag);
             telemetry.StateOperations.Add(1, new TagList { { "operation", "get" }, { "store", "manifest" }, { "entity", "commitjob" }, { "result", "found" } });
             return commitJob;
         }
@@ -134,106 +107,70 @@ public partial class ManifestManager
     {
         using var activity = telemetry.ActivitySource.StartActivity("GetCommitJobsPage");
         var pageSize = Math.Clamp(query.PageSize, 1, 500);
-        var indexKey = query.DeviceId.HasValue && query.RunId.HasValue
-            ? GetCommitJobRunIndexKey(query.DeviceId.Value, query.RunId.Value)
-            : query.DeviceId.HasValue
-                ? GetCommitJobDeviceIndexKey(query.DeviceId.Value)
-                : GetCommitJobGlobalIndexKey();
-
-        activity?.SetTag(ActivityAttributes.StateKey, indexKey);
         activity?.SetTag("state.page_size", pageSize);
 
-        var index = await daprClient.GetStateAsync<CommitJobIndex>(
-            DaprComponents.ManifestStateStore,
-            indexKey,
-            cancellationToken: cancellationToken);
-
-        if (index == null || index.Commits.Count == 0)
+        var fieldFilters = new List<DocumentFieldEquals>(2);
+        if (query.DeviceId.HasValue)
         {
-            return new CommitJobPage
-            {
-                Commits = [],
-                PageSize = pageSize,
-                ContinuationToken = query.ContinuationToken,
-                NextContinuationToken = null
-            };
+            fieldFilters.Add(new DocumentFieldEquals("deviceId", FormatGuid(query.DeviceId.Value)));
         }
 
-        var indexedCommits = index.Commits
-            .Where(commit => !query.DeviceId.HasValue || commit.DeviceId == query.DeviceId.Value)
-            .Where(commit => !query.RunId.HasValue || commit.RunId == query.RunId.Value)
-            .Where(commit => !query.CreatedFromUtc.HasValue || commit.CreatedAt >= query.CreatedFromUtc.Value)
-            .Where(commit => !query.CreatedToUtc.HasValue || commit.CreatedAt <= query.CreatedToUtc.Value)
-            .OrderByDescending(commit => commit.CreatedAt)
-            .ThenBy(commit => commit.CommitId)
-            .ToArray();
-
-        var commits = new List<CommitJob>(indexedCommits.Length);
-        foreach (var indexedCommit in indexedCommits)
+        if (query.RunId.HasValue)
         {
-            try
+            fieldFilters.Add(new DocumentFieldEquals("runId", FormatGuid(query.RunId.Value)));
+        }
+
+        var page = await store.QueryAsync<CommitJob>(new DocumentQuery
+        {
+            Type = CommitJobDocument,
+            FieldEquals = fieldFilters,
+            SortValueFrom = query.CreatedFromUtc?.ToUnixTimeMilliseconds(),
+            SortValueTo = query.CreatedToUtc?.ToUnixTimeMilliseconds(),
+            Order = DocumentOrder.SortValueDescending,
+            PageSize = pageSize,
+            ContinuationToken = query.ContinuationToken
+        }, cancellationToken);
+
+        var commits = new List<CommitJob>(page.Items.Count);
+        foreach (var document in page.Items)
+        {
+            var commit = document.Data;
+            commit.ETag = document.ETag;
+
+            // The status filter is applied per page: filtered pages may contain fewer
+            // than pageSize items while a continuation token is still present.
+            if (!query.Status.HasValue || commit.Status == query.Status.Value)
             {
-                var commit = await GetCommitJobAsync(indexedCommit.CommitId, cancellationToken);
-                if (!query.Status.HasValue || commit.Status == query.Status.Value)
-                {
-                    commits.Add(commit);
-                }
-            }
-            catch (InvalidOperationException)
-            {
-                // Keep listing resilient if an index entry points to a removed state item.
+                commits.Add(commit);
             }
         }
 
-        var offset = DecodeContinuationToken(query.ContinuationToken);
-        var pageCommits = commits
-            .Skip(offset)
-            .Take(pageSize)
-            .ToArray();
-
-        var nextOffset = offset + pageCommits.Length;
         return new CommitJobPage
         {
-            Commits = pageCommits,
+            Commits = commits,
             PageSize = pageSize,
             ContinuationToken = query.ContinuationToken,
-            NextContinuationToken = nextOffset < commits.Count ? EncodeContinuationToken(nextOffset) : null
+            NextContinuationToken = page.NextContinuationToken
         };
     }
 
     public async Task<CommitJob> UpdateCommitJobAsync(CommitJob commitJob, CancellationToken cancellationToken = default)
     {
         using var activity = telemetry.ActivitySource.StartActivity("UpdateCommitJob");
-        var stateKey = GetCommitJobStateKey(commitJob.CommitId);
-
-        activity?.SetTag(ActivityAttributes.StateKey, stateKey);
         activity?.SetTag("commit_id", commitJob.CommitId.ToString());
         activity?.SetTag("commit_status", commitJob.Status.ToString());
 
+        var expectedETag = commitJob.ETag;
         commitJob.UpdatedAt = DateTimeOffset.UtcNow;
 
-        if (!string.IsNullOrEmpty(commitJob.ETag))
+        try
         {
-            var success = await daprClient.TrySaveStateAsync(
-                DaprComponents.ManifestStateStore,
-                stateKey,
-                commitJob,
-                commitJob.ETag,
-                cancellationToken: cancellationToken);
-
-            if (!success)
-            {
-                LogConcurrentCommitJobUpdate(logger, commitJob.CommitId, commitJob.ETag);
-                throw new InvalidOperationException($"Concurrent update detected for CommitJob {commitJob.CommitId}");
-            }
+            commitJob.ETag = await SaveCommitJobAsync(commitJob, expectedETag, cancellationToken);
         }
-        else
+        catch (StateConcurrencyException)
         {
-            await daprClient.SaveStateAsync(
-                DaprComponents.ManifestStateStore,
-                stateKey,
-                commitJob,
-                cancellationToken: cancellationToken);
+            LogConcurrentCommitJobUpdate(logger, commitJob.CommitId, expectedETag);
+            throw new InvalidOperationException($"Concurrent update detected for CommitJob {commitJob.CommitId}");
         }
 
         telemetry.StateOperations.Add(1, new TagList { { "operation", "update" }, { "store", "manifest" }, { "entity", "commitjob" } });
@@ -245,68 +182,52 @@ public partial class ManifestManager
     public async Task<CommitFileProgress?> GetCommitFileProgressAsync(Guid commitId, string uniqueFileId, CancellationToken cancellationToken = default)
     {
         using var activity = telemetry.ActivitySource.StartActivity("GetCommitFileProgress");
-        var stateKey = GetCommitFileProgressStateKey(commitId, uniqueFileId);
-
-        activity?.SetTag(ActivityAttributes.StateKey, stateKey);
         activity?.SetTag("commit_id", commitId.ToString());
         activity?.SetTag("unique_file_id", uniqueFileId);
 
-        var (progress, etag) = await daprClient.GetStateAndETagAsync<CommitFileProgress>(
-            DaprComponents.ManifestStateStore,
-            stateKey,
-            cancellationToken: cancellationToken);
+        var document = await store.GetAsync<CommitFileProgress>(
+            CommitFileProgressDocument, CommitPartition(commitId), EncodeStateKeySegment(uniqueFileId), cancellationToken);
 
-        if (progress != null)
+        if (document != null)
         {
-            progress.ETag = etag;
+            var progress = document.Data;
+            progress.ETag = document.ETag;
             telemetry.StateOperations.Add(1, new TagList { { "operation", "get" }, { "store", "manifest" }, { "entity", "commitfile" }, { "result", "found" } });
-        }
-        else
-        {
-            telemetry.StateOperations.Add(1, new TagList { { "operation", "get" }, { "store", "manifest" }, { "entity", "commitfile" }, { "result", "not_found" } });
+            return progress;
         }
 
-        return progress;
+        telemetry.StateOperations.Add(1, new TagList { { "operation", "get" }, { "store", "manifest" }, { "entity", "commitfile" }, { "result", "not_found" } });
+        return null;
     }
 
     public async Task<CommitFileProgress> SaveCommitFileProgressAsync(CommitFileProgress progress, CancellationToken cancellationToken = default)
     {
         using var activity = telemetry.ActivitySource.StartActivity("SaveCommitFileProgress");
-        var stateKey = GetCommitFileProgressStateKey(progress.CommitId, progress.UniqueFileId);
-
-        activity?.SetTag(ActivityAttributes.StateKey, stateKey);
         activity?.SetTag("commit_id", progress.CommitId.ToString());
         activity?.SetTag("unique_file_id", progress.UniqueFileId);
         activity?.SetTag("commit_file_status", progress.Status.ToString());
 
+        var expectedETag = progress.ETag;
         progress.UpdatedAt = DateTimeOffset.UtcNow;
 
-        if (!string.IsNullOrEmpty(progress.ETag))
+        try
         {
-            var success = await daprClient.TrySaveStateAsync(
-                DaprComponents.ManifestStateStore,
-                stateKey,
+            progress.ETag = await store.UpsertAsync(
+                CommitFileProgressDocument,
+                CommitPartition(progress.CommitId),
+                EncodeStateKeySegment(progress.UniqueFileId),
                 progress,
-                progress.ETag,
+                expectedETag,
+                sortKey: progress.UniqueFileId.ToLowerInvariant(),
                 cancellationToken: cancellationToken);
-
-            if (!success)
-            {
-                LogConcurrentCommitFileUpdate(logger, progress.CommitId, progress.UniqueFileId, progress.ETag);
-                throw new InvalidOperationException($"Concurrent update detected for CommitFileProgress {progress.CommitId}/{progress.UniqueFileId}");
-            }
         }
-        else
+        catch (StateConcurrencyException)
         {
-            await daprClient.SaveStateAsync(
-                DaprComponents.ManifestStateStore,
-                stateKey,
-                progress,
-                cancellationToken: cancellationToken);
+            LogConcurrentCommitFileUpdate(logger, progress.CommitId, progress.UniqueFileId, expectedETag);
+            throw new InvalidOperationException($"Concurrent update detected for CommitFileProgress {progress.CommitId}/{progress.UniqueFileId}");
         }
 
         telemetry.StateOperations.Add(1, new TagList { { "operation", "save" }, { "store", "manifest" }, { "entity", "commitfile" } });
-        await AddCommitFileProgressToIndexAsync(progress, cancellationToken);
         LogCommitFileProgressSaved(logger, progress.CommitId, progress.UniqueFileId, progress.Status);
 
         return progress;
@@ -320,52 +241,43 @@ public partial class ManifestManager
     {
         using var activity = telemetry.ActivitySource.StartActivity("GetCommitFileProgressPage");
         var normalizedPageSize = Math.Clamp(pageSize, 1, 500);
-        var indexKey = GetCommitFileProgressIndexKey(commitId);
 
-        activity?.SetTag(ActivityAttributes.StateKey, indexKey);
         activity?.SetTag("commit_id", commitId.ToString());
         activity?.SetTag("state.page_size", normalizedPageSize);
 
-        var index = await daprClient.GetStateAsync<CommitFileProgressIndex>(
-            DaprComponents.ManifestStateStore,
-            indexKey,
-            cancellationToken: cancellationToken);
-
-        if (index == null || index.UniqueFileIds.Count == 0)
+        var page = await store.QueryAsync<CommitFileProgress>(new DocumentQuery
         {
-            return new CommitFileProgressPage
-            {
-                Files = [],
-                PageSize = normalizedPageSize,
-                ContinuationToken = continuationToken,
-                NextContinuationToken = null
-            };
+            Type = CommitFileProgressDocument,
+            PartitionKey = CommitPartition(commitId),
+            Order = DocumentOrder.SortKeyAscending,
+            PageSize = normalizedPageSize,
+            ContinuationToken = continuationToken
+        }, cancellationToken);
+
+        var files = new List<CommitFileProgress>(page.Items.Count);
+        foreach (var document in page.Items)
+        {
+            var progress = document.Data;
+            progress.ETag = document.ETag;
+            files.Add(progress);
         }
 
-        var offset = DecodeContinuationToken(continuationToken);
-        var uniqueFileIds = index.UniqueFileIds
-            .Order(StringComparer.OrdinalIgnoreCase)
-            .Skip(offset)
-            .Take(normalizedPageSize)
-            .ToArray();
-
-        var files = new List<CommitFileProgress>(uniqueFileIds.Length);
-        foreach (var uniqueFileId in uniqueFileIds)
-        {
-            var progress = await GetCommitFileProgressAsync(commitId, uniqueFileId, cancellationToken);
-            if (progress != null)
-            {
-                files.Add(progress);
-            }
-        }
-
-        var nextOffset = offset + uniqueFileIds.Length;
         return new CommitFileProgressPage
         {
             Files = files,
             PageSize = normalizedPageSize,
             ContinuationToken = continuationToken,
-            NextContinuationToken = nextOffset < index.UniqueFileIds.Count ? EncodeContinuationToken(nextOffset) : null
+            NextContinuationToken = page.NextContinuationToken
         };
     }
+
+    private Task<string> SaveCommitJobAsync(CommitJob commitJob, string? etag, CancellationToken cancellationToken)
+        => store.UpsertAsync(
+            CommitJobDocument,
+            CommitPartition(commitJob.CommitId),
+            $"{commitJob.CommitId:N}",
+            commitJob,
+            etag,
+            sortValue: commitJob.CreatedAt.ToUnixTimeMilliseconds(),
+            cancellationToken: cancellationToken);
 }

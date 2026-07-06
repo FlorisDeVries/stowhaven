@@ -85,7 +85,7 @@ param cosmosAccountName string = ''
 @description('Cosmos DB SQL database name for Dapr state.')
 param cosmosDatabaseName string = 'backup-state'
 
-@description('Cosmos DB shared database autoscale max throughput in RU/s for the Dapr state containers. Autoscale bursts to this ceiling during backup commits (the per-file state writes exceed a fixed 400 RU/s and get 429-throttled) and idles at 10% of it. NOTE: the Cosmos account (an existing resource, not managed here) carries a totalThroughputLimit guardrail — currently 4000 RU/s — which must stay above this value; autoscale migration transiently requires ~2x headroom.')
+@description('Cosmos DB shared database autoscale max throughput in RU/s for the backup state containers. Commits burst toward this ceiling; the database idles at 10% of it. NOTE: the Cosmos account (an existing resource, not managed here) carries a totalThroughputLimit guardrail — currently 4000 RU/s — which must stay above this value.')
 @minValue(1000)
 param cosmosDatabaseAutoscaleMaxThroughput int = 1000
 

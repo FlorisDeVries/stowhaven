@@ -4,6 +4,7 @@ using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using FlorisDeV.BackupApi.Constants;
+using FlorisDeV.BackupApi.Data;
 using FlorisDeV.BackupApi.Services;
 using FlorisDeV.BackupApi.Telemetry;
 using Microsoft.AspNetCore.HttpOverrides;
@@ -18,6 +19,7 @@ public static class ProgramExtensions
     {
         public void AddApplicationServices()
         {
+            builder.AddStateDocumentStores();
             builder.Services.AddSingleton<TelemetryProvider>();
             builder.Services.AddScoped<IBlobStorageService, BlobStorageService>();
             builder.Services.AddScoped<IManifestManager, ManifestManager>();

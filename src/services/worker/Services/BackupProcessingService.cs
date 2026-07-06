@@ -76,6 +76,10 @@ public partial class BackupProcessingService(
             LogManifestLoaded(logger, backupEvent.DeviceId, backupEvent.RunId, manifest.Files.Count, manifest.Deleted.Count);
             await manifestManager.SaveRunManifestAsync(backupEvent.DeviceId, backupEvent.RunId, manifest, cancellationToken);
 
+            // Record the total up front so commit-status polling can report progress.
+            commitJob.TotalFiles = manifest.Files.Count + manifest.Deleted.Count;
+            commitJob = await manifestManager.UpdateCommitJobAsync(commitJob, cancellationToken);
+
             var containerClient = await blobStorageService.GetContainerClientAsync(cancellationToken);
             var processedCount = 0;
 
@@ -90,6 +94,7 @@ public partial class BackupProcessingService(
                     containerClient,
                     cancellationToken);
                 processedCount++;
+                commitJob = await CheckpointProgressAsync(commitJob, processedCount, cancellationToken);
             }
 
             // Process deleted files
@@ -102,6 +107,7 @@ public partial class BackupProcessingService(
                     containerClient,
                     cancellationToken);
                 processedCount++;
+                commitJob = await CheckpointProgressAsync(commitJob, processedCount, cancellationToken);
             }
 
             LogProcessingCompleted(logger, backupEvent.DeviceId, backupEvent.RunId, processedCount);
@@ -166,6 +172,7 @@ public partial class BackupProcessingService(
                 // Update CommitJob status to Failed
                 var commitJob = await manifestManager.GetCommitJobAsync(backupEvent.CommitId, cancellationToken);
                 commitJob.Status = CommitJobStatus.Failed;
+                commitJob.FilesFailed++;
                 commitJob.Error = ex.Message;
                 commitJob.FailureCategory = ClassifyFailure(ex);
                 commitJob.LastErrorAt = DateTimeOffset.UtcNow;
@@ -185,6 +192,20 @@ public partial class BackupProcessingService(
 
             throw;
         }
+    }
+
+    private async Task<CommitJob> CheckpointProgressAsync(CommitJob commitJob, int processedCount, CancellationToken cancellationToken)
+    {
+        commitJob.FilesProcessed = processedCount;
+
+        // Persist every 100 items so commit-status polling shows progress on large
+        // runs; the final counts are written with the terminal status update.
+        if (processedCount % 100 == 0)
+        {
+            commitJob = await manifestManager.UpdateCommitJobAsync(commitJob, cancellationToken);
+        }
+
+        return commitJob;
     }
 
     private static string ClassifyFailure(Exception ex)

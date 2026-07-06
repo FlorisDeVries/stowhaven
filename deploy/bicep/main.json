@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "15448402798203782531"
+      "templateHash": "5243599488297138395"
     }
   },
   "parameters": {
@@ -177,7 +177,7 @@
       "defaultValue": 1000,
       "minValue": 1000,
       "metadata": {
-        "description": "Cosmos DB shared database autoscale max throughput in RU/s for the Dapr state containers. Autoscale bursts to this ceiling during backup commits (the per-file state writes exceed a fixed 400 RU/s and get 429-throttled) and idles at 10% of it. NOTE: the Cosmos account (an existing resource, not managed here) carries a totalThroughputLimit guardrail — currently 4000 RU/s — which must stay above this value; autoscale migration transiently requires ~2x headroom."
+        "description": "Cosmos DB shared database autoscale max throughput in RU/s for the backup state containers. Commits burst toward this ceiling; the database idles at 10% of it. NOTE: the Cosmos account (an existing resource, not managed here) carries a totalThroughputLimit guardrail — currently 4000 RU/s — which must stay above this value."
       }
     },
     "cosmosManifestContainerName": {
@@ -1150,7 +1150,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.44.1.10279",
-              "templateHash": "14112155999942796058"
+              "templateHash": "15528317658879533379"
             }
           },
           "parameters": {
@@ -1474,6 +1474,26 @@
                           "value": "false"
                         },
                         {
+                          "name": "Database__Provider",
+                          "value": "Cosmos"
+                        },
+                        {
+                          "name": "Database__Cosmos__AccountEndpoint",
+                          "value": "[parameters('cosmosAccountEndpoint')]"
+                        },
+                        {
+                          "name": "Database__Cosmos__DatabaseName",
+                          "value": "[parameters('cosmosDatabaseName')]"
+                        },
+                        {
+                          "name": "Database__Cosmos__ManifestContainerName",
+                          "value": "[parameters('cosmosManifestContainerName')]"
+                        },
+                        {
+                          "name": "Database__Cosmos__DeviceRegistryContainerName",
+                          "value": "[parameters('cosmosDeviceRegistryContainerName')]"
+                        },
+                        {
                           "name": "Backup__Sas__EnableIpRestriction",
                           "value": "[string(parameters('enableSasIpRestriction'))]"
                         },
@@ -1638,6 +1658,26 @@
                           "value": "false"
                         },
                         {
+                          "name": "Database__Provider",
+                          "value": "Cosmos"
+                        },
+                        {
+                          "name": "Database__Cosmos__AccountEndpoint",
+                          "value": "[parameters('cosmosAccountEndpoint')]"
+                        },
+                        {
+                          "name": "Database__Cosmos__DatabaseName",
+                          "value": "[parameters('cosmosDatabaseName')]"
+                        },
+                        {
+                          "name": "Database__Cosmos__ManifestContainerName",
+                          "value": "[parameters('cosmosManifestContainerName')]"
+                        },
+                        {
+                          "name": "Database__Cosmos__DeviceRegistryContainerName",
+                          "value": "[parameters('cosmosDeviceRegistryContainerName')]"
+                        },
+                        {
                           "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",
                           "value": "[parameters('appInsightsConnectionString')]"
                         },
@@ -1784,18 +1824,6 @@
                   "keyVaultName": {
                     "value": "[parameters('keyVaultName')]"
                   },
-                  "cosmosAccountEndpoint": {
-                    "value": "[parameters('cosmosAccountEndpoint')]"
-                  },
-                  "cosmosDatabaseName": {
-                    "value": "[parameters('cosmosDatabaseName')]"
-                  },
-                  "cosmosManifestContainerName": {
-                    "value": "[parameters('cosmosManifestContainerName')]"
-                  },
-                  "cosmosDeviceRegistryContainerName": {
-                    "value": "[parameters('cosmosDeviceRegistryContainerName')]"
-                  },
                   "dataStorageAccountName": {
                     "value": "[parameters('dataStorageAccountName')]"
                   },
@@ -1816,7 +1844,7 @@
                     "_generator": {
                       "name": "bicep",
                       "version": "0.44.1.10279",
-                      "templateHash": "13690631852372961998"
+                      "templateHash": "14375178029419284535"
                     }
                   },
                   "parameters": {
@@ -1830,30 +1858,6 @@
                       "type": "string",
                       "metadata": {
                         "description": "Key Vault name for Dapr secret-store component."
-                      }
-                    },
-                    "cosmosAccountEndpoint": {
-                      "type": "string",
-                      "metadata": {
-                        "description": "Cosmos DB account endpoint for Dapr state-store components."
-                      }
-                    },
-                    "cosmosDatabaseName": {
-                      "type": "string",
-                      "metadata": {
-                        "description": "Cosmos DB SQL database name for Dapr state."
-                      }
-                    },
-                    "cosmosManifestContainerName": {
-                      "type": "string",
-                      "metadata": {
-                        "description": "Cosmos DB SQL container name for manifest-state-store."
-                      }
-                    },
-                    "cosmosDeviceRegistryContainerName": {
-                      "type": "string",
-                      "metadata": {
-                        "description": "Cosmos DB SQL container name for device-registry-state-store."
                       }
                     },
                     "dataStorageAccountName": {
@@ -1896,28 +1900,6 @@
                         "componentType": "secretstores.azure.keyvault",
                         "version": "v1",
                         "metadata": "[concat(createArray(createObject('name', 'vaultName', 'value', parameters('keyVaultName'))), variables('daprAzureIdentityMetadata'))]"
-                      }
-                    },
-                    {
-                      "type": "Microsoft.App/managedEnvironments/daprComponents",
-                      "apiVersion": "2023-05-01",
-                      "name": "[format('{0}/{1}', parameters('managedEnvironmentName'), 'manifest-state-store')]",
-                      "properties": {
-                        "componentType": "state.azure.cosmosdb",
-                        "version": "v1",
-                        "initTimeout": "5m",
-                        "metadata": "[concat(createArray(createObject('name', 'url', 'value', parameters('cosmosAccountEndpoint')), createObject('name', 'database', 'value', parameters('cosmosDatabaseName')), createObject('name', 'collection', 'value', parameters('cosmosManifestContainerName')), createObject('name', 'partitionKey', 'value', 'partitionKey'), createObject('name', 'keyPrefix', 'value', 'name')), variables('daprAzureIdentityMetadata'))]"
-                      }
-                    },
-                    {
-                      "type": "Microsoft.App/managedEnvironments/daprComponents",
-                      "apiVersion": "2023-05-01",
-                      "name": "[format('{0}/{1}', parameters('managedEnvironmentName'), 'device-registry-state-store')]",
-                      "properties": {
-                        "componentType": "state.azure.cosmosdb",
-                        "version": "v1",
-                        "initTimeout": "5m",
-                        "metadata": "[concat(createArray(createObject('name', 'url', 'value', parameters('cosmosAccountEndpoint')), createObject('name', 'database', 'value', parameters('cosmosDatabaseName')), createObject('name', 'collection', 'value', parameters('cosmosDeviceRegistryContainerName')), createObject('name', 'partitionKey', 'value', 'partitionKey'), createObject('name', 'keyPrefix', 'value', 'name')), variables('daprAzureIdentityMetadata'))]"
                       }
                     },
                     {
