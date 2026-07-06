@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "3043870666280028804"
+      "templateHash": "15448402798203782531"
     }
   },
   "parameters": {
@@ -172,12 +172,12 @@
         "description": "Cosmos DB SQL database name for Dapr state."
       }
     },
-    "cosmosDatabaseThroughput": {
+    "cosmosDatabaseAutoscaleMaxThroughput": {
       "type": "int",
-      "defaultValue": 400,
-      "minValue": 400,
+      "defaultValue": 1000,
+      "minValue": 1000,
       "metadata": {
-        "description": "Cosmos DB shared database throughput in RU/s for the Dapr state containers. Use 400 for the lowest provisioned throughput tier/free-tier-friendly setup."
+        "description": "Cosmos DB shared database autoscale max throughput in RU/s for the Dapr state containers. Autoscale bursts to this ceiling during backup commits (the per-file state writes exceed a fixed 400 RU/s and get 429-throttled) and idles at 10% of it. NOTE: the Cosmos account (an existing resource, not managed here) carries a totalThroughputLimit guardrail — currently 4000 RU/s — which must stay above this value; autoscale migration transiently requires ~2x headroom."
       }
     },
     "cosmosManifestContainerName": {
@@ -265,7 +265,9 @@
           "id": "[parameters('cosmosDatabaseName')]"
         },
         "options": {
-          "throughput": "[parameters('cosmosDatabaseThroughput')]"
+          "autoscaleSettings": {
+            "maxThroughput": "[parameters('cosmosDatabaseAutoscaleMaxThroughput')]"
+          }
         }
       }
     },
