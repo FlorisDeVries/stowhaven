@@ -12,6 +12,9 @@ spec:
     type: state.azure.blobstorage
     version: v1
     metadata:
+        # Match production: shared state keys must not be prefixed per-app (Dapr default).
+        - name: keyPrefix
+          value: name
         - name: containerName
           value: device-registry-state-store
         - name: connectionString

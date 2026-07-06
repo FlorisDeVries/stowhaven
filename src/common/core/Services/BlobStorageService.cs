@@ -324,6 +324,16 @@ public partial class BlobStorageService(
                 var fileSystemClient = dataLakeServiceClient.GetFileSystemClient(await GetContainerNameAsync(cancellationToken));
                 var sourceFileClient = fileSystemClient.GetFileClient(sourceBlobName);
 
+                // ADLS rename fails with RenameDestinationParentPathNotFound if the
+                // destination's parent directory does not exist yet.
+                var parentSeparator = destinationBlobName.LastIndexOf('/');
+                if (parentSeparator > 0)
+                {
+                    await fileSystemClient
+                        .GetDirectoryClient(destinationBlobName[..parentSeparator])
+                        .CreateIfNotExistsAsync(cancellationToken: cancellationToken);
+                }
+
                 await sourceFileClient.RenameAsync(destinationBlobName, cancellationToken: cancellationToken);
 
                 // Set blob index tags if provided (after rename)

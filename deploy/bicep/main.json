@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "3331792623156303834"
+      "templateHash": "3043870666280028804"
     }
   },
   "parameters": {
@@ -1148,7 +1148,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.44.1.10279",
-              "templateHash": "11585817685550495970"
+              "templateHash": "14112155999942796058"
             }
           },
           "parameters": {
@@ -1814,7 +1814,7 @@
                     "_generator": {
                       "name": "bicep",
                       "version": "0.44.1.10279",
-                      "templateHash": "15067646764210686587"
+                      "templateHash": "13690631852372961998"
                     }
                   },
                   "parameters": {
@@ -1904,7 +1904,7 @@
                         "componentType": "state.azure.cosmosdb",
                         "version": "v1",
                         "initTimeout": "5m",
-                        "metadata": "[concat(createArray(createObject('name', 'url', 'value', parameters('cosmosAccountEndpoint')), createObject('name', 'database', 'value', parameters('cosmosDatabaseName')), createObject('name', 'collection', 'value', parameters('cosmosManifestContainerName')), createObject('name', 'partitionKey', 'value', 'partitionKey')), variables('daprAzureIdentityMetadata'))]"
+                        "metadata": "[concat(createArray(createObject('name', 'url', 'value', parameters('cosmosAccountEndpoint')), createObject('name', 'database', 'value', parameters('cosmosDatabaseName')), createObject('name', 'collection', 'value', parameters('cosmosManifestContainerName')), createObject('name', 'partitionKey', 'value', 'partitionKey'), createObject('name', 'keyPrefix', 'value', 'name')), variables('daprAzureIdentityMetadata'))]"
                       }
                     },
                     {
@@ -1915,7 +1915,7 @@
                         "componentType": "state.azure.cosmosdb",
                         "version": "v1",
                         "initTimeout": "5m",
-                        "metadata": "[concat(createArray(createObject('name', 'url', 'value', parameters('cosmosAccountEndpoint')), createObject('name', 'database', 'value', parameters('cosmosDatabaseName')), createObject('name', 'collection', 'value', parameters('cosmosDeviceRegistryContainerName')), createObject('name', 'partitionKey', 'value', 'partitionKey')), variables('daprAzureIdentityMetadata'))]"
+                        "metadata": "[concat(createArray(createObject('name', 'url', 'value', parameters('cosmosAccountEndpoint')), createObject('name', 'database', 'value', parameters('cosmosDatabaseName')), createObject('name', 'collection', 'value', parameters('cosmosDeviceRegistryContainerName')), createObject('name', 'partitionKey', 'value', 'partitionKey'), createObject('name', 'keyPrefix', 'value', 'name')), variables('daprAzureIdentityMetadata'))]"
                       }
                     },
                     {

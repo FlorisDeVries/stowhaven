@@ -88,6 +88,13 @@ resource daprManifestStateStore 'Microsoft.App/managedEnvironments/daprComponent
         name: 'partitionKey'
         value: 'partitionKey'
       }
+      {
+        // Shared across backup-api (writes commit jobs) and backup-worker
+        // (reads them). The Dapr default 'appid' prefixes keys per app, which
+        // makes cross-app state invisible.
+        name: 'keyPrefix'
+        value: 'name'
+      }
     ], daprAzureIdentityMetadata)
   }
 }
@@ -119,6 +126,11 @@ resource daprDeviceRegistryStateStore 'Microsoft.App/managedEnvironments/daprCom
       {
         name: 'partitionKey'
         value: 'partitionKey'
+      }
+      {
+        // Same rationale as manifest-state-store: keys must be app-agnostic.
+        name: 'keyPrefix'
+        value: 'name'
       }
     ], daprAzureIdentityMetadata)
   }
