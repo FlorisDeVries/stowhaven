@@ -11,7 +11,6 @@ ARG RUNTIME_RID
 
 WORKDIR /src
 
-COPY ["Directory.Build.props", "."]
 COPY ["src/services/gateway/Gateway.csproj", "src/services/gateway/"]
 
 RUN --mount=type=cache,id=nuget_manager,target=/root/.nuget/packages \

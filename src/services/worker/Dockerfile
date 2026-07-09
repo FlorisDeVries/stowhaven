@@ -22,7 +22,6 @@ RUN \
         (tdnf install -y tzdata && tdnf clean all) \
     )
 
-COPY ["Directory.Build.props", "."]
 COPY ["src/services/worker/FlorisDeV.BackupWorker.csproj", "src/services/worker/"]
 COPY ["src/common/core/FlorisDeV.BackupCore.csproj", "src/common/core/"]
 COPY ["src/common/contracts/FlorisDeV.BackupContracts.csproj", "src/common/contracts/"]

@@ -7,8 +7,6 @@
         <ImplicitUsings>enable</ImplicitUsings>
         <RootNamespace>FlorisDeV.BackupCore</RootNamespace>
         <AssemblyName>FlorisDeV.BackupCore</AssemblyName>
-        <!-- Cosmos is used with the System.Text.Json serializer; skip the Newtonsoft requirement. -->
-        <AzureCosmosDisableNewtonsoftJsonCheck>true</AzureCosmosDisableNewtonsoftJsonCheck>
     </PropertyGroup>
 
     <ItemGroup>
@@ -19,6 +17,9 @@
         <PackageReference Include="Dapr.Client" Version="1.15.4" />
         <PackageReference Include="Microsoft.Azure.Cosmos" Version="3.46.0" />
         <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.0" />
+        <!-- The Cosmos SDK needs Newtonsoft.Json at runtime for its internal serialization,
+             even though application documents use the System.Text.Json serializer. -->
+        <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
         <PackageReference Include="Swashbuckle.AspNetCore" Version="9.0.4" />
     </ItemGroup>
 
