@@ -74,7 +74,12 @@ public partial class BackupProcessingService(
             }
 
             LogManifestLoaded(logger, backupEvent.DeviceId, backupEvent.RunId, manifest.Files.Count, manifest.Deleted.Count);
-            await manifestManager.SaveRunManifestAsync(backupEvent.DeviceId, backupEvent.RunId, manifest, cancellationToken);
+
+            // Persists the manifest as the durable record the ops/status endpoint reads once the temporary
+            // blob copy (just downloaded above) is cleaned up below. Runs with enough files can exceed Cosmos's
+            // per-document size limit here; that must not abort processing of an otherwise-valid backup run, so on
+            // failure we keep the blob copy around instead (see manifestPersisted below).
+            var manifestPersisted = await TryPersistRunManifestAsync(backupEvent.DeviceId, backupEvent.RunId, manifest, cancellationToken);
 
             // Record the total up front so commit-status polling can report progress.
             commitJob.TotalFiles = manifest.Files.Count + manifest.Deleted.Count;
@@ -130,6 +135,7 @@ public partial class BackupProcessingService(
                 backupEvent.DeviceId,
                 backupEvent.RunId,
                 containerClient,
+                deleteManifestBlob: manifestPersisted,
                 cancellationToken);
 
             stopwatch.Stop();
@@ -489,10 +495,25 @@ public partial class BackupProcessingService(
         LogFileDeletionProcessed(logger, relativePath);
     }
 
+    private async Task<bool> TryPersistRunManifestAsync(Guid deviceId, Guid runId, RunManifest manifest, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await manifestManager.SaveRunManifestAsync(deviceId, runId, manifest, cancellationToken);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            LogRunManifestPersistFailed(logger, deviceId, runId, manifest.Files.Count, ex);
+            return false;
+        }
+    }
+
     private async Task TryCleanupRunTemporaryBlobsAsync(
         Guid deviceId,
         Guid runId,
         BlobContainerClient containerClient,
+        bool deleteManifestBlob,
         CancellationToken cancellationToken)
     {
         try
@@ -506,10 +527,16 @@ public partial class BackupProcessingService(
                 deletedStagingBlobCount++;
             }
 
-            var manifestPath = GetManifestPath(deviceId, runId);
-            var manifestDeleted = await containerClient.GetBlobClient(manifestPath).DeleteIfExistsAsync(cancellationToken: cancellationToken);
+            // If the Cosmos manifest copy failed to persist (e.g. too large), the blob is the only
+            // remaining durable record of this run's files - keep it instead of deleting it here.
+            var manifestDeleted = false;
+            if (deleteManifestBlob)
+            {
+                var manifestPath = GetManifestPath(deviceId, runId);
+                manifestDeleted = (await containerClient.GetBlobClient(manifestPath).DeleteIfExistsAsync(cancellationToken: cancellationToken)).Value;
+            }
 
-            LogRunTemporaryBlobCleanupCompleted(logger, deviceId, runId, deletedStagingBlobCount, manifestDeleted.Value);
+            LogRunTemporaryBlobCleanupCompleted(logger, deviceId, runId, deletedStagingBlobCount, manifestDeleted);
         }
         catch (Exception ex)
         {
@@ -606,6 +633,9 @@ public partial class BackupProcessingService(
 
     [LoggerMessage(LogLevel.Information, "Loaded manifest for run {runId} device {deviceId}: {fileCount} files, {deletedCount} deletions")]
     static partial void LogManifestLoaded(ILogger logger, Guid deviceId, Guid runId, int fileCount, int deletedCount);
+
+    [LoggerMessage(LogLevel.Warning, "Failed to persist manifest cache for run {runId} device {deviceId} ({fileCount} files); continuing with blob copy as source of truth.")]
+    static partial void LogRunManifestPersistFailed(ILogger logger, Guid deviceId, Guid runId, int fileCount, Exception exception);
 
     [LoggerMessage(LogLevel.Information, "Processing file entry: {relativePath} ({uniqueFileId})")]
     static partial void LogProcessingFileEntry(ILogger logger, string relativePath, string uniqueFileId);

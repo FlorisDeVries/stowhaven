@@ -93,7 +93,11 @@ public static class HostBuilderExtensions
     /// </summary>
     /// <param name="hostBuilder"></param>
     /// <param name="applicationName"></param>
-    public static IHostBuilder AddSerilog(this IHostBuilder hostBuilder, string applicationName)
+    /// <param name="logFilePath">
+    ///   Optional path (including file name prefix, e.g. "app-.log") for a rolling daily file sink.
+    ///   Intended for unattended/CLI hosts that have no other durable place to inspect logs after a crash.
+    /// </param>
+    public static IHostBuilder AddSerilog(this IHostBuilder hostBuilder, string applicationName, string? logFilePath = null)
     {
         // Bootstrap replaced by fully-configured logger once the host has loaded
         Log.Logger = new LoggerConfiguration()
@@ -139,6 +143,17 @@ public static class HostBuilderExtensions
                         ["service.name"] = serviceName
                     };
                 });
+            }
+
+            // Durable local log file, e.g. for unattended CLI hosts with no other place to inspect logs after a crash
+            if (!string.IsNullOrEmpty(logFilePath))
+            {
+                loggerConfig.WriteTo.File(
+                    logFilePath,
+                    rollingInterval: RollingInterval.Day,
+                    retainedFileCountLimit: 14,
+                    shared: true,
+                    outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {Message:lj}{NewLine}{Exception}");
             }
         });
 

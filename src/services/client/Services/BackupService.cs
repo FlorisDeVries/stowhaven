@@ -543,6 +543,9 @@ public partial class BackupService(
         var commitId = pendingRun?.CommitId;
         if (commitId == null)
         {
+            // The upload phase can take long enough for a scaled-to-zero API/gateway to idle back down.
+            await apiWakeUpService.EnsureApiAwakeAsync(cancellationToken);
+
             var commitRequest = new CommitBackupRunRequest
             {
                 RunId = runId.Value
@@ -599,6 +602,9 @@ public partial class BackupService(
         var commitId = pendingRun.CommitId;
         if (commitId == null)
         {
+            // A restart resuming a stale pending run may be hitting a scaled-to-zero API/gateway too.
+            await apiWakeUpService.EnsureApiAwakeAsync(cancellationToken);
+
             var commitResponse = await backupApiClient.CommitBackupRun(pendingRun.DeviceId, new CommitBackupRunRequest
             {
                 RunId = pendingRun.RunId

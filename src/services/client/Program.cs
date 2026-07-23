@@ -9,11 +9,20 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
+var logFilePath = Path.Combine(
+    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+    "backup-client", "logs", "backup-client-.log");
+
 var host = Host.CreateDefaultBuilder(args)
+    // Resolve appsettings.json/appsettings.local.json next to the executable, regardless of the
+    // caller's current directory (matters for the PATH-linked binary and for install.sh, which
+    // exec's the installed exe without changing into its directory first).
+    .UseContentRoot(AppContext.BaseDirectory)
     .UseWindowsService(options =>
     {
         options.ServiceName = "FlorisDeV Backup Client";
     })
+    .AddSerilog("backup-client", logFilePath)
     .ConfigureAppConfiguration((context, configuration) =>
     {
         if (context.HostingEnvironment.IsDevelopment())
@@ -52,7 +61,7 @@ if (args.FirstOrDefault()?.Equals("configure", StringComparison.OrdinalIgnoreCas
     }
     catch (Exception e)
     {
-        Console.WriteLine($"Setup failed: {e}");
+        host.Services.GetRequiredService<ILogger<Program>>().LogCritical(e, "Setup failed");
         throw;
     }
     finally
@@ -74,7 +83,7 @@ if (args.FirstOrDefault()?.Equals("login", StringComparison.OrdinalIgnoreCase) =
     }
     catch (Exception e)
     {
-        Console.WriteLine($"Login failed: {e}");
+        host.Services.GetRequiredService<ILogger<Program>>().LogCritical(e, "Login failed");
         throw;
     }
     finally
@@ -114,7 +123,8 @@ try
 }
 catch (Exception e)
 {
-    Console.WriteLine($"Application terminated unexpectedly: {e}");
+    host.Services.GetRequiredService<ILogger<Program>>()
+        .LogCritical(e, "Application terminated unexpectedly");
     throw;
 }
 finally
