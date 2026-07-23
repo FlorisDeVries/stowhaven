@@ -24,6 +24,7 @@ public class BackupServiceIntegrationTests : IDisposable
 {
     private readonly string _testRoot;
     private readonly Mock<IBackupApiClient> _mockApiClient;
+    private readonly Mock<IApiWakeUpService> _mockApiWakeUpService;
     private readonly TestFileUploader _testUploader;
     private readonly TelemetryProvider _telemetry;
 
@@ -34,6 +35,7 @@ public class BackupServiceIntegrationTests : IDisposable
         Directory.CreateDirectory(_testRoot);
 
         _mockApiClient = new Mock<IBackupApiClient>();
+        _mockApiWakeUpService = new Mock<IApiWakeUpService>();
         _testUploader = new TestFileUploader();
         _telemetry = new TelemetryProvider();
 
@@ -177,6 +179,7 @@ public class BackupServiceIntegrationTests : IDisposable
             NullLogger<BackupService>.Instance,
             _telemetry,
             _mockApiClient.Object,
+            _mockApiWakeUpService.Object,
             stateService,
             scanner,
             _testUploader, // Use test uploader instead of real one
@@ -446,6 +449,7 @@ public class BackupServiceIntegrationTests : IDisposable
             NullLogger<BackupService>.Instance,
             _telemetry,
             _mockApiClient.Object,
+            _mockApiWakeUpService.Object,
             stateService,
             scanner,
             _testUploader,

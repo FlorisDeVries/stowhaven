@@ -24,6 +24,7 @@ public class BackupServiceTests : IDisposable
     private readonly Mock<ILogger<BackupService>> _mockLogger = new();
     private readonly TelemetryProvider _telemetryProvider = new();
     private readonly Mock<IBackupApiClient> _mockApiClient = new();
+    private readonly Mock<IApiWakeUpService> _mockApiWakeUpService = new();
     private readonly Mock<IBackupStateService> _mockStateService = new();
     private readonly Mock<IBackupScanner> _mockScanner = new();
     private readonly Mock<IFileUploader> _mockUploader = new();
@@ -50,6 +51,7 @@ public class BackupServiceTests : IDisposable
             _mockLogger.Object,
             _telemetryProvider,
             _mockApiClient.Object,
+            _mockApiWakeUpService.Object,
             _mockStateService.Object,
             _mockScanner.Object,
             _mockUploader.Object,
@@ -253,6 +255,7 @@ public class BackupServiceTests : IDisposable
             _mockLogger.Object,
             _telemetryProvider,
             _mockApiClient.Object,
+            _mockApiWakeUpService.Object,
             _mockStateService.Object,
             _mockScanner.Object,
             _mockUploader.Object,
@@ -696,6 +699,7 @@ public class BackupServiceTests : IDisposable
                 _mockLogger.Object,
                 _telemetryProvider,
                 _mockApiClient.Object,
+                _mockApiWakeUpService.Object,
                 _mockStateService.Object,
                 _mockScanner.Object,
                 _mockUploader.Object,

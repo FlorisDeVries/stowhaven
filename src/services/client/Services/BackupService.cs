@@ -26,6 +26,7 @@ public partial class BackupService(
     ILogger<BackupService> logger,
     TelemetryProvider telemetry,
     IBackupApiClient backupApiClient,
+    IApiWakeUpService apiWakeUpService,
     IBackupStateService backupStateService,
     IBackupScanner scanner,
     IFileUploader uploader,
@@ -46,6 +47,9 @@ public partial class BackupService(
         {
             // Step 0: Validate all backup targets before starting
             ValidateTargets(targets);
+
+            // Wake up a scaled-to-zero API/gateway before sending real requests
+            await apiWakeUpService.EnsureApiAwakeAsync(cancellationToken);
 
             // Get or create device state (generates persistent device ID on first run)
             var deviceState = await backupStateService.GetOrCreateDeviceStateAsync(cancellationToken);

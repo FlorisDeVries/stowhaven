@@ -25,6 +25,7 @@ public static class ProgramExtensions
         services.AddSingleton<IBackupScanner, BackupScanner>();
         services.AddSingleton<IBackupEncryptionService, BackupEncryptionService>();
         services.AddSingleton<IFileUploader, FileUploader>();
+        services.AddTransient<IApiWakeUpService, ApiWakeUpService>();
         services.AddTransient<IBackupService, BackupService>();
         services.AddTransient<IRestoreService, RestoreService>();
     }

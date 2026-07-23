@@ -16,6 +16,7 @@ public interface IRestoreService
 
 public partial class RestoreService(
     IBackupApiClient backupApiClient,
+    IApiWakeUpService apiWakeUpService,
     IBackupStateService backupStateService,
     IBackupEncryptionService encryptionService,
     IOptions<BackupClientOptions> options,
@@ -31,6 +32,9 @@ public partial class RestoreService(
         {
             throw new InvalidOperationException("BackupClient:Restore:DestinationPath must be configured for restore mode.");
         }
+
+        // Wake up a scaled-to-zero API/gateway before sending real requests
+        await apiWakeUpService.EnsureApiAwakeAsync(cancellationToken);
 
         var deviceId = restoreOptions.DeviceId ?? (await backupStateService.GetOrCreateDeviceStateAsync(cancellationToken)).DeviceId;
         var logicalPaths = restoreOptions.LogicalPaths;
