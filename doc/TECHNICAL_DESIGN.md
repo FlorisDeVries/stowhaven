@@ -213,7 +213,7 @@ The client supports two backup encryption modes:
 
 `ServerSideOnly` is the default compatibility mode. It is useful during development and for customers who choose server-side/Azure-managed encryption only.
 
-`ClientAndServer` is the zero-knowledge mode. On first use, the client generates a 12-token recovery phrase and writes it to a local JSON file. The configured path is `BackupClient:Encryption:RecoveryPhraseFilePath`; if omitted, the client uses the user application-data folder under `FlorisDeV/BackupClient/recovery-phrase.json`.
+`ClientAndServer` is the zero-knowledge mode. On first use, the client generates a 12-token recovery phrase and writes it to a local JSON file. The configured path is `BackupClient:Encryption:RecoveryPhraseFilePath`; if omitted, the client uses the local application-data folder under `backup-client/recovery-phrase.json` (the same folder as the state DB and MSAL token cache).
 
 Important recovery rule:
 

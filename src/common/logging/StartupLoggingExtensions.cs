@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Reflection;
 using FlorisDeV.Logging.Filtering;
 using Microsoft.AspNetCore.Builder;
@@ -38,7 +37,7 @@ public static class StartupLoggingExtensions
 
             // Application Info
             var assembly = Assembly.GetEntryAssembly() ?? Assembly.GetExecutingAssembly();
-            var version = FileVersionInfo.GetVersionInfo(assembly.Location).ProductVersion ?? "unknown";
+            var version = AssemblyVersionHelper.GetInformationalVersion(assembly);
 
             logger.LogInformation("Application: {ApplicationName}", environment.ApplicationName);
             logger.LogInformation("Version: {Version}", version);
@@ -153,7 +152,7 @@ public static class StartupLoggingExtensions
 
             // Application Info
             var assembly = Assembly.GetEntryAssembly() ?? Assembly.GetExecutingAssembly();
-            var version = FileVersionInfo.GetVersionInfo(assembly.Location).ProductVersion ?? "unknown";
+            var version = AssemblyVersionHelper.GetInformationalVersion(assembly);
             var environment = Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT")
                               ?? Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT")
                               ?? "Production";

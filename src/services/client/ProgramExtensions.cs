@@ -26,15 +26,19 @@ public static class ProgramExtensions
         services.AddSingleton<IBackupEncryptionService, BackupEncryptionService>();
         services.AddSingleton<IFileUploader, FileUploader>();
         services.AddTransient<IApiWakeUpService, ApiWakeUpService>();
+        services.AddTransient<IClientSetupService, ClientSetupService>();
         services.AddTransient<IBackupService, BackupService>();
         services.AddTransient<IRestoreService, RestoreService>();
     }
 
     public static void AddApplicationConfigurations(this IServiceCollection services, IConfiguration configuration, IHostEnvironment environment)
     {
+        // BackupTargets emptiness is intentionally NOT validated here: BackupClientOptions is resolved
+        // for unrelated purposes too (e.g. HttpClient timeout in HostBuilderExtensions.AddBackupApi),
+        // which would otherwise block bootstrap commands like "login"/"configure" that run before any
+        // targets are configured. BackupService.GetEffectiveTargets() enforces this where it matters.
         services.AddOptions<BackupClientOptions>()
             .Bind(configuration.GetSection(BackupClientOptions.SectionName))
-            .Validate(o => o.BackupTargets.Count > 0, "BackupClient:BackupTargets must contain at least one target")
             .Validate(o => o.Schedule.IntervalMinutes > 0, "BackupClient:Schedule:IntervalMinutes must be greater than zero")
             .ValidateOnStart();
 

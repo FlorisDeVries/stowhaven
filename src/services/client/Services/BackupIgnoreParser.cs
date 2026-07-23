@@ -34,12 +34,19 @@ public static class BackupIgnoreParser
     /// <summary>
     /// Gets patterns from .backupignore file.
     /// </summary>
-    /// <param name="ignoreFilePath">Path to the .backupignore file (optional)</param>
+    /// <param name="ignoreFilePath">Path to the .backupignore file (optional). A relative path is
+    /// resolved against the executable's directory rather than the process's current working
+    /// directory, so scheduled tasks/services find it regardless of their configured "start in" folder.</param>
     /// <returns>Array of exclusion patterns from the file, or null if file doesn't exist or path is null</returns>
     public static string[]? GetCombinedPatterns(string? ignoreFilePath)
     {
-        return !string.IsNullOrWhiteSpace(ignoreFilePath)
-            ? ReadIgnoreFile(ignoreFilePath)
-            : null;
+        if (string.IsNullOrWhiteSpace(ignoreFilePath))
+            return null;
+
+        var resolvedPath = Path.IsPathRooted(ignoreFilePath)
+            ? ignoreFilePath
+            : Path.Combine(AppContext.BaseDirectory, ignoreFilePath);
+
+        return ReadIgnoreFile(resolvedPath);
     }
 }

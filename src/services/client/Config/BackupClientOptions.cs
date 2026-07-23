@@ -18,7 +18,7 @@ public class BackupClientOptions
     /// - "photos": "E:\\Photos"
     /// The target name becomes part of the stored path (e.g., "user-profile/Documents/file.txt").
     /// </summary>
-    public required Dictionary<string, string> BackupTargets { get; init; }
+    public required Dictionary<string, string> BackupTargets { get; init; } = new();
 
     /// <summary>
     /// Gets the effective backup targets with validated target names.

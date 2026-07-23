@@ -45,7 +45,7 @@ public sealed class MsalTokenCredential : TokenCredential
         // This persists tokens securely on Windows (DPAPI), macOS (Keychain), Linux (libsecret)
         var storageProperties = new StorageCreationPropertiesBuilder(
                 "backup-client.cache",
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FlorisDeV.BackupClient"))
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "backup-client"))
             .WithMacKeyChain(
                 serviceName: "FlorisDeV.BackupClient",
                 accountName: "MSALCache")

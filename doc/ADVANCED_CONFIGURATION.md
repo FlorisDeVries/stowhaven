@@ -296,9 +296,9 @@ Azure Storage:
     user-profile/Documents/file.txt
 ```
 
-**Device ID location**:
-- Windows: `%APPDATA%\backup-client\device-state.db`
-- Linux/macOS: `~/.local/share/backup-client/device-state.db`
+**Device ID location** (stored in the state DB, see [State Database](#state-database)):
+- Windows: `%LOCALAPPDATA%\backup-client\backup-state.db`
+- Linux/macOS: `~/.local/share/backup-client/backup-state.db`
 
 ---
 
@@ -408,7 +408,7 @@ The public health endpoints belong to the API service:
 ### State Database
 
 Located at:
-- Windows: `%APPDATA%\backup-client\backup-state.db`
+- Windows: `%LOCALAPPDATA%\backup-client\backup-state.db`
 - Linux/macOS: `~/.local/share/backup-client/backup-state.db`
 
 **Contains**:

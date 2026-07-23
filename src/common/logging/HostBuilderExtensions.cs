@@ -1,5 +1,4 @@
-﻿using System.Diagnostics;
-using System.Reflection;
+﻿using System.Reflection;
 using Azure.Monitor.OpenTelemetry.Exporter;
 using FlorisDeV.Logging.ApplicationInsights;
 using FlorisDeV.Logging.Filtering;
@@ -164,7 +163,7 @@ public static class HostBuilderExtensions
                 //   - "EnableRequestTrackingTelemetryModule": false,
                 //   - "EnableDependencyTrackingTelemetryModule": false
                 o.DeveloperMode = builder.Environment.IsDevelopment();
-                o.ApplicationVersion = FileVersionInfo.GetVersionInfo(entryAssembly.Location).ProductVersion;
+                o.ApplicationVersion = AssemblyVersionHelper.GetInformationalVersion(entryAssembly);
             })
             .AddSingleton<ITelemetryInitializer, ContextEnrichmentTelemetryInitializer>()
             .AddApplicationInsightsTelemetryProcessor<FilteringTelemetryProcessor>();

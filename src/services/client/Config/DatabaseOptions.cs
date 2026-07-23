@@ -24,9 +24,9 @@ public class DatabaseOptions
         if (!string.IsNullOrWhiteSpace(FilePath))
             return FilePath;
 
-        // Default: %LOCALAPPDATA%/FlorisDeV/BackupClient/backup-state.db (Windows)
-        // or ~/.local/share/FlorisDeV/BackupClient/backup-state.db (Linux/Mac)
+        // Default: %LOCALAPPDATA%/backup-client/backup-state.db (Windows)
+        // or ~/.local/share/backup-client/backup-state.db (Linux/Mac)
         var appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        return Path.Combine(appDataPath, "FlorisDeV", "BackupClient", "backup-state.db");
+        return Path.Combine(appDataPath, "backup-client", "backup-state.db");
     }
 }

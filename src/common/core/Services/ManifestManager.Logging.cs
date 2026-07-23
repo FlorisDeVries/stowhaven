@@ -12,7 +12,7 @@ public partial class ManifestManager
     static partial void LogBackupRunCreated(ILogger logger, Guid runId, Guid deviceId);
 
     [LoggerMessage(LogLevel.Warning, "Concurrent update detected for backup run {runId} of device {deviceId}. ETag: {etag}")]
-    static partial void LogConcurrentUpdateDetected(ILogger logger, Guid runId, Guid deviceId, string etag);
+    static partial void LogConcurrentUpdateDetected(ILogger logger, Guid runId, Guid deviceId, string? etag);
 
     [LoggerMessage(LogLevel.Information, "Committed backup run {runId} for device {deviceId} with status {status}")]
     static partial void LogBackupRunCommitted(ILogger logger, Guid runId, Guid deviceId, BackupRunStatus status);
@@ -30,10 +30,10 @@ public partial class ManifestManager
     static partial void LogCommitJobUpdated(ILogger logger, Guid commitId, CommitJobStatus status);
 
     [LoggerMessage(LogLevel.Warning, "Concurrent update detected for commit job {commitId}. ETag: {etag}")]
-    static partial void LogConcurrentCommitJobUpdate(ILogger logger, Guid commitId, string etag);
+    static partial void LogConcurrentCommitJobUpdate(ILogger logger, Guid commitId, string? etag);
 
     [LoggerMessage(LogLevel.Warning, "Concurrent update detected for commit file progress {commitId}/{uniqueFileId}. ETag: {etag}")]
-    static partial void LogConcurrentCommitFileUpdate(ILogger logger, Guid commitId, string uniqueFileId, string etag);
+    static partial void LogConcurrentCommitFileUpdate(ILogger logger, Guid commitId, string uniqueFileId, string? etag);
 
     [LoggerMessage(LogLevel.Debug, "Saved commit file progress {commitId}/{uniqueFileId} with status {status}")]
     static partial void LogCommitFileProgressSaved(ILogger logger, Guid commitId, string uniqueFileId, CommitFileStatus status);
@@ -42,13 +42,13 @@ public partial class ManifestManager
     static partial void LogFileEntrySaved(ILogger logger, string relativePath, Guid deviceId);
 
     [LoggerMessage(LogLevel.Warning, "Concurrent update detected for file entry {relativePath} on device {deviceId}. ETag: {etag}")]
-    static partial void LogConcurrentFileEntryUpdate(ILogger logger, string relativePath, Guid deviceId, string etag);
+    static partial void LogConcurrentFileEntryUpdate(ILogger logger, string relativePath, Guid deviceId, string? etag);
 
     [LoggerMessage(LogLevel.Information, "Saved file version {uniqueFileId} on device {deviceId}")]
     static partial void LogFileVersionSaved(ILogger logger, string uniqueFileId, Guid deviceId);
 
     [LoggerMessage(LogLevel.Warning, "Concurrent update detected for file version {uniqueFileId} on device {deviceId}. ETag: {etag}")]
-    static partial void LogConcurrentFileVersionUpdate(ILogger logger, string uniqueFileId, Guid deviceId, string etag);
+    static partial void LogConcurrentFileVersionUpdate(ILogger logger, string uniqueFileId, Guid deviceId, string? etag);
 
     [LoggerMessage(LogLevel.Information, "Queried all file entries for device {deviceId}")]
     static partial void LogFileEntriesQueried(ILogger logger, Guid deviceId);

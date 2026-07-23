@@ -241,13 +241,14 @@ public partial class BackupEncryptionService(
             return Environment.ExpandEnvironmentVariables(_options.Encryption.RecoveryPhraseFilePath);
         }
 
-        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+
+        var appData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         if (string.IsNullOrWhiteSpace(appData))
         {
             appData = AppContext.BaseDirectory;
         }
 
-        return Path.Combine(appData, "FlorisDeV", "BackupClient", "recovery-phrase.json");
+        return Path.Combine(appData, "backup-client", "recovery-phrase.json");
     }
 
     private static async Task EncryptFileToTemporaryFileAsync(string sourcePath, string tempPath, byte[] aesKey, byte[] iv, FileShare readShareMode, CancellationToken cancellationToken)

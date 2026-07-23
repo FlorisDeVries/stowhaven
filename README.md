@@ -194,6 +194,83 @@ dotnet run
 
 See [Client Configuration Guide](doc/CLIENT_CONFIGURATION.md) for target configuration, scheduling, encryption, and `.backupignore` behavior.
 
+## Installing the Backup Client
+
+Once the API/Gateway are deployed, install the client on each machine you want backed up.
+
+### 1. Publish
+
+```bash
+# Windows
+dotnet publish src/services/client/FlorisDeV.BackupClient.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o publish/win-x64
+
+# Linux
+dotnet publish src/services/client/FlorisDeV.BackupClient.csproj -c Release -r linux-x64 --self-contained true -p:PublishSingleFile=true -o publish/linux-x64
+```
+
+Copy the resulting folder to the target machine. `appsettings.json` ships with working defaults for the hosted API/gateway; only backup targets are machine-specific.
+
+### 2. Install & configure
+
+**Linux**: run the bundled installer from inside the published folder. It copies the app (including the hidden `.backupignore`) to `~/.local/share/backup-client`, symlinks it as `backup-client` on your `PATH` via `~/.local/bin`, sets up (and enables) a daily systemd `--user` timer, and launches first-time setup — everything stays user-owned, no `sudo` required:
+
+```bash
+./install.sh
+```
+
+Re-running `install.sh` later (e.g. after publishing an updated build) updates the installed files and timer units in place without touching your saved backup targets (`appsettings.local.json` isn't part of the publish output, so it's never overwritten). Override the daily run time with `BACKUP_CLIENT_SCHEDULE_TIME=03:30:00 ./install.sh`. If systemd isn't reachable (no user session — common under WSL/containers), the installer writes the unit files anyway and prints the manual `systemctl --user enable --now` command to run once one is available.
+
+**Windows**: copy the published folder wherever you like (e.g. `C:\Tools\BackupClient`) and run setup once, interactively:
+
+```powershell
+.\FlorisDeV.BackupClient.exe configure
+```
+
+**What `configure` does**, on either platform: collects backup target folders (validated the same way a real backup run would validate them, with suggestions for common folders like Documents/Pictures/Desktop/Downloads that already exist on the machine), signs in (opens a browser once — MSAL caches the token afterward using DPAPI on Windows or libsecret on Linux), and verifies the signed-in account can actually reach the backup API end-to-end.
+
+Re-run with flags to repeat only part of the flow, e.g. `configure --skip-targets` to just re-check login/access, or `configure --skip-login --skip-access-check` to only add/edit targets. Use `login` alone to just refresh the token.
+
+### 3. Schedule daily runs
+
+**Windows (Task Scheduler)** — not automated yet, set up manually:
+
+```powershell
+schtasks /Create /TN "BackupClient Daily" /TR "C:\Tools\BackupClient\FlorisDeV.BackupClient.exe" /SC DAILY /ST 02:00 /RU "%USERNAME%" /RL LIMITED
+```
+
+Use "Run whether user is logged on or not" — DPAPI only needs the same Windows account, not an interactive session.
+
+**Linux** — `install.sh` already did this (see step 2): it wrote and enabled a systemd `--user` timer, since MSAL's libsecret token cache needs a D-Bus session that plain cron jobs don't get. For reference, or to set it up manually on a machine where the installer couldn't reach a systemd user session:
+
+```ini
+# ~/.config/systemd/user/backup-client.service
+[Unit]
+Description=FlorisDeV Backup Client
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/share/backup-client/FlorisDeV.BackupClient
+```
+
+```ini
+# ~/.config/systemd/user/backup-client.timer
+[Unit]
+Description=Run Backup Client daily
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now backup-client.timer
+loginctl enable-linger $USER   # lets the timer fire even when logged out
+```
+
 ## Azure deployment
 
 Infrastructure lives in `deploy/bicep/` and is orchestrated by `deploy/bicep/main.bicep` with defaults in `deploy/bicep/main.bicepparam`.

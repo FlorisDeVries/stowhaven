@@ -162,7 +162,7 @@ MSAL caches tokens per platform:
 | macOS | Keychain |
 | Linux | libsecret |
 
-Cache location: `%LOCALAPPDATA%\FlorisDeV.BackupClient\backup-client.cache`
+Cache location: `%LOCALAPPDATA%\backup-client\backup-client.cache` (Windows) or `~/.local/share/backup-client/backup-client.cache` (Linux/macOS) — the same folder used for the local state DB and, on Linux, the installed app itself.
 
 On subsequent runs MSAL silently refreshes from cache — no browser window unless the refresh token has also expired or been revoked.
 

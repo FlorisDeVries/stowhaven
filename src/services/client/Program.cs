@@ -16,7 +16,14 @@ var host = Host.CreateDefaultBuilder(args)
     })
     .ConfigureAppConfiguration((context, configuration) =>
     {
-        configuration.AddUserSecrets(Assembly.GetExecutingAssembly());
+        if (context.HostingEnvironment.IsDevelopment())
+        {
+            configuration.AddUserSecrets(Assembly.GetExecutingAssembly());
+        }
+
+        // Per-machine overrides (backup targets, etc.) written by the "configure" command.
+        // Not a publish content item, so it survives re-publishing the exe in place.
+        configuration.AddJsonFile("appsettings.local.json", optional: true, reloadOnChange: false);
     })
     .ConfigureServices((context, services) =>
     {
@@ -29,6 +36,55 @@ var host = Host.CreateDefaultBuilder(args)
         TelemetryProvider.SourceName,
         TelemetryProvider.SourceName)
     .Build();
+
+if (args.FirstOrDefault()?.Equals("configure", StringComparison.OrdinalIgnoreCase) == true)
+{
+    var configureOptions = new ConfigureOptions(
+        SkipTargets: args.Contains("--skip-targets", StringComparer.OrdinalIgnoreCase),
+        SkipLogin: args.Contains("--skip-login", StringComparer.OrdinalIgnoreCase),
+        SkipAccessCheck: args.Contains("--skip-access-check", StringComparer.OrdinalIgnoreCase));
+
+    await host.StartAsync();
+
+    try
+    {
+        await host.Services.GetRequiredService<IClientSetupService>().ConfigureAsync(configureOptions, CancellationToken.None);
+    }
+    catch (Exception e)
+    {
+        Console.WriteLine($"Setup failed: {e}");
+        throw;
+    }
+    finally
+    {
+        await host.StopAsync();
+        host.Dispose();
+    }
+
+    return;
+}
+
+if (args.FirstOrDefault()?.Equals("login", StringComparison.OrdinalIgnoreCase) == true)
+{
+    await host.StartAsync();
+
+    try
+    {
+        await host.Services.GetRequiredService<IClientSetupService>().LoginAsync(CancellationToken.None);
+    }
+    catch (Exception e)
+    {
+        Console.WriteLine($"Login failed: {e}");
+        throw;
+    }
+    finally
+    {
+        await host.StopAsync();
+        host.Dispose();
+    }
+
+    return;
+}
 
 var scheduleEnabled = host.Services.GetRequiredService<IConfiguration>()
     .GetValue<bool>($"{FlorisDeV.BackupClient.Config.BackupClientOptions.SectionName}:Schedule:Enabled");

@@ -151,4 +151,30 @@ node_modules/**  ";
         // Assert
         combined.Should().BeNull();
     }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public void GetCombinedPatterns_WithRelativePath_ResolvesAgainstExecutableDirectory()
+    {
+        // Arrange: a relative filename should resolve next to the executable, not the
+        // process's current working directory, so it's found regardless of how the
+        // scheduler/service launches the process.
+        var relativeFileName = $"relative-ignore-{Guid.NewGuid():N}.txt";
+        var absolutePath = Path.Combine(AppContext.BaseDirectory, relativeFileName);
+        File.WriteAllText(absolutePath, "*.tmp");
+
+        try
+        {
+            // Act
+            var combined = BackupIgnoreParser.GetCombinedPatterns(relativeFileName);
+
+            // Assert
+            combined.Should().NotBeNull();
+            combined.Should().Contain("*.tmp");
+        }
+        finally
+        {
+            File.Delete(absolutePath);
+        }
+    }
 }
