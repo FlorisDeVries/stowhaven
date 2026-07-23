@@ -116,6 +116,7 @@ public partial class BackupService(
             // Step 6: Validate failure threshold and record metrics
             ValidateFailureThreshold(processingResult.Stats.TotalUploadAttempts, processingResult.Stats.TotalUploadFailures);
             ReportSkippedFiles(processingResult.Stats.SkippedCount);
+            ReportChangedFiles(processingResult.Stats.SkippedChangedCount);
 
             stopwatch.Stop();
             RecordSuccessMetrics(activity, processingResult.RunId, processingResult.Stats, metricTags, stopwatch);
@@ -365,10 +366,21 @@ public partial class BackupService(
             await SavePendingRunAsync(deviceId, runId.Value, startedAt, uploadSasUrlInfo, manifestSasUrlInfo, stats.UploadedChangedFiles, new HashSet<string>(StringComparer.OrdinalIgnoreCase), false, null, cancellationToken);
         }
 
+        // Drop files whose on-disk size/mtime changed since they were scanned and hashed: their
+        // staged bytes would no longer match the manifest and the server would reject them. They are
+        // left un-backed-up locally, so the next run re-detects and uploads them. A residual race
+        // (change after this check but before the read) is caught server-side.
+        var (stableBatch, changedFiles) = FilterFilesChangedSinceScan(currentBatch);
+        foreach (var changed in changedFiles)
+        {
+            stats.SkippedChangedCount++;
+            LogFileChangedDuringBackup(changed.Metadata.FilePath, changed.Metadata.SizeBytes, GetCurrentFileSize(changed.Metadata.FilePath));
+        }
+
         // Upload batch
-        stats.TotalUploadAttempts += currentBatch.Count;
-        var uploadedFiles = await uploader.UploadFilesAsync(containerClient!, currentBatch, cancellationToken);
-        var failedCount = currentBatch.Count - uploadedFiles.Count;
+        stats.TotalUploadAttempts += stableBatch.Count;
+        var uploadedFiles = await uploader.UploadFilesAsync(containerClient!, stableBatch, cancellationToken);
+        var failedCount = stableBatch.Count - uploadedFiles.Count;
         stats.TotalUploadFailures += failedCount;
 
         // Check failure threshold after each batch (early detection)
@@ -689,6 +701,11 @@ public partial class BackupService(
             {
                 case CommitJobStatus.Succeeded:
                     return;
+                case CommitJobStatus.CompletedWithErrors:
+                    // Non-fatal: the server committed the run but skipped some files whose staged content
+                    // did not match. Those files stay un-backed-up locally and are retried on the next run.
+                    LogCommitCompletedWithErrors(status.FilesFailed ?? 0, status.Error ?? string.Empty);
+                    return;
                 case CommitJobStatus.Failed:
                     throw new InvalidOperationException($"Backup commit {commitId} failed: {status.Error ?? "Unknown error"}");
             }
@@ -779,6 +796,50 @@ public partial class BackupService(
         {
             LogBackupCompletedWithSkippedFiles(skippedCount, _options.LockedFilePolicy.ToString());
         }
+    }
+
+    private void ReportChangedFiles(int changedCount)
+    {
+        if (changedCount > 0)
+        {
+            LogBackupCompletedWithChangedFiles(changedCount);
+        }
+    }
+
+    /// <summary>
+    /// Partitions a batch into files that still match their scanned size/mtime and files that have
+    /// changed on disk since scanning (or vanished). Changed files must not be uploaded: their staged
+    /// bytes would no longer match the size/hash recorded in the manifest.
+    /// </summary>
+    private static (List<TaggedFile> Stable, List<TaggedFile> Changed) FilterFilesChangedSinceScan(
+        IReadOnlyList<TaggedFile> batch)
+    {
+        var stable = new List<TaggedFile>(batch.Count);
+        var changed = new List<TaggedFile>();
+
+        foreach (var file in batch)
+        {
+            var info = new FileInfo(file.Metadata.FilePath);
+
+            if (info.Exists
+                && (info.Length != file.Metadata.SizeBytes
+                    || info.LastWriteTimeUtc != file.Metadata.LastModified.UtcDateTime))
+            {
+                changed.Add(file);
+            }
+            else
+            {
+                stable.Add(file);
+            }
+        }
+
+        return (stable, changed);
+    }
+
+    private static long GetCurrentFileSize(string path)
+    {
+        var info = new FileInfo(path);
+        return info.Exists ? info.Length : -1;
     }
 
     /// <summary>
@@ -931,6 +992,7 @@ public partial class BackupService(
         public int ModifiedFilesCount { get; set; }
         public int UnchangedCount { get; set; }
         public int SkippedCount { get; set; }
+        public int SkippedChangedCount { get; set; }
         public int TotalUploadAttempts { get; set; }
         public int TotalUploadFailures { get; set; }
     }

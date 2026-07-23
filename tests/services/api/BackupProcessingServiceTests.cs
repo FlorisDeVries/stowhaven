@@ -390,9 +390,13 @@ public class BackupProcessingServiceTests
         // Act
         var act = async () => await _sut.ProcessBackupRunAsync(backupEvent);
 
-        // Assert
-        await act.Should().ThrowAsync<InvalidOperationException>()
-            .WithMessage("*Staged blob not found*");
+        // Assert: the only file fails validation (100% > threshold) so the whole run is failed, and the
+        // specific reason is recorded on the per-file progress.
+        await act.Should().ThrowAsync<InvalidOperationException>();
+
+        _manifestManagerMock.Verify(x => x.SaveCommitFileProgressAsync(
+            It.Is<CommitFileProgress>(p => p.Status == CommitFileStatus.Failed && p.Error != null && p.Error.Contains("Staged blob not found")),
+            It.IsAny<CancellationToken>()), Times.AtLeastOnce);
 
         _blobStorageServiceMock.Verify(
             x => x.MoveBlobAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Dictionary<string, string>>(), It.IsAny<CancellationToken>()),
@@ -420,9 +424,13 @@ public class BackupProcessingServiceTests
         // Act
         var act = async () => await _sut.ProcessBackupRunAsync(backupEvent);
 
-        // Assert
-        await act.Should().ThrowAsync<InvalidOperationException>()
-            .WithMessage("*size mismatch*");
+        // Assert: the only file fails validation (100% > threshold) so the whole run is failed, and the
+        // specific reason is recorded on the per-file progress.
+        await act.Should().ThrowAsync<InvalidOperationException>();
+
+        _manifestManagerMock.Verify(x => x.SaveCommitFileProgressAsync(
+            It.Is<CommitFileProgress>(p => p.Status == CommitFileStatus.Failed && p.Error != null && p.Error.Contains("size mismatch")),
+            It.IsAny<CancellationToken>()), Times.AtLeastOnce);
 
         _blobStorageServiceMock.Verify(
             x => x.MoveBlobAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Dictionary<string, string>>(), It.IsAny<CancellationToken>()),
@@ -450,9 +458,13 @@ public class BackupProcessingServiceTests
         // Act
         var act = async () => await _sut.ProcessBackupRunAsync(backupEvent);
 
-        // Assert
-        await act.Should().ThrowAsync<InvalidOperationException>()
-            .WithMessage($"*{BackupBlobMetadata.Sha256}*");
+        // Assert: the only file fails validation (100% > threshold) so the whole run is failed, and the
+        // specific reason is recorded on the per-file progress.
+        await act.Should().ThrowAsync<InvalidOperationException>();
+
+        _manifestManagerMock.Verify(x => x.SaveCommitFileProgressAsync(
+            It.Is<CommitFileProgress>(p => p.Status == CommitFileStatus.Failed && p.Error != null && p.Error.Contains(BackupBlobMetadata.Sha256)),
+            It.IsAny<CancellationToken>()), Times.AtLeastOnce);
 
         _blobStorageServiceMock.Verify(
             x => x.MoveBlobAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Dictionary<string, string>>(), It.IsAny<CancellationToken>()),
@@ -480,13 +492,79 @@ public class BackupProcessingServiceTests
         // Act
         var act = async () => await _sut.ProcessBackupRunAsync(backupEvent);
 
-        // Assert
-        await act.Should().ThrowAsync<InvalidOperationException>()
-            .WithMessage("*SHA-256 metadata mismatch*");
+        // Assert: the only file fails validation (100% > threshold) so the whole run is failed, and the
+        // specific reason is recorded on the per-file progress.
+        await act.Should().ThrowAsync<InvalidOperationException>();
+
+        _manifestManagerMock.Verify(x => x.SaveCommitFileProgressAsync(
+            It.Is<CommitFileProgress>(p => p.Status == CommitFileStatus.Failed && p.Error != null && p.Error.Contains("SHA-256 metadata mismatch")),
+            It.IsAny<CancellationToken>()), Times.AtLeastOnce);
 
         _blobStorageServiceMock.Verify(
             x => x.MoveBlobAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Dictionary<string, string>>(), It.IsAny<CancellationToken>()),
             Times.Never);
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task ProcessBackupRunAsync_WhenSomeFilesFailUnderThreshold_CompletesWithErrorsAndProcessesRest()
+    {
+        // Arrange - lenient threshold so one bad file out of two (50%) is tolerated, not aborted.
+        var deviceId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var commitId = Guid.NewGuid();
+
+        var sut = new BackupProcessingService(
+            _loggerMock.Object,
+            _blobStorageServiceMock.Object,
+            _manifestManagerMock.Object,
+            new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["CommitProcessing:MaxFailurePercentage"] = "50"
+            }).Build(),
+            _telemetryMock.Object);
+
+        var goodFile = CreateFileEntry("documents/good.txt", "good_20260419_a");
+        var badFile = CreateFileEntry("documents/bad.txt", "bad_20260419_b");
+
+        var backupEvent = CreateBackupEvent(deviceId, runId, commitId);
+        SetupQueuedCommitJob(commitId, deviceId, runId);
+        SetupBackupRun(deviceId, runId);
+
+        var manifest = CreateManifest(deviceId, runId, new List<ManifestFileEntry> { goodFile, badFile }, new List<string>());
+        SetupManifestDownload(manifest);
+        // The bad file's staged content no longer matches the manifest (source changed during backup).
+        SetupStagedBlobProperties(deviceId.ToString("N"), runId.ToString("N"), badFile, contentLength: badFile.Size + 500);
+
+        CommitJob? finalCommit = null;
+        _manifestManagerMock
+            .Setup(x => x.UpdateCommitJobAsync(It.IsAny<CommitJob>(), It.IsAny<CancellationToken>()))
+            .Callback<CommitJob, CancellationToken>((job, _) => finalCommit = job)
+            .ReturnsAsync((CommitJob job, CancellationToken _) => job);
+
+        BackupRun? finalRun = null;
+        _manifestManagerMock
+            .Setup(x => x.UpdateBackupRunAsync(deviceId, runId, It.IsAny<BackupRun>(), It.IsAny<CancellationToken>()))
+            .Callback<Guid, Guid, BackupRun, CancellationToken>((_, _, run, _) => finalRun = run)
+            .ReturnsAsync((Guid _, Guid _, BackupRun run, CancellationToken _) => run);
+
+        // Act - must not throw
+        await sut.ProcessBackupRunAsync(backupEvent);
+
+        // Assert - the good file is moved, the bad one is skipped (not moved)
+        _blobStorageServiceMock.Verify(x => x.MoveBlobAsync(
+            $"staging/{deviceId:N}/{runId:N}/{goodFile.UniqueFileId}",
+            It.IsAny<string>(), It.IsAny<Dictionary<string, string>>(), It.IsAny<CancellationToken>()), Times.Once);
+        _blobStorageServiceMock.Verify(x => x.MoveBlobAsync(
+            $"staging/{deviceId:N}/{runId:N}/{badFile.UniqueFileId}",
+            It.IsAny<string>(), It.IsAny<Dictionary<string, string>>(), It.IsAny<CancellationToken>()), Times.Never);
+
+        finalCommit.Should().NotBeNull();
+        finalCommit!.Status.Should().Be(CommitJobStatus.CompletedWithErrors);
+        finalCommit.FilesFailed.Should().Be(1);
+
+        finalRun.Should().NotBeNull();
+        finalRun!.Status.Should().Be(BackupRunStatus.CompletedWithErrors);
     }
 
     #endregion

@@ -41,5 +41,6 @@ public enum BackupRunStatus
     Queued,
     Processing,
     Succeeded,
+    CompletedWithErrors,
     Failed
 }

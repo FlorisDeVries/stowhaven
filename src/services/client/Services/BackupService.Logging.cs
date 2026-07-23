@@ -156,4 +156,22 @@ public partial class BackupService
         Level = LogLevel.Warning,
         Message = "Backup completed with {SkippedCount} skipped files under locked-file policy {LockedFilePolicy}. Treat this backup as degraded and review skipped-file warnings.")]
     partial void LogBackupCompletedWithSkippedFiles(int skippedCount, string lockedFilePolicy);
+
+    [LoggerMessage(
+        EventId = 36,
+        Level = LogLevel.Warning,
+        Message = "File changed during backup and was skipped this run: {FilePath} (scanned {ScannedSize} bytes, now {CurrentSize} bytes). It will be re-detected and backed up on the next run.")]
+    partial void LogFileChangedDuringBackup(string filePath, long scannedSize, long currentSize);
+
+    [LoggerMessage(
+        EventId = 37,
+        Level = LogLevel.Warning,
+        Message = "Backup completed with {ChangedCount} file(s) skipped because they changed during the run; they will be backed up on the next run.")]
+    partial void LogBackupCompletedWithChangedFiles(int changedCount);
+
+    [LoggerMessage(
+        EventId = 38,
+        Level = LogLevel.Warning,
+        Message = "Server committed the backup with errors: {FilesFailed} file(s) were skipped server-side (staged content did not match). {Detail}")]
+    partial void LogCommitCompletedWithErrors(int filesFailed, string detail);
 }

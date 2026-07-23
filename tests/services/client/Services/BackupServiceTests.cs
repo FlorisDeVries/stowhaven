@@ -239,6 +239,79 @@ public class BackupServiceTests : IDisposable
 
     [Fact]
     [Trait("Category", "Unit")]
+    public async Task Backup_WhenFileChangedSinceScan_ShouldSkipItAndUploadTheRest()
+    {
+        // Arrange
+        var deviceId = Guid.NewGuid();
+        var deviceState = new DeviceState(deviceId, null, null, null, 0, 0);
+        var runId = Guid.NewGuid();
+        var now = DateTime.UtcNow;
+
+        // A normal file whose synthetic path does not exist on disk is left alone (uploaded as usual).
+        var stableFile = new TaggedFile("default", _testDirectory,
+            new FileMetadata(Path.Combine(_testDirectory, "stable.txt"), 100, now, now.AddDays(-1), "hash-stable"));
+
+        // A file that exists on disk but whose size no longer matches what was scanned (it changed
+        // between scan and upload) must be skipped so its stale manifest entry is never committed.
+        var volatilePath = Path.Combine(_testDirectory, "volatile.txt");
+        await File.WriteAllTextAsync(volatilePath, "12345"); // 5 bytes on disk
+        var changedFile = new TaggedFile("default", _testDirectory,
+            new FileMetadata(volatilePath, 100, now, now.AddDays(-1), "hash-volatile")); // scanned as 100 bytes
+
+        _mockStateService.Setup(x => x.GetOrCreateDeviceStateAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(deviceState);
+
+        _mockScanner.Setup(x => x.ScanAllTargetsAsync(
+                It.IsAny<IReadOnlyDictionary<string, string>>(),
+                It.IsAny<string[]?>(),
+                It.IsAny<CancellationToken>()))
+            .Returns(ToAsync(stableFile, changedFile));
+
+        _mockScanner.Setup(x => x.AnalyzeFileAsync(It.IsAny<TaggedFile>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((TaggedFile f, CancellationToken _) => (f, true, FileChangeType.New));
+
+        _mockScanner.Setup(x => x.DetectDeletedFilesAsync(
+                It.IsAny<HashSet<string>>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Array.Empty<string>());
+
+        _mockStateService.Setup(x => x.UpsertFileStateBatchAsync(
+                It.IsAny<IReadOnlyList<TaggedFile>>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+        _mockStateService.Setup(x => x.SaveBackupSuccessAsync(
+                It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<FileMetadata>>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        _mockApiClient.Setup(x => x.StartBackupRun(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new StartBackupRunResponse
+            {
+                DeviceId = deviceId,
+                RunId = runId,
+                StartedAt = DateTimeOffset.UtcNow,
+                Status = BackupRunStatus.Processing,
+                SasUrlInfo = new SasUrlInfo { Url = new Uri("https://test.blob.core.windows.net/backups?sas=token"), ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(60), TtlMinutes = 60 }
+            });
+
+        _mockUploader.Setup(x => x.UploadFilesAsync(
+                It.IsAny<Azure.Storage.Blobs.BlobContainerClient>(),
+                It.IsAny<IReadOnlyList<TaggedFile>>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Azure.Storage.Blobs.BlobContainerClient _, IReadOnlyList<TaggedFile> files, CancellationToken _) => files);
+
+        // Act
+        var result = await _sut.Backup(CancellationToken.None);
+
+        // Assert - backup still succeeds, and the changed file was excluded from the upload batch.
+        result.Should().BeTrue();
+        _mockUploader.Verify(x => x.UploadFilesAsync(
+            It.IsAny<Azure.Storage.Blobs.BlobContainerClient>(),
+            It.Is<IReadOnlyList<TaggedFile>>(files =>
+                files.Count == 1 && files.All(f => f.Metadata.FilePath != volatilePath)),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
     public async Task Backup_WhenTargetDoesNotExist_ShouldThrowException()
     {
         // Arrange

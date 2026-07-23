@@ -394,6 +394,7 @@ public partial class OperationalService(
         UpdatedAt = commitJob.UpdatedAt,
         CompletedAt = commitJob.CompletedAt,
         FilesProcessed = commitJob.FilesProcessed,
+        FilesFailed = commitJob.FilesFailed,
         FailureCategory = commitJob.FailureCategory,
         AttemptCount = commitJob.AttemptCount,
         LastErrorAt = commitJob.LastErrorAt,

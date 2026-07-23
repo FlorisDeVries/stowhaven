@@ -13,6 +13,7 @@ public class CommitStatusResponse
     public DateTimeOffset UpdatedAt { get; init; }
     public DateTimeOffset? CompletedAt { get; init; }
     public int? FilesProcessed { get; init; }
+    public int? FilesFailed { get; init; }
     public int AttemptCount { get; init; }
     public string? FailureCategory { get; init; }
     public DateTimeOffset? LastErrorAt { get; init; }

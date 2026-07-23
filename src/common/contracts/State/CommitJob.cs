@@ -29,6 +29,7 @@ public enum CommitJobStatus
     Queued,
     Processing,
     Succeeded,
+    CompletedWithErrors,
     Failed
 }
 

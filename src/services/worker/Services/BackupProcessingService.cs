@@ -27,6 +27,7 @@ public partial class BackupProcessingService(
 ) : IBackupProcessingService
 {
     private readonly int _maxCommitAttempts = Math.Max(1, configuration.GetValue("CommitProcessing:MaxAttempts", 5));
+    private readonly double _maxFailurePercentage = Math.Max(0, configuration.GetValue("CommitProcessing:MaxFailurePercentage", 5.0));
 
     public async Task ProcessBackupRunAsync(BackupRunCommittedEvent backupEvent, CancellationToken cancellationToken = default)
     {
@@ -87,19 +88,29 @@ public partial class BackupProcessingService(
 
             var containerClient = await blobStorageService.GetContainerClientAsync(cancellationToken);
             var processedCount = 0;
+            var skippedFiles = 0;
 
             // Process new/changed files
             foreach (var fileEntry in manifest.Files)
             {
-                await ProcessFileEntryAsync(
-                    backupEvent.DeviceId,
-                    backupEvent.RunId,
-                    commitJob.CommitId,
-                    fileEntry,
-                    containerClient,
-                    cancellationToken);
-                processedCount++;
-                commitJob = await CheckpointProgressAsync(commitJob, processedCount, cancellationToken);
+                try
+                {
+                    await ProcessFileEntryAsync(
+                        backupEvent.DeviceId,
+                        backupEvent.RunId,
+                        commitJob.CommitId,
+                        fileEntry,
+                        containerClient,
+                        cancellationToken);
+                    processedCount++;
+                }
+                catch (StagedBlobValidationException ex)
+                {
+                    skippedFiles++;
+                    LogStagedBlobSkipped(logger, backupEvent.DeviceId, backupEvent.RunId, fileEntry.LogicalPath, ex.Message);
+                }
+
+                commitJob = await CheckpointProgressAsync(commitJob, processedCount, skippedFiles, cancellationToken);
             }
 
             // Process deleted files
@@ -112,8 +123,22 @@ public partial class BackupProcessingService(
                     containerClient,
                     cancellationToken);
                 processedCount++;
-                commitJob = await CheckpointProgressAsync(commitJob, processedCount, cancellationToken);
+                commitJob = await CheckpointProgressAsync(commitJob, processedCount, skippedFiles, cancellationToken);
             }
+
+            // Too many skipped files means the run is not trustworthy - fail it loudly so it is retried
+            // (and surfaced) rather than silently recording a mostly-empty backup.
+            var failurePercentage = manifest.Files.Count == 0
+                ? 0
+                : skippedFiles * 100.0 / manifest.Files.Count;
+            if (failurePercentage > _maxFailurePercentage)
+            {
+                throw new InvalidOperationException(
+                    $"Backup run failed: {skippedFiles}/{manifest.Files.Count} files failed staged-content validation " +
+                    $"({failurePercentage:F1}%), exceeding the {_maxFailurePercentage}% threshold.");
+            }
+
+            var terminalStatus = skippedFiles > 0 ? BackupRunStatus.CompletedWithErrors : BackupRunStatus.Succeeded;
 
             LogProcessingCompleted(logger, backupEvent.DeviceId, backupEvent.RunId, processedCount);
 
@@ -121,13 +146,17 @@ public partial class BackupProcessingService(
             await UpdateBackupRunStatusAsync(
                 backupEvent.DeviceId,
                 backupEvent.RunId,
-                BackupRunStatus.Succeeded,
-                manifest.Files.Count,
+                terminalStatus,
+                manifest.Files.Count - skippedFiles,
                 cancellationToken);
 
-            // Update CommitJob status to Succeeded
-            commitJob.Status = CommitJobStatus.Succeeded;
+            // Update CommitJob terminal status
+            commitJob.Status = skippedFiles > 0 ? CommitJobStatus.CompletedWithErrors : CommitJobStatus.Succeeded;
             commitJob.FilesProcessed = processedCount;
+            commitJob.FilesFailed = skippedFiles;
+            commitJob.Error = skippedFiles > 0
+                ? $"{skippedFiles} file(s) skipped: staged content did not match the manifest (source changed during backup)."
+                : null;
             commitJob.CompletedAt = DateTimeOffset.UtcNow;
             await manifestManager.UpdateCommitJobAsync(commitJob, cancellationToken);
 
@@ -200,13 +229,14 @@ public partial class BackupProcessingService(
         }
     }
 
-    private async Task<CommitJob> CheckpointProgressAsync(CommitJob commitJob, int processedCount, CancellationToken cancellationToken)
+    private async Task<CommitJob> CheckpointProgressAsync(CommitJob commitJob, int processedCount, int skippedFiles, CancellationToken cancellationToken)
     {
         commitJob.FilesProcessed = processedCount;
+        commitJob.FilesFailed = skippedFiles;
 
         // Persist every 100 items so commit-status polling shows progress on large
         // runs; the final counts are written with the terminal status update.
-        if (processedCount % 100 == 0)
+        if ((processedCount + skippedFiles) % 100 == 0)
         {
             commitJob = await manifestManager.UpdateCommitJobAsync(commitJob, cancellationToken);
         }
@@ -218,6 +248,7 @@ public partial class BackupProcessingService(
         => ex switch
         {
             JsonException => "ManifestInvalid",
+            StagedBlobValidationException => "StagedBlobInvalid",
             RequestFailedException requestFailedException when requestFailedException.Status is 408 or 429 or >= 500 => "TransientStorage",
             RequestFailedException requestFailedException when requestFailedException.Status is 404 => "MissingBlob",
             InvalidOperationException invalidOperationException when invalidOperationException.Message.Contains("manifest", StringComparison.OrdinalIgnoreCase) => "ManifestInvalid",
@@ -411,25 +442,25 @@ public partial class BackupProcessingService(
                 return;
             }
 
-            throw new InvalidOperationException($"Staged blob not found: {sourceBlobName}", ex);
+            throw new StagedBlobValidationException($"Staged blob not found: {sourceBlobName}", ex);
         }
 
         if (properties.ContentLength != fileEntry.Size)
         {
-            throw new InvalidOperationException(
+            throw new StagedBlobValidationException(
                 $"Staged blob size mismatch for '{fileEntry.LogicalPath}' ({fileEntry.UniqueFileId}). " +
                 $"Expected {fileEntry.Size} bytes, actual {properties.ContentLength} bytes.");
         }
 
         if (!TryGetMetadataValue(properties.Metadata, BackupBlobMetadata.Sha256, out var uploadedSha256))
         {
-            throw new InvalidOperationException(
+            throw new StagedBlobValidationException(
                 $"Staged blob is missing required metadata '{BackupBlobMetadata.Sha256}' for '{fileEntry.LogicalPath}' ({fileEntry.UniqueFileId}).");
         }
 
         if (!string.Equals(uploadedSha256, fileEntry.Sha256, StringComparison.OrdinalIgnoreCase))
         {
-            throw new InvalidOperationException(
+            throw new StagedBlobValidationException(
                 $"Staged blob SHA-256 metadata mismatch for '{fileEntry.LogicalPath}' ({fileEntry.UniqueFileId}).");
         }
     }
@@ -636,6 +667,9 @@ public partial class BackupProcessingService(
 
     [LoggerMessage(LogLevel.Warning, "Failed to persist manifest cache for run {runId} device {deviceId} ({fileCount} files); continuing with blob copy as source of truth.")]
     static partial void LogRunManifestPersistFailed(ILogger logger, Guid deviceId, Guid runId, int fileCount, Exception exception);
+
+    [LoggerMessage(LogLevel.Warning, "Skipped file '{logicalPath}' in run {runId} device {deviceId}: {reason}. It will be re-detected and retried on the next backup.")]
+    static partial void LogStagedBlobSkipped(ILogger logger, Guid deviceId, Guid runId, string logicalPath, string reason);
 
     [LoggerMessage(LogLevel.Information, "Processing file entry: {relativePath} ({uniqueFileId})")]
     static partial void LogProcessingFileEntry(ILogger logger, string relativePath, string uniqueFileId);
