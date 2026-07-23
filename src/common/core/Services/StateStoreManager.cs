@@ -27,6 +27,7 @@ public partial class ManifestManager : IManifestManager
     // Document types within the manifest store.
     private const string BackupRunDocument = "backupRun";
     private const string RunManifestDocument = "runManifest";
+    private const string RunManifestChunkDocument = "runManifestChunk";
     private const string FileEntryDocument = "fileEntry";
     private const string FileVersionDocument = "fileVersion";
     private const string CommitJobDocument = "commitJob";
@@ -35,6 +36,11 @@ public partial class ManifestManager : IManifestManager
     private static string DevicePartition(Guid deviceId) => $"device:{deviceId:N}";
 
     private static string CommitPartition(Guid commitId) => $"commit:{commitId:N}";
+
+    // Run-scoped partition isolating a single run's manifest chunks, so reassembly is a
+    // partition scan ordered by sort key (mirrors the CommitFileProgress access pattern and
+    // needs no composite index).
+    private static string RunManifestPartition(Guid deviceId, Guid runId) => $"run:{deviceId:N}:{runId:N}";
 
     private static string EncodeStateKeySegment(string value)
         => Convert.ToBase64String(Encoding.UTF8.GetBytes(value))

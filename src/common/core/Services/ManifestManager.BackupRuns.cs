@@ -151,10 +151,55 @@ public partial class ManifestManager
         };
     }
 
+    // Entries per manifest chunk document. With encrypted entries at roughly ~1KB each this keeps a
+    // chunk well under the state store's per-document size limit (Cosmos ~2MB).
+    private const int RunManifestChunkSize = 500;
+
     public async Task SaveRunManifestAsync(Guid deviceId, Guid runId, RunManifest manifest, CancellationToken cancellationToken = default)
     {
+        // Split the manifest across small chunk documents so a run with many files never produces a
+        // single document that exceeds the store's per-document size limit. Files come first in the
+        // chunk sequence, then deletions; a small header document records the totals for reassembly.
+        var chunkIndex = 0;
+
+        for (var offset = 0; offset < manifest.Files.Count; offset += RunManifestChunkSize)
+        {
+            var slice = manifest.Files.GetRange(offset, Math.Min(RunManifestChunkSize, manifest.Files.Count - offset));
+            await SaveRunManifestChunkAsync(deviceId, runId, chunkIndex++, new RunManifestChunk
+            {
+                DeviceId = $"{deviceId:N}",
+                RunId = $"{runId:N}",
+                Index = chunkIndex - 1,
+                Files = slice
+            }, cancellationToken);
+        }
+
+        for (var offset = 0; offset < manifest.Deleted.Count; offset += RunManifestChunkSize)
+        {
+            var slice = manifest.Deleted.GetRange(offset, Math.Min(RunManifestChunkSize, manifest.Deleted.Count - offset));
+            await SaveRunManifestChunkAsync(deviceId, runId, chunkIndex++, new RunManifestChunk
+            {
+                DeviceId = $"{deviceId:N}",
+                RunId = $"{runId:N}",
+                Index = chunkIndex - 1,
+                Deleted = slice
+            }, cancellationToken);
+        }
+
+        // Write the header last so any reader that observes it can also read every chunk it references.
+        var header = new RunManifestHeader
+        {
+            SchemaVersion = RunManifestHeader.ChunkedSchemaVersion,
+            DeviceId = manifest.DeviceId,
+            RunId = manifest.RunId,
+            FileCount = manifest.Files.Count,
+            DeletedCount = manifest.Deleted.Count,
+            ChunkCount = chunkIndex,
+            ChunkSize = RunManifestChunkSize
+        };
+
         await store.UpsertAsync(
-            RunManifestDocument, DevicePartition(deviceId), $"{runId:N}", manifest,
+            RunManifestDocument, DevicePartition(deviceId), $"{runId:N}", header,
             cancellationToken: cancellationToken);
 
         telemetry.StateOperations.Add(1, new TagList { { "operation", "save" }, { "store", "manifest" }, { "entity", "runmanifest" } });
@@ -162,7 +207,7 @@ public partial class ManifestManager
 
     public async Task<RunManifest?> GetRunManifestAsync(Guid deviceId, Guid runId, CancellationToken cancellationToken = default)
     {
-        var document = await store.GetAsync<RunManifest>(
+        var document = await store.GetAsync<RunManifestHeader>(
             RunManifestDocument, DevicePartition(deviceId), $"{runId:N}", cancellationToken);
 
         telemetry.StateOperations.Add(1, new TagList
@@ -173,8 +218,71 @@ public partial class ManifestManager
             { "result", document == null ? "not_found" : "found" }
         });
 
-        return document?.Data;
+        if (document == null)
+        {
+            return null;
+        }
+
+        var header = document.Data;
+
+        // Legacy (v1) manifests were persisted inline as a single document; their entries live on the
+        // header itself rather than in chunk documents.
+        if (header.SchemaVersion < RunManifestHeader.ChunkedSchemaVersion)
+        {
+            return new RunManifest
+            {
+                SchemaVersion = header.SchemaVersion,
+                DeviceId = header.DeviceId,
+                RunId = header.RunId,
+                Files = header.Files ?? [],
+                Deleted = header.Deleted ?? []
+            };
+        }
+
+        var files = new List<ManifestFileEntry>(header.FileCount);
+        var deleted = new List<string>(header.DeletedCount);
+
+        string? continuationToken = null;
+        do
+        {
+            var page = await store.QueryAsync<RunManifestChunk>(new DocumentQuery
+            {
+                Type = RunManifestChunkDocument,
+                PartitionKey = RunManifestPartition(deviceId, runId),
+                Order = DocumentOrder.SortKeyAscending,
+                PageSize = 100,
+                ContinuationToken = continuationToken
+            }, cancellationToken);
+
+            foreach (var chunk in page.Items)
+            {
+                files.AddRange(chunk.Data.Files);
+                deleted.AddRange(chunk.Data.Deleted);
+            }
+
+            continuationToken = page.NextContinuationToken;
+        }
+        while (!string.IsNullOrEmpty(continuationToken));
+
+        return new RunManifest
+        {
+            SchemaVersion = header.SchemaVersion,
+            DeviceId = header.DeviceId,
+            RunId = header.RunId,
+            Files = files,
+            Deleted = deleted
+        };
     }
+
+    private Task<string> SaveRunManifestChunkAsync(Guid deviceId, Guid runId, int index, RunManifestChunk chunk,
+        CancellationToken cancellationToken)
+        => store.UpsertAsync(
+            RunManifestChunkDocument,
+            RunManifestPartition(deviceId, runId),
+            $"{runId:N}:{index:D6}",
+            chunk,
+            sortKey: $"{index:D6}",
+            cancellationToken: cancellationToken);
 
     private Task<string> SaveBackupRunAsync(BackupRun run, string? etag, CancellationToken cancellationToken)
         => store.UpsertAsync(

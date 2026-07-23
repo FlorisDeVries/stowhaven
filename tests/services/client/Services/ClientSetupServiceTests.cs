@@ -143,7 +143,9 @@ public class ClientSetupServiceTests : IDisposable
     {
         var suggestions = ClientSetupService.GetSuggestedTargets();
 
-        suggestions.Should().OnlyContain(s => Directory.Exists(s.Path));
+        // May be empty on CI runners where no user folders (Documents, Desktop, ...) exist.
+        // The contract is only that every returned folder exists and names are unique.
         suggestions.Should().OnlyHaveUniqueItems(s => s.Name);
+        suggestions.All(s => Directory.Exists(s.Path)).Should().BeTrue();
     }
 }

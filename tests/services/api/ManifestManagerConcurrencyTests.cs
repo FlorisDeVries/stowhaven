@@ -2,6 +2,7 @@ using FlorisDeV.BackupApi.Data;
 using FlorisDeV.BackupApi.Exceptions;
 using FlorisDeV.BackupApi.Services;
 using FlorisDeV.BackupApi.Telemetry;
+using FlorisDeV.BackupContracts.Manifest;
 using FlorisDeV.BackupContracts.State;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
@@ -17,15 +18,16 @@ namespace FlorisDeV.BackupApi.Tests;
 public sealed class ManifestManagerConcurrencyTests : IDisposable
 {
     private readonly string _databasePath;
+    private readonly SqliteStateDocumentStore _store;
     private readonly ManifestManager _service;
 
     public ManifestManagerConcurrencyTests()
     {
         _databasePath = Path.Combine(Path.GetTempPath(), $"manifest-manager-tests-{Guid.NewGuid():N}.db");
-        var store = new SqliteStateDocumentStore(_databasePath, StateDocumentStoreExtensions.SerializerOptions);
+        _store = new SqliteStateDocumentStore(_databasePath, StateDocumentStoreExtensions.SerializerOptions);
 
         _service = new ManifestManager(
-            store,
+            _store,
             new Mock<ILogger<ManifestManager>>().Object,
             new Mock<TelemetryProvider>().Object);
     }
@@ -219,5 +221,119 @@ public sealed class ManifestManagerConcurrencyTests : IDisposable
         Assert.Equal(2, page.Runs.Count);
         Assert.All(page.Runs, run => Assert.Equal(deviceId, run.DeviceId));
         Assert.True(page.Runs[0].StartedAt > page.Runs[1].StartedAt);
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task SaveRunManifestAsync_LargeManifest_RoundTripsAcrossChunks()
+    {
+        var deviceId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+
+        // Well over the 500-entry chunk size for both files and deletions, so reassembly must span
+        // multiple chunk documents and preserve order.
+        var files = Enumerable.Range(0, 1250)
+            .Select(i => new ManifestFileEntry
+            {
+                RelativePath = $"docs/file-{i:D5}.txt",
+                UniqueFileId = $"file-{i:D5}",
+                Sha256 = new string('a', 64),
+                Size = i,
+                Mtime = DateTimeOffset.UnixEpoch.AddSeconds(i)
+            })
+            .ToList();
+        var deleted = Enumerable.Range(0, 600).Select(i => $"old/removed-{i:D5}.txt").ToList();
+
+        var manifest = new RunManifest
+        {
+            DeviceId = $"{deviceId:N}",
+            RunId = $"{runId:N}",
+            Files = files,
+            Deleted = deleted
+        };
+
+        await _service.SaveRunManifestAsync(deviceId, runId, manifest);
+
+        var reassembled = await _service.GetRunManifestAsync(deviceId, runId);
+
+        Assert.NotNull(reassembled);
+        Assert.Equal(1250, reassembled.Files.Count);
+        Assert.Equal(600, reassembled.Deleted.Count);
+        // Order preserved across chunk boundaries.
+        Assert.Equal("file-00000", reassembled.Files[0].UniqueFileId);
+        Assert.Equal("file-00499", reassembled.Files[499].UniqueFileId);
+        Assert.Equal("file-00500", reassembled.Files[500].UniqueFileId);
+        Assert.Equal("file-01249", reassembled.Files[1249].UniqueFileId);
+        Assert.Equal("old/removed-00000.txt", reassembled.Deleted[0]);
+        Assert.Equal("old/removed-00599.txt", reassembled.Deleted[599]);
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task GetRunManifestAsync_LegacyInlineDocument_IsReadFromHeader()
+    {
+        var deviceId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+
+        // Simulate a pre-chunking (v1) manifest persisted inline as a single document, using the same
+        // document type/partition/id encoding ManifestManager uses internally.
+        var legacy = new RunManifest
+        {
+            SchemaVersion = 1,
+            DeviceId = $"{deviceId:N}",
+            RunId = $"{runId:N}",
+            Files =
+            [
+                new ManifestFileEntry
+                {
+                    RelativePath = "legacy/only.txt",
+                    UniqueFileId = "legacy-file",
+                    Sha256 = new string('b', 64),
+                    Size = 42,
+                    Mtime = DateTimeOffset.UnixEpoch
+                }
+            ],
+            Deleted = ["legacy/gone.txt"]
+        };
+
+        await _store.UpsertAsync("runManifest", $"device:{deviceId:N}", $"{runId:N}", legacy);
+
+        var result = await _service.GetRunManifestAsync(deviceId, runId);
+
+        Assert.NotNull(result);
+        Assert.Single(result.Files);
+        Assert.Equal("legacy-file", result.Files[0].UniqueFileId);
+        Assert.Equal(["legacy/gone.txt"], result.Deleted);
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task GetRunManifestAsync_EmptyManifest_RoundTripsAsEmpty()
+    {
+        var deviceId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+
+        await _service.SaveRunManifestAsync(deviceId, runId, new RunManifest
+        {
+            DeviceId = $"{deviceId:N}",
+            RunId = $"{runId:N}",
+            Files = [],
+            Deleted = []
+        });
+
+        var result = await _service.GetRunManifestAsync(deviceId, runId);
+
+        Assert.NotNull(result);
+        Assert.Empty(result.Files);
+        Assert.Empty(result.Deleted);
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task GetRunManifestAsync_Missing_ReturnsNull()
+    {
+        var result = await _service.GetRunManifestAsync(Guid.NewGuid(), Guid.NewGuid());
+
+        Assert.Null(result);
     }
 }
