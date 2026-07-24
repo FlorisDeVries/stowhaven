@@ -1257,6 +1257,62 @@ public class FileSystemServiceTests : IDisposable
 
     #endregion
 
+    #region Symlink Tests
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task ScanDirectoryAsync_WithBrokenSymlink_SkipsItSilently()
+    {
+        // Arrange - a symlink whose target does not exist (e.g. a stale Steam runtime .so link)
+        CreateTestFile("real.txt", "content");
+        if (!CreateSymlink("dangling.so", target: Path.Combine(_testDirectory, "missing-target.so")))
+            return; // platform disallows symlink creation
+
+        // Act
+        var result = await _sut.ScanDirectoryAsync(_testDirectory);
+
+        // Assert - only the real file is returned; the broken link is not surfaced as an error
+        result.Should().ContainSingle();
+        result.Single().FilePath.Should().EndWith("real.txt");
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task ScanDirectoryAsync_WithValidSymlink_IncludesTarget()
+    {
+        // Arrange - a symlink pointing at an existing file should still be backed up
+        var target = CreateTestFile("target.txt", "content");
+        if (!CreateSymlink("link.txt", target))
+            return; // platform disallows symlink creation
+
+        // Act
+        var result = await _sut.ScanDirectoryAsync(_testDirectory);
+
+        // Assert - both the target and the (valid) link resolve to real files
+        result.Should().HaveCount(2);
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task ScanDirectoryAsync_WithChainedBrokenSymlink_SkipsItSilently()
+    {
+        // Arrange - a multi-hop link chain whose final target is missing, mirroring Steam's
+        // .steampath -> .steam/sdk32/steam -> .../linux32/steam (final target absent).
+        CreateTestFile("real.txt", "content");
+        if (!CreateSymlink("hop2", target: Path.Combine(_testDirectory, "missing-final")))
+            return; // platform disallows symlink creation
+        CreateSymlink("hop1", target: Path.Combine(_testDirectory, "hop2"));
+
+        // Act
+        var result = await _sut.ScanDirectoryAsync(_testDirectory);
+
+        // Assert - the whole broken chain is skipped, only the real file remains
+        result.Should().ContainSingle();
+        result.Single().FilePath.Should().EndWith("real.txt");
+    }
+
+    #endregion
+
     #region Helper Methods
 
     /// <summary>
@@ -1275,6 +1331,25 @@ public class FileSystemServiceTests : IDisposable
 
         File.WriteAllText(fullPath, content);
         return fullPath;
+    }
+
+    /// <summary>
+    /// Creates a symbolic link at the given relative path pointing at <paramref name="target"/>.
+    /// Returns false when the platform disallows symlink creation (e.g. Windows without developer
+    /// mode or elevation) so callers can bail out and keep the suite green across environments.
+    /// </summary>
+    private bool CreateSymlink(string relativePath, string target)
+    {
+        var linkPath = Path.Combine(_testDirectory, relativePath);
+        try
+        {
+            File.CreateSymbolicLink(linkPath, target);
+            return true;
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+        {
+            return false;
+        }
     }
 
     #endregion

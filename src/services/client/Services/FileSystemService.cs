@@ -225,6 +225,15 @@ public partial class FileSystemService(ILogger<FileSystemService> logger, IOptio
                 }
             }
 
+            // Skip dangling symlinks quietly. Some directory trees (e.g. the Steam Linux
+            // Runtime) contain versioned .so symlinks whose target no longer exists; these
+            // are not real files to back up and would otherwise surface as metadata warnings.
+            if (IsBrokenSymlink(filePath))
+            {
+                LogBrokenSymlinkSkipped(filePath);
+                continue;
+            }
+
             FileMetadata? metadata = null;
             try
             {
@@ -290,6 +299,29 @@ public partial class FileSystemService(ILogger<FileSystemService> logger, IOptio
             {
                 yield return file;
             }
+        }
+    }
+
+    /// <summary>
+    /// Determines whether the given path is a symbolic link whose target does not exist.
+    /// </summary>
+    private static bool IsBrokenSymlink(string filePath)
+    {
+        var info = new FileInfo(filePath);
+        if (info.LinkTarget is null)
+        {
+            return false; // not a symlink
+        }
+
+        try
+        {
+            var target = info.ResolveLinkTarget(returnFinalTarget: true);
+            return target is null || !target.Exists;
+        }
+        catch (IOException)
+        {
+            // Cyclic or otherwise unresolvable link chain - treat as broken/unbackupable.
+            return true;
         }
     }
 
@@ -391,6 +423,12 @@ public partial class FileSystemService(ILogger<FileSystemService> logger, IOptio
         Level = LogLevel.Warning,
         Message = "Access denied to directory: {DirectoryPath}")]
     private partial void LogDirectoryAccessDenied(string directoryPath, Exception ex);
+
+    [LoggerMessage(
+        EventId = 6,
+        Level = LogLevel.Debug,
+        Message = "Skipping broken symlink: {FilePath}")]
+    private partial void LogBrokenSymlinkSkipped(string filePath);
 
     [LoggerMessage(
         EventId = 4,

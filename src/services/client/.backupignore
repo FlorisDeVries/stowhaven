@@ -163,6 +163,8 @@
 **/.local/share/Steam/steamapps/common/**
 **/.local/share/Steam/ubuntu12_32/**
 **/.local/share/Steam/ubuntu12_64/**
+**/.local/share/Steam/steamrt32/**
+**/.local/share/Steam/steamrt64/**
 **/.local/share/Steam/Steam.log
 **/AppData/Local/Steam/**
 **/steamapps/common/**
