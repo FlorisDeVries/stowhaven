@@ -174,4 +174,10 @@ public partial class BackupService
         Level = LogLevel.Warning,
         Message = "Server committed the backup with errors: {FilesFailed} file(s) were skipped server-side (staged content did not match). {Detail}")]
     partial void LogCommitCompletedWithErrors(int filesFailed, string detail);
+
+    [LoggerMessage(
+        EventId = 39,
+        Level = LogLevel.Information,
+        Message = "Commit {CommitId} is still processing server-side after {WaitSeconds:F0}s (status {Status}). The run is durable and will be finalized automatically on the next backup run; no re-upload is needed.")]
+    partial void LogCommitStillProcessing(Guid commitId, string status, double waitSeconds);
 }

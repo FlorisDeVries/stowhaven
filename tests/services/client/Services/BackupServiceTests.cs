@@ -312,6 +312,74 @@ public class BackupServiceTests : IDisposable
 
     [Fact]
     [Trait("Category", "Unit")]
+    public async Task Backup_WhenCommitStillProcessing_ExitsCleanlyAndKeepsPendingRun()
+    {
+        // Arrange - zero wait so the commit-status poll "times out" immediately while still Processing.
+        var deviceId = Guid.NewGuid();
+        var deviceState = new DeviceState(deviceId, null, null, null, 0, 0);
+        var runId = Guid.NewGuid();
+        var now = DateTime.UtcNow;
+
+        var options = Options.Create(new BackupClientOptions
+        {
+            BackupTargets = new Dictionary<string, string> { ["default"] = _testDirectory },
+            MaxFailurePercentage = 10,
+            CommitStatusTimeoutSeconds = 0,
+            CommitStatusPollIntervalSeconds = 1
+        });
+        var sut = new BackupService(
+            _mockLogger.Object, _telemetryProvider, _mockApiClient.Object, _mockApiWakeUpService.Object,
+            _mockStateService.Object, _mockScanner.Object, _mockUploader.Object, options);
+
+        var file1 = new TaggedFile("default", _testDirectory,
+            new FileMetadata(Path.Combine(_testDirectory, "file1.txt"), 100, now, now.AddDays(-1), "hash1"));
+
+        _mockStateService.Setup(x => x.GetOrCreateDeviceStateAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(deviceState);
+        _mockScanner.Setup(x => x.ScanAllTargetsAsync(
+                It.IsAny<IReadOnlyDictionary<string, string>>(), It.IsAny<string[]?>(), It.IsAny<CancellationToken>()))
+            .Returns(ToAsync(file1));
+        _mockScanner.Setup(x => x.AnalyzeFileAsync(It.IsAny<TaggedFile>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((TaggedFile f, CancellationToken _) => (f, true, FileChangeType.New));
+        _mockScanner.Setup(x => x.DetectDeletedFilesAsync(It.IsAny<HashSet<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Array.Empty<string>());
+        _mockApiClient.Setup(x => x.StartBackupRun(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new StartBackupRunResponse
+            {
+                DeviceId = deviceId,
+                RunId = runId,
+                StartedAt = DateTimeOffset.UtcNow,
+                Status = BackupRunStatus.Processing,
+                SasUrlInfo = new SasUrlInfo { Url = new Uri("https://test.blob.core.windows.net/backups?sas=token"), ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(60), TtlMinutes = 60 }
+            });
+        _mockUploader.Setup(x => x.UploadFilesAsync(
+                It.IsAny<Azure.Storage.Blobs.BlobContainerClient>(), It.IsAny<IReadOnlyList<TaggedFile>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Azure.Storage.Blobs.BlobContainerClient _, IReadOnlyList<TaggedFile> files, CancellationToken _) => files);
+
+        // The commit never reaches a terminal state during the (zero-length) wait.
+        _mockApiClient.Setup(x => x.GetCommitStatus(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Guid d, Guid c, CancellationToken _) => new CommitStatusResponse
+            {
+                DeviceId = d,
+                CommitId = c,
+                Status = CommitJobStatus.Processing,
+                CreatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = DateTimeOffset.UtcNow
+            });
+
+        // Act
+        var result = await sut.Backup(CancellationToken.None);
+
+        // Assert - clean, non-fatal exit; the run is NOT finalized locally so a later run can resume it.
+        result.Should().BeTrue();
+        _mockStateService.Verify(x => x.ClearPendingBackupRunAsync(
+            It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+        _mockStateService.Verify(x => x.SaveBackupSuccessAsync(
+            It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<FileMetadata>>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
     public async Task Backup_WhenTargetDoesNotExist_ShouldThrowException()
     {
         // Arrange

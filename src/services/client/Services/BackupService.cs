@@ -98,7 +98,7 @@ public partial class BackupService(
             }
 
             // Step 5: Commit backup run and update state
-            await CommitBackupAsync(
+            var commitFinalized = await CommitBackupAsync(
                 processingResult.HasStartedBackupRun,
                 processingResult.RunId,
                 deviceId,
@@ -112,6 +112,15 @@ public partial class BackupService(
                 processingResult.StartedAt,
                 pendingRun,
                 cancellationToken);
+
+            if (!commitFinalized)
+            {
+                // The commit is still processing server-side and will finalize on a later run. This is a
+                // clean, non-fatal outcome: the pending-run journal is intact and no re-upload is needed.
+                stopwatch.Stop();
+                RecordOperationDuration(activity, metricTags, stopwatch, "commit_pending");
+                return true;
+            }
 
             // Step 6: Validate failure threshold and record metrics
             ValidateFailureThreshold(processingResult.Stats.TotalUploadAttempts, processingResult.Stats.TotalUploadFailures);
@@ -514,7 +523,12 @@ public partial class BackupService(
         return true;
     }
 
-    private async Task CommitBackupAsync(
+    /// <summary>
+    /// Uploads the manifest, commits the run, and waits for server-side completion. Returns <c>true</c>
+    /// when the run was finalized locally; <c>false</c> when the commit is still processing server-side
+    /// and finalization was deferred to a later run (the pending-run journal is left in place).
+    /// </summary>
+    private async Task<bool> CommitBackupAsync(
         bool hasStartedBackupRun,
         Guid? runId,
         Guid deviceId,
@@ -530,7 +544,7 @@ public partial class BackupService(
         CancellationToken cancellationToken)
     {
         if (!hasStartedBackupRun)
-            return;
+            return true;
 
         if (manifestContainerClient == null)
             throw new InvalidOperationException("Manifest upload client was not initialized for the backup run");
@@ -570,7 +584,11 @@ public partial class BackupService(
 
         LogBackupRunCommitted(runId.Value);
 
-        await WaitForCommitSucceededAsync(deviceId, commitId.Value, cancellationToken);
+        if (!await WaitForCommitCompletionAsync(deviceId, commitId.Value, cancellationToken))
+        {
+            // Commit still processing server-side; leave the pending run so a later run finalizes it.
+            return false;
+        }
 
         if (allChangedFiles.Count > 0)
         {
@@ -586,6 +604,7 @@ public partial class BackupService(
             cancellationToken);
 
         await backupStateService.ClearPendingBackupRunAsync(deviceId, runId.Value, cancellationToken);
+        return true;
     }
 
     private async Task<PendingBackupRun?> LoadUsablePendingRunAsync(Guid deviceId, CancellationToken cancellationToken)
@@ -637,7 +656,11 @@ public partial class BackupService(
             }, cancellationToken);
         }
 
-        await WaitForCommitSucceededAsync(pendingRun.DeviceId, commitId.Value, cancellationToken);
+        if (!await WaitForCommitCompletionAsync(pendingRun.DeviceId, commitId.Value, cancellationToken))
+        {
+            // Still processing server-side; keep the pending run so a later run finalizes it.
+            return true;
+        }
 
         if (pendingRun.UploadedChangedFiles.Count > 0)
         {
@@ -685,7 +708,15 @@ public partial class BackupService(
     private static string GetResumeMatchKey(TaggedFile file)
         => $"{file.GetStoragePath()}|{file.Metadata.Hash}|{file.Metadata.SizeBytes}";
 
-    private async Task WaitForCommitSucceededAsync(Guid deviceId, Guid commitId, CancellationToken cancellationToken)
+    /// <summary>
+    /// Polls the server-side commit until it reaches a terminal state.
+    /// Returns <c>true</c> when the commit completed (<see cref="CommitJobStatus.Succeeded"/> or
+    /// <see cref="CommitJobStatus.CompletedWithErrors"/>) and the run should be finalized locally.
+    /// Returns <c>false</c> when the commit is still processing after the configured wait: large runs
+    /// can take far longer server-side than the client wants to block, so the caller leaves the pending
+    /// run in place and a later run finalizes it. Throws only on a genuine commit failure.
+    /// </summary>
+    private async Task<bool> WaitForCommitCompletionAsync(Guid deviceId, Guid commitId, CancellationToken cancellationToken)
     {
         var timeout = TimeSpan.FromSeconds(_options.CommitStatusTimeoutSeconds);
         var pollInterval = TimeSpan.FromSeconds(_options.CommitStatusPollIntervalSeconds);
@@ -700,19 +731,22 @@ public partial class BackupService(
             switch (status.Status)
             {
                 case CommitJobStatus.Succeeded:
-                    return;
+                    return true;
                 case CommitJobStatus.CompletedWithErrors:
                     // Non-fatal: the server committed the run but skipped some files whose staged content
                     // did not match. Those files stay un-backed-up locally and are retried on the next run.
                     LogCommitCompletedWithErrors(status.FilesFailed ?? 0, status.Error ?? string.Empty);
-                    return;
+                    return true;
                 case CommitJobStatus.Failed:
                     throw new InvalidOperationException($"Backup commit {commitId} failed: {status.Error ?? "Unknown error"}");
             }
 
             if (stopwatch.Elapsed >= timeout)
             {
-                throw new TimeoutException($"Backup commit {commitId} did not complete within {timeout.TotalSeconds:N0} seconds");
+                // Still Queued/Processing. Don't fail - the commit is durable server-side and will finish;
+                // hand off finalization to a later run, which resumes from the pending-run journal.
+                LogCommitStillProcessing(commitId, status.Status.ToString(), timeout.TotalSeconds);
+                return false;
             }
 
             await Task.Delay(pollInterval, cancellationToken);
