@@ -145,6 +145,20 @@
 **/.config/google-chrome/*/Cache/**
 **/Library/Application Support/Google/Chrome/*/Cache/**
 
+# ===== Electron / Chromium App Caches =====
+# Regenerable caches shared by all Chromium-based apps (VS Code, Discord, Slack,
+# Teams, Obsidian, browsers, Azure Storage Explorer, ...). The plain "Cache"/"cache"
+# dirs are already handled above; these are the space/caps variants that slip through.
+**/Code Cache/**
+**/GPUCache/**
+**/DawnCache/**
+**/GrShaderCache/**
+**/CachedData/**
+**/blob_storage/**
+**/component_crx_cache/**
+**/Service Worker/CacheStorage/**
+**/Service Worker/ScriptCache/**
+
 # ===== Cloud Sync Temporary Files =====
 **/*.icloud
 **/~$*
@@ -198,6 +212,20 @@
 # Heroic Games Launcher (Linux)
 **/.config/heroic/GamesConfig/**
 **/.var/app/com.heroicgameslauncher.hgl/**
+
+# ===== AI / CLI Developer Tools =====
+# Transient temp/cache dirs from AI coding assistants and CLI tools.
+# Scoped to tmp/cache subdirectories so their configs/settings are still backed up.
+# OpenAI Codex CLI
+**/.codex/tmp/**
+**/.codex/ipc/**
+**/.codex/**/cache/**
+# Add other AI/CLI tools' temp/cache dirs here as needed, e.g.:
+# **/.gemini/tmp/**
+
+# IDE / language-service host runtime state (regenerable; contains IPC sockets)
+**/.ServiceHub/**
+**/.IdentityService/**
 
 # ===== Add Your Custom Patterns Below =====
 
