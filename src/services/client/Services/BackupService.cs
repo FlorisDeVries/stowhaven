@@ -881,6 +881,8 @@ public partial class BackupService(
         }
 
         LogRefreshingUploadSas(runId, current.UploadSasUrlInfo.ExpiresAt);
+
+        await apiWakeUpService.EnsureApiAwakeAsync(cancellationToken);
         var refreshed = await backupApiClient.RefreshBackupRunSas(deviceId, runId, cancellationToken);
 
         var containerClient = new BlobContainerClient(TranslateStorageUrlForLocalDevelopment(refreshed.SasUrlInfo.Url));

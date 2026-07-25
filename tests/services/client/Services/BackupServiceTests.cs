@@ -1115,6 +1115,46 @@ public class BackupServiceTests : IDisposable
 
     [Fact]
     [Trait("Category", "Unit")]
+    public async Task Backup_WhenRefreshingSas_ShouldWakeApiFirst()
+    {
+        // Arrange: uploads bypass the API entirely, so a scaled-to-zero deployment can idle back down
+        // during the upload phase. The SAS refresh must be preceded by a wake-up or it times out.
+        var deviceId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        ArrangeSingleFileBackup(deviceId, runId, sasExpiresIn: TimeSpan.FromSeconds(30));
+
+        var callOrder = new List<string>();
+        _mockApiWakeUpService.Setup(x => x.EnsureApiAwakeAsync(It.IsAny<CancellationToken>()))
+            .Callback(() => callOrder.Add("wake"))
+            .Returns(Task.CompletedTask);
+        _mockApiClient.Setup(x => x.RefreshBackupRunSas(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .Callback(() => callOrder.Add("refresh"))
+            .ReturnsAsync((Guid d, Guid r, CancellationToken _) => new RefreshSasUrlResponse
+            {
+                DeviceId = d,
+                RunId = r,
+                SasUrlInfo = new SasUrlInfo { Url = new Uri("https://test.blob.core.windows.net/backups?sas=refreshed"), ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(60), TtlMinutes = 60 },
+                ManifestSasUrlInfo = new SasUrlInfo { Url = new Uri("https://test.blob.core.windows.net/backups?sas=refreshed-manifest"), ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(60), TtlMinutes = 60 }
+            });
+
+        _mockUploader.Setup(x => x.UploadFilesAsync(
+                It.IsAny<Azure.Storage.Blobs.BlobContainerClient>(),
+                It.IsAny<IReadOnlyList<TaggedFile>>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Azure.Storage.Blobs.BlobContainerClient _, IReadOnlyList<TaggedFile> files, CancellationToken _) => new UploadBatchResult(files, [], 0));
+
+        // Act
+        var result = await _sut.Backup(CancellationToken.None);
+
+        // Assert: the wake-up immediately preceding the refresh is the one under test.
+        result.Should().BeTrue();
+        var refreshIndex = callOrder.IndexOf("refresh");
+        refreshIndex.Should().BeGreaterThan(0);
+        callOrder[refreshIndex - 1].Should().Be("wake");
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
     public async Task Backup_WhenSasExpiresMidBatch_ShouldRefreshAndRetryAffectedFiles()
     {
         // Arrange: SAS starts with a full lifetime (no proactive refresh), but the first upload
