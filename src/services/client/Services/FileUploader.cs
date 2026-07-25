@@ -41,18 +41,20 @@ public partial class FileUploader(
     /// Uploads tagged files to blob storage using parallel uploads with retry logic.
     /// Returns only the files that were successfully uploaded for atomic state management.
     /// </summary>
-    public async Task<IReadOnlyList<TaggedFile>> UploadFilesAsync(
+    public async Task<UploadBatchResult> UploadFilesAsync(
         BlobContainerClient containerClient,
         IReadOnlyList<TaggedFile> files,
         CancellationToken cancellationToken)
     {
         if (files.Count == 0)
-            return [];
+            return new UploadBatchResult([], [], 0);
 
         LogUploadingFiles(files.Count);
 
-        // Use ConcurrentBag for thread-safe file tracking without locks
+        // Use thread-safe collections for tracking without locks
         var uploadedFiles = new ConcurrentBag<TaggedFile>();
+        var sasExpiredFiles = new ConcurrentBag<TaggedFile>();
+        var otherFailureCount = 0;
         var uploadedCount = 0;
         using var throttler = new SemaphoreSlim(_options.MaxParallelUploads, _options.MaxParallelUploads);
 
@@ -71,14 +73,21 @@ public partial class FileUploader(
                 {
                     LogUploadProgress(currentCount, files.Count);
                 }
-
-                return (success: true, file: taggedFile, error: (Exception?)null);
             }
             catch (Exception ex)
             {
-                // Log but don't throw - we want to continue uploading other files
+                // Log but don't throw - we want to continue uploading other files.
+                // A SAS-expiry failure is not counted as a real failure here: the caller can
+                // refresh the token and retry these files.
                 LogFileUploadFailed(taggedFile.Metadata.FilePath, ex);
-                return (success: false, file: taggedFile, error: ex);
+                if (IsSasExpiredError(ex))
+                {
+                    sasExpiredFiles.Add(taggedFile);
+                }
+                else
+                {
+                    Interlocked.Increment(ref otherFailureCount);
+                }
             }
             finally
             {
@@ -86,20 +95,29 @@ public partial class FileUploader(
             }
         }).ToList();
 
-        var results = await Task.WhenAll(uploadTasks);
+        await Task.WhenAll(uploadTasks);
 
-        var failures = results.Where(r => !r.success).ToList();
-        if (failures.Count > 0)
+        var totalFailures = sasExpiredFiles.Count + otherFailureCount;
+        if (totalFailures > 0)
         {
-            LogUploadSummary(uploadedFiles.Count, failures.Count, files.Count);
+            LogUploadSummary(uploadedFiles.Count, totalFailures, files.Count);
         }
         else
         {
             LogUploadComplete(files.Count);
         }
 
-        return uploadedFiles.ToList();
+        return new UploadBatchResult(uploadedFiles.ToList(), sasExpiredFiles.ToList(), otherFailureCount);
     }
+
+    /// <summary>
+    /// A 403 AuthenticationFailed from storage during upload means the SAS token's validity window
+    /// has passed (the "Signature not valid in the specified time frame" case) — a recoverable
+    /// condition that a fresh token resolves, as opposed to a genuine authorization problem.
+    /// </summary>
+    private static bool IsSasExpiredError(Exception ex)
+        => ex is RequestFailedException { Status: 403, ErrorCode: "AuthenticationFailed" }
+           || (ex is AggregateException ae && ae.InnerExceptions.Any(IsSasExpiredError));
 
     /// <summary>
     /// Uploads a single file with Polly resilience pipeline for automatic retry with exponential backoff.

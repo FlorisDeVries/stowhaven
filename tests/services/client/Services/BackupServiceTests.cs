@@ -208,7 +208,7 @@ public class BackupServiceTests : IDisposable
                 It.IsAny<Azure.Storage.Blobs.BlobContainerClient>(),
                 It.IsAny<IReadOnlyList<TaggedFile>>(),
                 It.IsAny<CancellationToken>()))
-            .ReturnsAsync((Azure.Storage.Blobs.BlobContainerClient _, IReadOnlyList<TaggedFile> files, CancellationToken _) => files);
+            .ReturnsAsync((Azure.Storage.Blobs.BlobContainerClient _, IReadOnlyList<TaggedFile> files, CancellationToken _) => new UploadBatchResult(files, [], 0));
 
         // Act
         var result = await _sut.Backup(CancellationToken.None);
@@ -296,7 +296,7 @@ public class BackupServiceTests : IDisposable
                 It.IsAny<Azure.Storage.Blobs.BlobContainerClient>(),
                 It.IsAny<IReadOnlyList<TaggedFile>>(),
                 It.IsAny<CancellationToken>()))
-            .ReturnsAsync((Azure.Storage.Blobs.BlobContainerClient _, IReadOnlyList<TaggedFile> files, CancellationToken _) => files);
+            .ReturnsAsync((Azure.Storage.Blobs.BlobContainerClient _, IReadOnlyList<TaggedFile> files, CancellationToken _) => new UploadBatchResult(files, [], 0));
 
         // Act
         var result = await _sut.Backup(CancellationToken.None);
@@ -354,7 +354,7 @@ public class BackupServiceTests : IDisposable
             });
         _mockUploader.Setup(x => x.UploadFilesAsync(
                 It.IsAny<Azure.Storage.Blobs.BlobContainerClient>(), It.IsAny<IReadOnlyList<TaggedFile>>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((Azure.Storage.Blobs.BlobContainerClient _, IReadOnlyList<TaggedFile> files, CancellationToken _) => files);
+            .ReturnsAsync((Azure.Storage.Blobs.BlobContainerClient _, IReadOnlyList<TaggedFile> files, CancellationToken _) => new UploadBatchResult(files, [], 0));
 
         // The commit never reaches a terminal state during the (zero-length) wait.
         _mockApiClient.Setup(x => x.GetCommitStatus(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
@@ -514,7 +514,7 @@ public class BackupServiceTests : IDisposable
                 It.IsAny<Azure.Storage.Blobs.BlobContainerClient>(),
                 It.IsAny<IReadOnlyList<TaggedFile>>(),
                 It.IsAny<CancellationToken>()))
-            .ReturnsAsync((Azure.Storage.Blobs.BlobContainerClient _, IReadOnlyList<TaggedFile> files, CancellationToken _) => files);
+            .ReturnsAsync((Azure.Storage.Blobs.BlobContainerClient _, IReadOnlyList<TaggedFile> files, CancellationToken _) => new UploadBatchResult(files, [], 0));
 
         // Act
         var result = await _sut.Backup(CancellationToken.None);
@@ -710,8 +710,11 @@ public class BackupServiceTests : IDisposable
                 It.IsAny<Azure.Storage.Blobs.BlobContainerClient>(),
                 It.IsAny<IReadOnlyList<TaggedFile>>(),
                 It.IsAny<CancellationToken>()))
-            .ReturnsAsync((Azure.Storage.Blobs.BlobContainerClient _, IReadOnlyList<TaggedFile> fileList, CancellationToken _) => 
-                fileList.Take(10).ToList());
+            .ReturnsAsync((Azure.Storage.Blobs.BlobContainerClient _, IReadOnlyList<TaggedFile> fileList, CancellationToken _) =>
+            {
+                var uploaded = fileList.Take(10).ToList();
+                return new UploadBatchResult(uploaded, [], fileList.Count - uploaded.Count);
+            });
 
         // Act
         var result = await _sut.Backup(CancellationToken.None);
@@ -777,8 +780,11 @@ public class BackupServiceTests : IDisposable
                 It.IsAny<Azure.Storage.Blobs.BlobContainerClient>(),
                 It.IsAny<IReadOnlyList<TaggedFile>>(),
                 It.IsAny<CancellationToken>()))
-            .ReturnsAsync((Azure.Storage.Blobs.BlobContainerClient _, IReadOnlyList<TaggedFile> files, CancellationToken _) => 
-                files.Take(files.Count / 2).ToList());
+            .ReturnsAsync((Azure.Storage.Blobs.BlobContainerClient _, IReadOnlyList<TaggedFile> files, CancellationToken _) =>
+            {
+                var uploaded = files.Take(files.Count / 2).ToList();
+                return new UploadBatchResult(uploaded, [], files.Count - uploaded.Count);
+            });
 
         // Act & Assert
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => _sut.Backup(CancellationToken.None));
@@ -910,7 +916,7 @@ public class BackupServiceTests : IDisposable
                     It.IsAny<Azure.Storage.Blobs.BlobContainerClient>(),
                     It.IsAny<IReadOnlyList<TaggedFile>>(),
                     It.IsAny<CancellationToken>()))
-                .ReturnsAsync((Azure.Storage.Blobs.BlobContainerClient _, IReadOnlyList<TaggedFile> files, CancellationToken _) => files);
+                .ReturnsAsync((Azure.Storage.Blobs.BlobContainerClient _, IReadOnlyList<TaggedFile> files, CancellationToken _) => new UploadBatchResult(files, [], 0));
 
             // Act
             var result = await sut.Backup(CancellationToken.None);
@@ -1008,7 +1014,7 @@ public class BackupServiceTests : IDisposable
                 It.IsAny<Azure.Storage.Blobs.BlobContainerClient>(),
                 It.IsAny<IReadOnlyList<TaggedFile>>(),
                 It.IsAny<CancellationToken>()))
-            .ReturnsAsync((Azure.Storage.Blobs.BlobContainerClient _, IReadOnlyList<TaggedFile> files, CancellationToken _) => files);
+            .ReturnsAsync((Azure.Storage.Blobs.BlobContainerClient _, IReadOnlyList<TaggedFile> files, CancellationToken _) => new UploadBatchResult(files, [], 0));
 
         // Act
         var result = await _sut.Backup(CancellationToken.None);
@@ -1074,10 +1080,130 @@ public class BackupServiceTests : IDisposable
                 It.IsAny<Azure.Storage.Blobs.BlobContainerClient>(),
                 It.IsAny<IReadOnlyList<TaggedFile>>(),
                 It.IsAny<CancellationToken>()))
-            .ReturnsAsync((Azure.Storage.Blobs.BlobContainerClient _, IReadOnlyList<TaggedFile> files, CancellationToken _) => files);
+            .ReturnsAsync((Azure.Storage.Blobs.BlobContainerClient _, IReadOnlyList<TaggedFile> files, CancellationToken _) => new UploadBatchResult(files, [], 0));
 
         // Act & Assert
         await Assert.ThrowsAsync<HttpRequestException>(() => _sut.Backup(CancellationToken.None));
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task Backup_WhenSasNearExpiry_ShouldRefreshBeforeUploading()
+    {
+        // Arrange: a run whose SAS is already within the safety window, so it must be refreshed
+        // before the batch is uploaded rather than allowed to expire mid-upload.
+        var deviceId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        ArrangeSingleFileBackup(deviceId, runId, sasExpiresIn: TimeSpan.FromSeconds(30));
+
+        _mockUploader.Setup(x => x.UploadFilesAsync(
+                It.IsAny<Azure.Storage.Blobs.BlobContainerClient>(),
+                It.IsAny<IReadOnlyList<TaggedFile>>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Azure.Storage.Blobs.BlobContainerClient _, IReadOnlyList<TaggedFile> files, CancellationToken _) => new UploadBatchResult(files, [], 0));
+
+        // Act
+        var result = await _sut.Backup(CancellationToken.None);
+
+        // Assert
+        result.Should().BeTrue();
+        _mockApiClient.Verify(x => x.RefreshBackupRunSas(
+            It.Is<Guid>(id => id == deviceId),
+            It.Is<Guid>(id => id == runId),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task Backup_WhenSasExpiresMidBatch_ShouldRefreshAndRetryAffectedFiles()
+    {
+        // Arrange: SAS starts with a full lifetime (no proactive refresh), but the first upload
+        // attempt reports the file as SAS-expired. The service must refresh and retry that file.
+        var deviceId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        ArrangeSingleFileBackup(deviceId, runId, sasExpiresIn: TimeSpan.FromMinutes(60));
+
+        // First attempt reports every file as SAS-expired; the retry (after refresh) uploads them.
+        // Echo the actual staged files so their generated UniqueFileId flows into the manifest.
+        var uploadCall = 0;
+        _mockUploader.Setup(x => x.UploadFilesAsync(
+                It.IsAny<Azure.Storage.Blobs.BlobContainerClient>(),
+                It.IsAny<IReadOnlyList<TaggedFile>>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Azure.Storage.Blobs.BlobContainerClient _, IReadOnlyList<TaggedFile> f, CancellationToken _) =>
+                Interlocked.Increment(ref uploadCall) == 1
+                    ? new UploadBatchResult([], f, 0)
+                    : new UploadBatchResult(f, [], 0));
+
+        // Act
+        var result = await _sut.Backup(CancellationToken.None);
+
+        // Assert
+        result.Should().BeTrue();
+        _mockApiClient.Verify(x => x.RefreshBackupRunSas(
+            It.Is<Guid>(id => id == deviceId),
+            It.Is<Guid>(id => id == runId),
+            It.IsAny<CancellationToken>()), Times.Once);
+        _mockUploader.Verify(x => x.UploadFilesAsync(
+            It.IsAny<Azure.Storage.Blobs.BlobContainerClient>(),
+            It.IsAny<IReadOnlyList<TaggedFile>>(),
+            It.IsAny<CancellationToken>()), Times.Exactly(2));
+        _mockStateService.Verify(x => x.SaveBackupSuccessAsync(
+            It.Is<Guid>(id => id == runId),
+            It.IsAny<string>(),
+            It.IsAny<IReadOnlyList<FileMetadata>>(),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    /// <summary>
+    /// Wires up scanner/state/api mocks for a backup of a single new file, returning that file.
+    /// The run's SAS expiry is set to <paramref name="sasExpiresIn"/> from now.
+    /// </summary>
+    private TaggedFile ArrangeSingleFileBackup(Guid deviceId, Guid runId, TimeSpan sasExpiresIn)
+    {
+        var deviceState = new DeviceState(deviceId, null, null, null, 0, 0);
+        var now = DateTime.UtcNow;
+        var file = new TaggedFile(
+            "default",
+            _testDirectory,
+            new FileMetadata(Path.Combine(_testDirectory, "file1.txt"), 100, now, now.AddDays(-1), "hash1"));
+
+        _mockStateService.Setup(x => x.GetOrCreateDeviceStateAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(deviceState);
+        _mockScanner.Setup(x => x.ScanAllTargetsAsync(
+                It.IsAny<IReadOnlyDictionary<string, string>>(), It.IsAny<string[]?>(), It.IsAny<CancellationToken>()))
+            .Returns(ToAsync(file));
+        _mockScanner.Setup(x => x.AnalyzeFileAsync(It.IsAny<TaggedFile>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((TaggedFile f, CancellationToken _) => (f, true, FileChangeType.New));
+        _mockScanner.Setup(x => x.DetectDeletedFilesAsync(It.IsAny<HashSet<string>>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Array.Empty<string>());
+        _mockStateService.Setup(x => x.UpsertFileStateBatchAsync(
+                It.IsAny<IReadOnlyList<TaggedFile>>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+        _mockStateService.Setup(x => x.SaveBackupSuccessAsync(
+                It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<FileMetadata>>(), It.IsAny<CancellationToken>()))
+            .Returns(Task.CompletedTask);
+
+        _mockApiClient.Setup(x => x.StartBackupRun(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new StartBackupRunResponse
+            {
+                DeviceId = deviceId,
+                RunId = runId,
+                StartedAt = DateTimeOffset.UtcNow,
+                Status = BackupRunStatus.Processing,
+                SasUrlInfo = new SasUrlInfo { Url = new Uri("https://test.blob.core.windows.net/backups?sas=token"), ExpiresAt = DateTimeOffset.UtcNow.Add(sasExpiresIn), TtlMinutes = 60 }
+            });
+
+        _mockApiClient.Setup(x => x.RefreshBackupRunSas(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Guid d, Guid r, CancellationToken _) => new RefreshSasUrlResponse
+            {
+                DeviceId = d,
+                RunId = r,
+                SasUrlInfo = new SasUrlInfo { Url = new Uri("https://test.blob.core.windows.net/backups?sas=refreshed"), ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(60), TtlMinutes = 60 },
+                ManifestSasUrlInfo = new SasUrlInfo { Url = new Uri("https://test.blob.core.windows.net/backups?sas=refreshed-manifest"), ExpiresAt = DateTimeOffset.UtcNow.AddMinutes(60), TtlMinutes = 60 }
+            });
+
+        return file;
     }
 
     public void Dispose()

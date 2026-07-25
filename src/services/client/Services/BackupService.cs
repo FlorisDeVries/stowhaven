@@ -126,6 +126,7 @@ public partial class BackupService(
             ValidateFailureThreshold(processingResult.Stats.TotalUploadAttempts, processingResult.Stats.TotalUploadFailures);
             ReportSkippedFiles(processingResult.Stats.SkippedCount);
             ReportChangedFiles(processingResult.Stats.SkippedChangedCount);
+            ReportSasExpiredFiles(processingResult.Stats.SkippedSasExpiredCount);
 
             stopwatch.Stop();
             RecordSuccessMetrics(activity, processingResult.RunId, processingResult.Stats, metricTags, stopwatch);
@@ -386,13 +387,50 @@ public partial class BackupService(
             LogFileChangedDuringBackup(changed.Metadata.FilePath, changed.Metadata.SizeBytes, GetCurrentFileSize(changed.Metadata.FilePath));
         }
 
+        // Ensure the run's SAS token can outlast this batch; refresh it proactively if it is close to
+        // expiry. A single SAS is minted for the whole run, so a long backup will otherwise cross the
+        // token's window and every remaining upload fails with AuthenticationFailed.
+        var sas = await EnsureSasFreshForBatchAsync(
+            deviceId, runId!.Value, currentBatchBytes,
+            new SasContext(containerClient!, manifestContainerClient!, uploadSasUrlInfo!, manifestSasUrlInfo!, manifestBasePath, manifestIsPathEmbedded),
+            forceRefresh: false, cancellationToken);
+        (containerClient, manifestContainerClient, uploadSasUrlInfo, manifestSasUrlInfo, manifestBasePath, manifestIsPathEmbedded) =
+            (sas.ContainerClient, sas.ManifestContainerClient, sas.UploadSasUrlInfo, sas.ManifestSasUrlInfo, sas.ManifestBasePath, sas.ManifestIsPathEmbedded);
+
         // Upload batch
         stats.TotalUploadAttempts += stableBatch.Count;
-        var uploadedFiles = await uploader.UploadFilesAsync(containerClient!, stableBatch, cancellationToken);
-        var failedCount = stableBatch.Count - uploadedFiles.Count;
+        var uploadResult = await uploader.UploadFilesAsync(containerClient!, stableBatch, cancellationToken);
+        var uploadedFiles = new List<TaggedFile>(uploadResult.Uploaded);
+        var otherFailureCount = uploadResult.OtherFailureCount;
+
+        // If the token expired partway through the batch, refresh it and retry only the affected files.
+        if (uploadResult.SasExpiredFiles.Count > 0)
+        {
+            LogSasExpiredMidBatch(uploadResult.SasExpiredFiles.Count, runId.Value);
+            sas = await EnsureSasFreshForBatchAsync(deviceId, runId.Value, currentBatchBytes, sas, forceRefresh: true, cancellationToken);
+            (containerClient, manifestContainerClient, uploadSasUrlInfo, manifestSasUrlInfo, manifestBasePath, manifestIsPathEmbedded) =
+                (sas.ContainerClient, sas.ManifestContainerClient, sas.UploadSasUrlInfo, sas.ManifestSasUrlInfo, sas.ManifestBasePath, sas.ManifestIsPathEmbedded);
+
+            var retryResult = await uploader.UploadFilesAsync(containerClient!, uploadResult.SasExpiredFiles, cancellationToken);
+            uploadedFiles.AddRange(retryResult.Uploaded);
+            otherFailureCount += retryResult.OtherFailureCount;
+
+            var stillExpired = retryResult.SasExpiredFiles.Count;
+            if (stillExpired > 0)
+            {
+                // A freshly issued token still expired before these files finished (pathological: a
+                // single batch slower than a whole token lifetime). Defer them to the next run instead
+                // of counting them toward the failure threshold and aborting an otherwise healthy backup.
+                stats.SkippedSasExpiredCount += stillExpired;
+                LogSasExpiredUnrecovered(stillExpired, runId.Value);
+            }
+        }
+
+        var failedCount = otherFailureCount;
         stats.TotalUploadFailures += failedCount;
 
-        // Check failure threshold after each batch (early detection)
+        // Check failure threshold after each batch (early detection). SAS-expiry files are intentionally
+        // excluded from the failure count above: they are recoverable and re-detected on the next run.
         CheckFailureThresholdProgress(stats.TotalUploadAttempts, stats.TotalUploadFailures);
 
         // Local file state is updated only after the server-side commit succeeds.
@@ -824,6 +862,65 @@ public partial class BackupService(
         }
     }
 
+    /// <summary>
+    /// Re-issues the run's upload/manifest SAS tokens when the current one cannot safely outlast the
+    /// batch about to be uploaded (or when a mid-batch expiry forces it). Rebuilds the container clients
+    /// bound to the fresh tokens and keeps the uploader's base path in sync.
+    /// </summary>
+    private async Task<SasContext> EnsureSasFreshForBatchAsync(
+        Guid deviceId,
+        Guid runId,
+        long batchBytes,
+        SasContext current,
+        bool forceRefresh,
+        CancellationToken cancellationToken)
+    {
+        if (!forceRefresh && SasWillOutlastBatch(current.UploadSasUrlInfo, batchBytes))
+        {
+            return current;
+        }
+
+        LogRefreshingUploadSas(runId, current.UploadSasUrlInfo.ExpiresAt);
+        var refreshed = await backupApiClient.RefreshBackupRunSas(deviceId, runId, cancellationToken);
+
+        var containerClient = new BlobContainerClient(TranslateStorageUrlForLocalDevelopment(refreshed.SasUrlInfo.Url));
+        var manifestSas = refreshed.ManifestSasUrlInfo ?? refreshed.SasUrlInfo;
+        var manifestContainerClient = new BlobContainerClient(TranslateStorageUrlForLocalDevelopment(manifestSas.Url));
+
+        // The uploader prepends BasePath to each blob name; keep it aligned with the new token.
+        uploader.SetBasePath(refreshed.SasUrlInfo.BasePath, refreshed.SasUrlInfo.IsPathEmbedded);
+
+        LogRefreshedUploadSas(runId, refreshed.SasUrlInfo.ExpiresAt);
+        return new SasContext(
+            containerClient,
+            manifestContainerClient,
+            refreshed.SasUrlInfo,
+            manifestSas,
+            manifestSas.BasePath,
+            manifestSas.IsPathEmbedded);
+    }
+
+    /// <summary>
+    /// Returns true when the SAS token's remaining lifetime comfortably exceeds the estimated time to
+    /// upload <paramref name="batchBytes"/>, leaving a safety margin. Uses the same throughput
+    /// assumption as the large-file timeout warning.
+    /// </summary>
+    private static bool SasWillOutlastBatch(SasUrlInfo sas, long batchBytes)
+    {
+        const long assumedBytesPerSecond = 10L * 1024 * 1024; // 10 MB/s
+        var estimatedBatchDuration = TimeSpan.FromSeconds((double)batchBytes / assumedBytesPerSecond);
+        var remaining = sas.ExpiresAt - DateTimeOffset.UtcNow;
+        return remaining > estimatedBatchDuration + PendingRunSasSafetyWindow;
+    }
+
+    private void ReportSasExpiredFiles(int sasExpiredCount)
+    {
+        if (sasExpiredCount > 0)
+        {
+            LogBackupCompletedWithSasExpiredFiles(sasExpiredCount);
+        }
+    }
+
     private void ReportSkippedFiles(int skippedCount)
     {
         if (skippedCount > 0)
@@ -1027,6 +1124,7 @@ public partial class BackupService(
         public int UnchangedCount { get; set; }
         public int SkippedCount { get; set; }
         public int SkippedChangedCount { get; set; }
+        public int SkippedSasExpiredCount { get; set; }
         public int TotalUploadAttempts { get; set; }
         public int TotalUploadFailures { get; set; }
     }
@@ -1062,4 +1160,12 @@ public partial class BackupService(
         DateTimeOffset StartedAt,
         SasUrlInfo UploadSasUrlInfo,
         SasUrlInfo ManifestSasUrlInfo);
+
+    private sealed record SasContext(
+        BlobContainerClient ContainerClient,
+        BlobContainerClient ManifestContainerClient,
+        SasUrlInfo UploadSasUrlInfo,
+        SasUrlInfo ManifestSasUrlInfo,
+        string? ManifestBasePath,
+        bool ManifestIsPathEmbedded);
 }

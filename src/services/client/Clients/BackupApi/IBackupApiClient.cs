@@ -20,6 +20,10 @@ public interface IBackupApiClient
     Task<StartBackupRunResponse> StartBackupRun(Guid deviceId,
         CancellationToken cancellationToken = default);
 
+    [Post("/api/devices/{deviceId}/backup/runs/{runId}/refresh-sas")]
+    Task<RefreshSasUrlResponse> RefreshBackupRunSas(Guid deviceId, Guid runId,
+        CancellationToken cancellationToken = default);
+
     [Post("/api/devices/{deviceId}/backup/commit-run")]
     Task<CommitBackupRunResponse> CommitBackupRun(Guid deviceId, CommitBackupRunRequest request,
         CancellationToken cancellationToken = default);

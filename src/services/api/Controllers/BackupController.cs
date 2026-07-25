@@ -66,6 +66,53 @@ public partial class BackupController(
         return Ok(response);
     }
 
+    [HttpPost("/api/devices/{deviceId:guid}/backup/runs/{runId:guid}/refresh-sas")]
+    [ProducesResponseType(typeof(RefreshSasUrlResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status500InternalServerError)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<RefreshSasUrlResponse>> RefreshBackupRunSas(
+        Guid deviceId,
+        Guid runId,
+        CancellationToken cancellationToken)
+    {
+        using var scope = logger.BeginScope(new Dictionary<string, object>
+        {
+            ["DeviceId"] = deviceId,
+            ["RunId"] = runId,
+            ["Operation"] = "RefreshBackupRunSas"
+        });
+
+        if (!ModelState.IsValid)
+        {
+            return BadRequest(ModelState);
+        }
+
+        await deviceAuthorizationService.AuthorizeDeviceAsync(User, deviceId, cancellationToken);
+
+        LogRefreshingBackupRunSas(logger, runId, deviceId);
+
+        var clientIp = sasSecurityOptions.Value.EnableIpRestriction
+            ? HttpContext.Connection.RemoteIpAddress?.ToString()
+            : null;
+
+        // Re-issue SAS URLs for the existing run - let exceptions bubble up to GlobalExceptionFilter
+        var result = await backupRunService.RefreshSasUrlsAsync(deviceId, runId, clientIp, cancellationToken);
+
+        var response = new RefreshSasUrlResponse
+        {
+            DeviceId = result.DeviceId,
+            RunId = result.RunId,
+            SasUrlInfo = result.SasUrl,
+            ManifestSasUrlInfo = result.ManifestSasUrl
+        };
+
+        LogBackupRunSasRefreshed(logger, runId, deviceId);
+
+        return Ok(response);
+    }
+
     [HttpPost("/api/devices/{deviceId:guid}/backup/commit-run")]
     [ProducesResponseType(typeof(CommitBackupRunResponse), StatusCodes.Status202Accepted)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
@@ -176,6 +223,12 @@ public partial class BackupController(
     [LoggerMessage(LogLevel.Information, "Backup run {runId} started successfully for device {deviceId}")]
     static partial void LogBackupRunStartedSuccess(ILogger<BackupController> logger,
         Guid runId, Guid deviceId);
+
+    [LoggerMessage(LogLevel.Information, "Refreshing SAS URLs for backup run {runId} on device {deviceId}")]
+    static partial void LogRefreshingBackupRunSas(ILogger<BackupController> logger, Guid runId, Guid deviceId);
+
+    [LoggerMessage(LogLevel.Information, "Refreshed SAS URLs for backup run {runId} on device {deviceId}")]
+    static partial void LogBackupRunSasRefreshed(ILogger<BackupController> logger, Guid runId, Guid deviceId);
 
     [LoggerMessage(LogLevel.Information, "Committing backup run {runId} for device {deviceId}")]
     static partial void LogStartCommitBackupRun(ILogger<BackupController> logger, Guid runId, Guid deviceId);

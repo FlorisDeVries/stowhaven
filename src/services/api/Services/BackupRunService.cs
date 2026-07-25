@@ -9,6 +9,7 @@ namespace FlorisDeV.BackupApi.Services;
 public interface IBackupRunService
 {
     Task<BackupRunStartResult> StartBackupRunAsync(Guid deviceId, string? clientIp = null, CancellationToken cancellationToken = default);
+    Task<BackupRunSasRefreshResult> RefreshSasUrlsAsync(Guid deviceId, Guid runId, string? clientIp = null, CancellationToken cancellationToken = default);
     Task<CommitJob> CommitBackupRunAsync(Guid deviceId, Guid runId, CancellationToken cancellationToken = default);
     Task<CommitJob> GetCommitStatusAsync(Guid commitId, CancellationToken cancellationToken = default);
 }
@@ -20,6 +21,11 @@ public class BackupRunService(
     TelemetryProvider telemetry
 ) : IBackupRunService
 {
+    private const int SasTtlMinutes = 60;
+
+    private static string StagingPath(Guid deviceId, Guid runId) => $"staging/{deviceId:N}/{runId:N}/";
+    private static string ManifestPath(Guid deviceId, Guid runId) => $"runs/{deviceId:N}/{runId:N}/";
+
     public async Task<BackupRunStartResult> StartBackupRunAsync(Guid deviceId, string? clientIp = null, CancellationToken cancellationToken = default)
     {
         using var activity = telemetry.ActivitySource.StartActivity("StartBackupRun");
@@ -39,10 +45,8 @@ public class BackupRunService(
             var run = await manifestManager.CreateBackupRunAsync(deviceId, runId, startedAt, cancellationToken);
 
             // Create SaS URLs for upload with optional IP restriction
-            var devicePath = $"staging/{deviceId:N}/{runId:N}/";
-            var uploadSas = await sasUrlService.GenerateUploadSasUrlAsync(devicePath, clientIp, ttlMinutes: 60, cancellationToken);
-            var manifestPath = $"runs/{deviceId:N}/{runId:N}/";
-            var manifestSas = await sasUrlService.GenerateUploadSasUrlAsync(manifestPath, clientIp, ttlMinutes: 60, cancellationToken);
+            var uploadSas = await sasUrlService.GenerateUploadSasUrlAsync(StagingPath(deviceId, runId), clientIp, ttlMinutes: SasTtlMinutes, cancellationToken);
+            var manifestSas = await sasUrlService.GenerateUploadSasUrlAsync(ManifestPath(deviceId, runId), clientIp, ttlMinutes: SasTtlMinutes, cancellationToken);
 
             var runStartDto = new BackupRunStartResult
             {
@@ -70,6 +74,62 @@ public class BackupRunService(
                 { "error.type", ex.GetType().Name }
             };
             telemetry.BackupRunsFailed.Add(1, errorTags);
+            telemetry.OperationDuration.Record(stopwatch.ElapsedMilliseconds, errorTags);
+
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            activity?.SetTag(ActivityAttributes.OperationStatus, "error");
+            activity?.SetTag(ActivityAttributes.ErrorType, ex.GetType().Name);
+            activity?.SetTag(ActivityAttributes.ErrorMessage, ex.Message);
+            activity?.AddException(ex);
+
+            throw;
+        }
+    }
+
+    public async Task<BackupRunSasRefreshResult> RefreshSasUrlsAsync(Guid deviceId, Guid runId, string? clientIp = null, CancellationToken cancellationToken = default)
+    {
+        using var activity = telemetry.ActivitySource.StartActivity("RefreshBackupRunSas");
+        activity?.SetTag(ActivityAttributes.OperationName, "RefreshBackupRunSas");
+        activity?.SetTag(ActivityAttributes.DeviceId, deviceId.ToString());
+        activity?.SetTag(ActivityAttributes.RunId, runId.ToString());
+
+        var stopwatch = Stopwatch.StartNew();
+        var metricTags = new TagList { { "operation", "refresh_sas" } };
+
+        try
+        {
+            // Verify the run exists (and belongs to this device) before re-signing its directories.
+            // A committed run must not keep receiving writable tokens.
+            var run = await manifestManager.GetBackupRunAsync(deviceId, runId, cancellationToken);
+            if (run.Status == BackupRunStatus.Succeeded)
+            {
+                throw new InvalidOperationException($"Backup run {runId} has already been committed; its SAS URLs cannot be refreshed");
+            }
+
+            // Re-sign the same staging/manifest directories with a fresh expiry window.
+            var uploadSas = await sasUrlService.GenerateUploadSasUrlAsync(StagingPath(deviceId, runId), clientIp, ttlMinutes: SasTtlMinutes, cancellationToken);
+            var manifestSas = await sasUrlService.GenerateUploadSasUrlAsync(ManifestPath(deviceId, runId), clientIp, ttlMinutes: SasTtlMinutes, cancellationToken);
+
+            stopwatch.Stop();
+            telemetry.OperationDuration.Record(stopwatch.ElapsedMilliseconds, metricTags);
+            activity?.SetTag(ActivityAttributes.OperationStatus, "success");
+
+            return new BackupRunSasRefreshResult
+            {
+                DeviceId = deviceId,
+                RunId = runId,
+                SasUrl = uploadSas,
+                ManifestSasUrl = manifestSas
+            };
+        }
+        catch (Exception ex)
+        {
+            stopwatch.Stop();
+            var errorTags = new TagList
+            {
+                { "operation", "refresh_sas" },
+                { "error.type", ex.GetType().Name }
+            };
             telemetry.OperationDuration.Record(stopwatch.ElapsedMilliseconds, errorTags);
 
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);

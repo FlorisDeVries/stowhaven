@@ -527,4 +527,64 @@ public class BackupRunServiceTests
     }
 
     #endregion
+
+    #region RefreshSasUrlsAsync Tests
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task RefreshSasUrlsAsync_ForActiveRun_ReissuesUploadAndManifestSasForSameDirectories()
+    {
+        // Arrange
+        var deviceId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+
+        _manifestManagerMock
+            .Setup(x => x.GetBackupRunAsync(deviceId, runId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new BackupRun { DeviceId = deviceId, RunId = runId, Status = BackupRunStatus.Processing });
+
+        var capturedPaths = new List<string>();
+        _sasUrlServiceMock
+            .Setup(x => x.GenerateUploadSasUrlAsync(It.IsAny<string>(), It.IsAny<string?>(), 60, It.IsAny<CancellationToken>()))
+            .Callback((string path, string? _, int? _, CancellationToken _) => capturedPaths.Add(path))
+            .ReturnsAsync(new SasUrlInfo
+            {
+                Url = new Uri("https://storage.blob.core.windows.net/backups?sig=refreshed"),
+                ExpiresAt = DateTimeOffset.UtcNow.AddHours(1),
+                TtlMinutes = 60
+            });
+
+        // Act
+        var result = await _sut.RefreshSasUrlsAsync(deviceId, runId);
+
+        // Assert
+        result.DeviceId.Should().Be(deviceId);
+        result.RunId.Should().Be(runId);
+        result.SasUrl.Should().NotBeNull();
+        result.ManifestSasUrl.Should().NotBeNull();
+        // Same staging/manifest directories as the original run - no new run is created.
+        capturedPaths.Should().Contain(path => path.StartsWith("staging/", StringComparison.Ordinal));
+        capturedPaths.Should().Contain(path => path.StartsWith("runs/", StringComparison.Ordinal));
+        _manifestManagerMock.Verify(x => x.CreateBackupRunAsync(
+            It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<DateTimeOffset>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task RefreshSasUrlsAsync_ForCommittedRun_Throws()
+    {
+        // Arrange
+        var deviceId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+
+        _manifestManagerMock
+            .Setup(x => x.GetBackupRunAsync(deviceId, runId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new BackupRun { DeviceId = deviceId, RunId = runId, Status = BackupRunStatus.Succeeded });
+
+        // Act & Assert
+        await Assert.ThrowsAsync<InvalidOperationException>(() => _sut.RefreshSasUrlsAsync(deviceId, runId));
+        _sasUrlServiceMock.Verify(x => x.GenerateUploadSasUrlAsync(
+            It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<int?>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    #endregion
 }

@@ -135,7 +135,7 @@ public class BackupServiceIntegrationTests : IDisposable
             return Task.CompletedTask;
         }
 
-        public Task<IReadOnlyList<TaggedFile>> UploadFilesAsync(
+        public Task<UploadBatchResult> UploadFilesAsync(
             BlobContainerClient containerClient,
             IReadOnlyList<TaggedFile> files,
             CancellationToken cancellationToken)
@@ -145,7 +145,7 @@ public class BackupServiceIntegrationTests : IDisposable
                 cancellationToken.ThrowIfCancellationRequested();
                 UploadedPaths.Add(file.GetStoragePath());
             }
-            return Task.FromResult<IReadOnlyList<TaggedFile>>(files);
+            return Task.FromResult(new UploadBatchResult(files, [], 0));
         }
     }
 

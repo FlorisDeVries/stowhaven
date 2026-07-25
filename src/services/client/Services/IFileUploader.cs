@@ -5,6 +5,17 @@ using FlorisDeV.BackupContracts.Manifest;
 namespace FlorisDeV.BackupClient.Services;
 
 /// <summary>
+/// Outcome of uploading a batch of files.
+/// </summary>
+/// <param name="Uploaded">Files that were successfully uploaded (or already existed).</param>
+/// <param name="SasExpiredFiles">Files that failed solely because the SAS token had expired; retryable with a fresh token.</param>
+/// <param name="OtherFailureCount">Count of files that failed for any other reason.</param>
+public sealed record UploadBatchResult(
+    IReadOnlyList<TaggedFile> Uploaded,
+    IReadOnlyList<TaggedFile> SasExpiredFiles,
+    int OtherFailureCount);
+
+/// <summary>
 /// Handles parallel file uploads to Azure Blob Storage with retry logic and progress tracking.
 /// </summary>
 public interface IFileUploader
@@ -17,9 +28,10 @@ public interface IFileUploader
     
     /// <summary>
     /// Uploads tagged files to blob storage using parallel uploads with retry logic.
-    /// Returns only the files that were successfully uploaded for atomic state management.
+    /// Files that failed because the SAS token expired mid-upload are reported separately
+    /// so the caller can refresh the token and retry them rather than treating them as lost.
     /// </summary>
-    Task<IReadOnlyList<TaggedFile>> UploadFilesAsync(
+    Task<UploadBatchResult> UploadFilesAsync(
         BlobContainerClient containerClient,
         IReadOnlyList<TaggedFile> files,
         CancellationToken cancellationToken);

@@ -180,4 +180,34 @@ public partial class BackupService
         Level = LogLevel.Information,
         Message = "Commit {CommitId} is still processing server-side after {WaitSeconds:F0}s (status {Status}). The run is durable and will be finalized automatically on the next backup run; no re-upload is needed.")]
     partial void LogCommitStillProcessing(Guid commitId, string status, double waitSeconds);
+
+    [LoggerMessage(
+        EventId = 40,
+        Level = LogLevel.Information,
+        Message = "Upload SAS for run {RunId} is near expiry ({ExpiresAt}); requesting a fresh token before uploading the next batch.")]
+    partial void LogRefreshingUploadSas(Guid runId, DateTimeOffset expiresAt);
+
+    [LoggerMessage(
+        EventId = 41,
+        Level = LogLevel.Information,
+        Message = "Refreshed upload SAS for run {RunId}; new expiry {ExpiresAt}.")]
+    partial void LogRefreshedUploadSas(Guid runId, DateTimeOffset expiresAt);
+
+    [LoggerMessage(
+        EventId = 42,
+        Level = LogLevel.Warning,
+        Message = "SAS token expired mid-batch for run {RunId}; {Count} file(s) will be retried with a refreshed token.")]
+    partial void LogSasExpiredMidBatch(int count, Guid runId);
+
+    [LoggerMessage(
+        EventId = 43,
+        Level = LogLevel.Warning,
+        Message = "{Count} file(s) for run {RunId} could not be uploaded even after refreshing the SAS token; they will be backed up on the next run.")]
+    partial void LogSasExpiredUnrecovered(int count, Guid runId);
+
+    [LoggerMessage(
+        EventId = 44,
+        Level = LogLevel.Warning,
+        Message = "Backup completed with {Count} file(s) deferred because the upload SAS could not be kept valid; they will be backed up on the next run.")]
+    partial void LogBackupCompletedWithSasExpiredFiles(int count);
 }

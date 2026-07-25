@@ -62,7 +62,7 @@ public class FileUploaderTests
         var files = Array.Empty<TaggedFile>();
 
         // Act
-        var result = await _sut.UploadFilesAsync(mockContainer.Object, files, CancellationToken.None);
+        var result = (await _sut.UploadFilesAsync(mockContainer.Object, files, CancellationToken.None)).Uploaded;
 
         // Assert
         result.Should().BeEmpty();
@@ -100,7 +100,7 @@ public class FileUploaderTests
             .ReturnsAsync(mockResponse.Object);
 
         // Act
-        var result = await _sut.UploadFilesAsync(mockContainer.Object, files, CancellationToken.None);
+        var result = (await _sut.UploadFilesAsync(mockContainer.Object, files, CancellationToken.None)).Uploaded;
 
         // Assert
         result.Should().HaveCount(1);
@@ -151,7 +151,7 @@ public class FileUploaderTests
         }
 
         // Act
-        var result = await _sut.UploadFilesAsync(mockContainer.Object, files, CancellationToken.None);
+        var result = (await _sut.UploadFilesAsync(mockContainer.Object, files, CancellationToken.None)).Uploaded;
 
         // Assert
         result.Should().HaveCount(3);
@@ -201,7 +201,7 @@ public class FileUploaderTests
             .ThrowsAsync(new IOException("File locked"));
 
         // Act
-        var result = await _sut.UploadFilesAsync(mockContainer.Object, files, CancellationToken.None);
+        var result = (await _sut.UploadFilesAsync(mockContainer.Object, files, CancellationToken.None)).Uploaded;
 
         // Assert
         result.Should().HaveCount(1);
@@ -239,7 +239,7 @@ public class FileUploaderTests
         }
 
         // Act
-        var result = await _sut.UploadFilesAsync(mockContainer.Object, files, CancellationToken.None);
+        var result = (await _sut.UploadFilesAsync(mockContainer.Object, files, CancellationToken.None)).Uploaded;
 
         // Assert
         result.Should().BeEmpty();
@@ -296,7 +296,7 @@ public class FileUploaderTests
             .ReturnsAsync(mockResponse.Object);
 
         // Act
-        var result = await _sut.UploadFilesAsync(mockContainer.Object, new[] { file }, CancellationToken.None);
+        var result = (await _sut.UploadFilesAsync(mockContainer.Object, new[] { file }, CancellationToken.None)).Uploaded;
 
         // Assert
         result.Should().HaveCount(1);
@@ -335,7 +335,7 @@ public class FileUploaderTests
             .ReturnsAsync(mockResponse.Object);
 
         // Act
-        var result = await _sut.UploadFilesAsync(mockContainer.Object, new[] { file }, CancellationToken.None);
+        var result = (await _sut.UploadFilesAsync(mockContainer.Object, new[] { file }, CancellationToken.None)).Uploaded;
 
         // Assert
         result.Should().HaveCount(1);
@@ -376,7 +376,7 @@ public class FileUploaderTests
             .ReturnsAsync(mockResponse.Object);
 
         // Act
-        var result = await _sut.UploadFilesAsync(mockContainer.Object, new[] { file }, CancellationToken.None);
+        var result = (await _sut.UploadFilesAsync(mockContainer.Object, new[] { file }, CancellationToken.None)).Uploaded;
 
         // Assert
         result.Should().HaveCount(1);
@@ -438,7 +438,7 @@ public class FileUploaderTests
             .ThrowsAsync(new RequestFailedException("Network error"));
 
         // Act
-        var result = await _sut.UploadFilesAsync(mockContainer.Object, new[] { file1, file2 }, CancellationToken.None);
+        var result = (await _sut.UploadFilesAsync(mockContainer.Object, new[] { file1, file2 }, CancellationToken.None)).Uploaded;
 
         // Assert
         result.Should().HaveCount(1);
@@ -480,7 +480,7 @@ public class FileUploaderTests
             .ReturnsAsync(mockResponse.Object);
 
         // Act
-        var result = await _sut.UploadFilesAsync(mockContainer.Object, new[] { file }, CancellationToken.None);
+        var result = (await _sut.UploadFilesAsync(mockContainer.Object, new[] { file }, CancellationToken.None)).Uploaded;
 
         // Assert
         result.Should().HaveCount(1);
