@@ -37,11 +37,24 @@ public interface IFileUploader
         CancellationToken cancellationToken);
 
     /// <summary>
-    /// Uploads run-manifest.json to the run manifest location.
+    /// Streams run-manifest.json to the run manifest location, writing entries straight to the blob
+    /// as they are produced. A run covering hundreds of thousands of files therefore costs one write
+    /// buffer rather than a fully materialized manifest document.
     /// </summary>
+    /// <param name="containerClient">Container holding the run's manifest location.</param>
+    /// <param name="deviceId">Device the run belongs to.</param>
+    /// <param name="runId">Run being described.</param>
+    /// <param name="files">File entries, streamed in the order they should appear.</param>
+    /// <param name="deleted">Deleted logical paths, streamed in the order they should appear.</param>
+    /// <param name="basePath">Manifest base path, when not already embedded in the container URI.</param>
+    /// <param name="isPathEmbedded">Whether <paramref name="basePath"/> is already part of the container URI.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
     Task UploadRunManifestAsync(
         BlobContainerClient containerClient,
-        RunManifest manifest,
+        Guid deviceId,
+        Guid runId,
+        IAsyncEnumerable<ManifestFileEntry> files,
+        IAsyncEnumerable<string> deleted,
         string? basePath,
         bool isPathEmbedded,
         CancellationToken cancellationToken);

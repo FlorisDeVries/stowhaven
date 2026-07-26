@@ -97,32 +97,6 @@ public partial class BackupScanner(
         return (fileWithCachedHash, false, FileChangeType.Unchanged);
     }
 
-    /// <summary>
-    /// Detects files that were deleted since the last backup.
-    /// </summary>
-    public async Task<IReadOnlyList<string>> DetectDeletedFilesAsync(
-        HashSet<string> scannedPaths,
-        CancellationToken cancellationToken)
-    {
-        var deletedFiles = new List<string>();
-        var previousFiles = await backupStateService.GetAllFileStatesAsync(cancellationToken);
-
-        foreach (var previousFile in previousFiles)
-        {
-            if (!scannedPaths.Contains(previousFile.RelativePath))
-            {
-                deletedFiles.Add(previousFile.RelativePath);
-            }
-        }
-
-        if (deletedFiles.Count > 0)
-        {
-            LogDeletedFilesDetected(deletedFiles.Count);
-        }
-
-        return deletedFiles;
-    }
-
     #region Logging
 
     [LoggerMessage(
@@ -131,11 +105,6 @@ public partial class BackupScanner(
         Message = "Scanning target '{TargetName}': {Directory}")]
     private partial void LogScanningTarget(string targetName, string directory);
 
-    [LoggerMessage(
-        EventId = 2,
-        Level = LogLevel.Information,
-        Message = "Detected {Count} deleted files since last backup")]
-    private partial void LogDeletedFilesDetected(int count);
 
     [LoggerMessage(
         EventId = 3,

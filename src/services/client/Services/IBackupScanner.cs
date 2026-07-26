@@ -23,11 +23,4 @@ public interface IBackupScanner
     Task<(TaggedFile File, bool NeedsBackup, FileChangeType ChangeType)> AnalyzeFileAsync(
         TaggedFile taggedFile,
         CancellationToken cancellationToken);
-
-    /// <summary>
-    /// Detects files that were deleted since the last backup.
-    /// </summary>
-    Task<IReadOnlyList<string>> DetectDeletedFilesAsync(
-        HashSet<string> scannedPaths,
-        CancellationToken cancellationToken);
 }

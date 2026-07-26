@@ -481,89 +481,6 @@ public class BackupStateServiceTests : IDisposable
 
     #endregion
 
-    #region RemoveDeletedFilesAsync Tests
-
-    [Fact]
-    [Trait("Category", "Integration")]
-    public async Task RemoveDeletedFilesAsync_RemovesSpecifiedFiles()
-    {
-        // Arrange
-        var files = CreateTestFileMetadata(5);
-        await SaveBackupState(files);
-
-        var filesToDelete = new List<string> { files[1].FilePath, files[3].FilePath };
-
-        // Act
-        await _sut.RemoveDeletedFilesAsync(filesToDelete);
-
-        // Assert
-        var remainingFiles = await _sut.GetAllFileStatesAsync();
-        remainingFiles.Should().HaveCount(3);
-        remainingFiles.Should().NotContain(f => f.RelativePath == files[1].FilePath);
-        remainingFiles.Should().NotContain(f => f.RelativePath == files[3].FilePath);
-    }
-
-    [Fact]
-    [Trait("Category", "Integration")]
-    public async Task RemoveDeletedFilesAsync_WithEmptyList_DoesNothing()
-    {
-        // Arrange
-        var files = CreateTestFileMetadata(3);
-        await SaveBackupState(files);
-
-        // Act
-        await _sut.RemoveDeletedFilesAsync(new List<string>());
-
-        // Assert
-        var remainingFiles = await _sut.GetAllFileStatesAsync();
-        remainingFiles.Should().HaveCount(3);
-    }
-
-    [Fact]
-    [Trait("Category", "Integration")]
-    public async Task RemoveDeletedFilesAsync_WithNonExistentPaths_DoesNotThrow()
-    {
-        // Arrange
-        var files = CreateTestFileMetadata(2);
-        await SaveBackupState(files);
-
-        var pathsToDelete = new List<string>
-        {
-            "/non/existent/file1.txt",
-            "/non/existent/file2.txt"
-        };
-
-        // Act
-        var act = async () => await _sut.RemoveDeletedFilesAsync(pathsToDelete);
-
-        // Assert
-        await act.Should().NotThrowAsync();
-
-        var remainingFiles = await _sut.GetAllFileStatesAsync();
-        remainingFiles.Should().HaveCount(2);
-    }
-
-    [Fact]
-    [Trait("Category", "Integration")]
-    public async Task RemoveDeletedFilesAsync_IsCaseInsensitive()
-    {
-        // Arrange
-        var files = new List<FileMetadata>
-        {
-            new("/Path/To/MyFile.TXT", 100, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "hash1")
-        };
-        await SaveBackupState(files);
-
-        // Act
-        await _sut.RemoveDeletedFilesAsync(new List<string> { "/path/to/myfile.txt" });
-
-        // Assert
-        var remainingFiles = await _sut.GetAllFileStatesAsync();
-        remainingFiles.Should().BeEmpty();
-    }
-
-    #endregion
-
     #region PendingBackupRun Tests
 
     [Fact]
@@ -583,10 +500,10 @@ public class BackupStateServiceTests : IDisposable
         result.Should().NotBeNull();
         result!.DeviceId.Should().Be(deviceId);
         result.RunId.Should().Be(runId);
-        result.UploadedChangedFiles.Should().HaveCount(1);
-        result.UploadedChangedFiles[0].UniqueFileId.Should().Be("unique-file-1");
         result.ManifestUploaded.Should().BeFalse();
         result.CommitId.Should().BeNull();
+        result.UploadedFileCount.Should().Be(0);
+        result.DeletedFileCount.Should().Be(0);
     }
 
     [Fact]
@@ -633,6 +550,274 @@ public class BackupStateServiceTests : IDisposable
         // Assert
         stillPresent.Should().NotBeNull();
         cleared.Should().BeNull();
+    }
+
+    #endregion
+
+    #region Run Journal Tests
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task AppendPendingRunFiles_StreamsBackEveryEntry()
+    {
+        // Arrange
+        var deviceId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        await _sut.SavePendingBackupRunAsync(CreatePendingRun(deviceId, runId));
+
+        // Act: two separate appends, as consecutive batches would do
+        await _sut.AppendPendingRunFilesAsync(deviceId, runId,
+            [CreateJournalFile("a.txt", "hash-a", 1, "uid-a")]);
+        await _sut.AppendPendingRunFilesAsync(deviceId, runId,
+            [CreateJournalFile("b.txt", "hash-b", 2, "uid-b")]);
+
+        // Assert
+        var streamed = new List<TaggedFile>();
+        await foreach (var file in _sut.StreamPendingRunFilesAsync(deviceId, runId))
+        {
+            streamed.Add(file);
+        }
+
+        streamed.Should().HaveCount(2);
+        streamed.Select(f => f.UniqueFileId).Should().BeEquivalentTo(["uid-a", "uid-b"]);
+        streamed.Should().AllSatisfy(f => f.UploadSizeBytes.Should().NotBeNull());
+
+        var header = await _sut.GetPendingBackupRunAsync(deviceId);
+        header!.UploadedFileCount.Should().Be(2);
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task AppendPendingRunFiles_WhenSamePathAppendedTwice_KeepsSingleEntry()
+    {
+        // Arrange: a retried batch must not duplicate journal entries.
+        var deviceId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        await _sut.SavePendingBackupRunAsync(CreatePendingRun(deviceId, runId));
+
+        // Act
+        await _sut.AppendPendingRunFilesAsync(deviceId, runId, [CreateJournalFile("a.txt", "hash-a", 1, "uid-a")]);
+        await _sut.AppendPendingRunFilesAsync(deviceId, runId, [CreateJournalFile("a.txt", "hash-a", 1, "uid-a2")]);
+
+        // Assert
+        var header = await _sut.GetPendingBackupRunAsync(deviceId);
+        header!.UploadedFileCount.Should().Be(1);
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task FindStagedRunFile_MatchesOnHashAndSizeOnly()
+    {
+        // Arrange
+        var deviceId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        await _sut.SavePendingBackupRunAsync(CreatePendingRun(deviceId, runId));
+        await _sut.AppendPendingRunFilesAsync(deviceId, runId, [CreateJournalFile("a.txt", "hash-a", 7, "uid-a")]);
+
+        // Act
+        var match = await _sut.FindStagedRunFileAsync(deviceId, runId, "documents/a.txt", "hash-a", 7);
+        var changedHash = await _sut.FindStagedRunFileAsync(deviceId, runId, "documents/a.txt", "hash-b", 7);
+        var changedSize = await _sut.FindStagedRunFileAsync(deviceId, runId, "documents/a.txt", "hash-a", 8);
+
+        // Assert: a locally modified file must not resolve to the stale staged blob.
+        match!.UniqueFileId.Should().Be("uid-a");
+        changedHash.Should().BeNull();
+        changedSize.Should().BeNull();
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task ClearPendingBackupRun_AlsoClearsJournalAndDeletions()
+    {
+        // Arrange
+        var deviceId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        await _sut.SavePendingBackupRunAsync(CreatePendingRun(deviceId, runId));
+        await _sut.AppendPendingRunFilesAsync(deviceId, runId, [CreateJournalFile()]);
+
+        await _sut.SaveBackupSuccessAsync(Guid.NewGuid(), "commit", CreateTestFileMetadata(1));
+        await _sut.BeginScanAsync();
+        await _sut.RecordScanDeletionsAsync(deviceId, runId);
+
+        // Act
+        await _sut.ClearPendingBackupRunAsync(deviceId, runId);
+
+        // Assert: a header left without its journal would look resumable with nothing uploaded.
+        (await _sut.GetPendingBackupRunAsync(deviceId)).Should().BeNull();
+
+        var streamed = new List<TaggedFile>();
+        await foreach (var file in _sut.StreamPendingRunFilesAsync(deviceId, runId))
+        {
+            streamed.Add(file);
+        }
+
+        streamed.Should().BeEmpty();
+
+        var deletions = new List<string>();
+        await foreach (var path in _sut.StreamPendingRunDeletionsAsync(deviceId, runId))
+        {
+            deletions.Add(path);
+        }
+
+        deletions.Should().BeEmpty();
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task PromotePendingRunFilesToState_MakesJournalTheTrackedState()
+    {
+        // Arrange
+        var deviceId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        await _sut.SavePendingBackupRunAsync(CreatePendingRun(deviceId, runId));
+        await _sut.AppendPendingRunFilesAsync(deviceId, runId,
+            [CreateJournalFile("a.txt", "hash-a", 11, "uid-a")]);
+
+        // Act
+        await _sut.PromotePendingRunFilesToStateAsync(deviceId, runId);
+
+        // Assert
+        var tracked = await _sut.GetFileStateAsync("documents/a.txt");
+        tracked.Should().NotBeNull();
+        tracked!.Sha256Hash.Should().Be("hash-a");
+        tracked.SizeBytes.Should().Be(11);
+        tracked.BackupRunId.Should().Be(runId);
+    }
+
+    #endregion
+
+    #region Scan Deletion Detection Tests
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task ScanDeletions_WhenEveryTrackedFileWasScanned_FindsNone()
+    {
+        // Arrange
+        var files = CreateTestFileMetadata(2);
+        await SaveBackupState(files);
+
+        // Act
+        await _sut.BeginScanAsync();
+        await _sut.AppendScannedPathsAsync(files.Select(f => f.FilePath).ToList());
+
+        // Assert
+        (await _sut.CountScanDeletionsAsync()).Should().Be(0);
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task ScanDeletions_WhenTrackedFilesWereNotScanned_FindsThem()
+    {
+        // Arrange
+        var files = CreateTestFileMetadata(3);
+        await SaveBackupState(files);
+
+        var deviceId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        await _sut.SavePendingBackupRunAsync(CreatePendingRun(deviceId, runId));
+
+        // Act: only the first file is still on disk
+        await _sut.BeginScanAsync();
+        await _sut.AppendScannedPathsAsync([files[0].FilePath]);
+
+        var counted = await _sut.CountScanDeletionsAsync();
+        var recorded = await _sut.RecordScanDeletionsAsync(deviceId, runId);
+
+        // Assert
+        counted.Should().Be(2);
+        recorded.Should().Be(2);
+
+        var deletions = new List<string>();
+        await foreach (var path in _sut.StreamPendingRunDeletionsAsync(deviceId, runId))
+        {
+            deletions.Add(path);
+        }
+
+        deletions.Should().BeEquivalentTo([files[1].FilePath, files[2].FilePath]);
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task ScanDeletions_IgnoresPathCasing()
+    {
+        // Arrange: matches the case-insensitive comparison the scanned-path set used previously.
+        var files = CreateTestFileMetadata(1);
+        await SaveBackupState(files);
+
+        // Act
+        await _sut.BeginScanAsync();
+        await _sut.AppendScannedPathsAsync([files[0].FilePath.ToUpperInvariant()]);
+
+        // Assert
+        (await _sut.CountScanDeletionsAsync()).Should().Be(0);
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task BeginScan_DiscardsPreviousScanPaths()
+    {
+        // Arrange
+        var files = CreateTestFileMetadata(1);
+        await SaveBackupState(files);
+
+        await _sut.BeginScanAsync();
+        await _sut.AppendScannedPathsAsync([files[0].FilePath]);
+
+        // Act: a fresh scan that never sees the file
+        await _sut.BeginScanAsync();
+
+        // Assert
+        (await _sut.CountScanDeletionsAsync()).Should().Be(1);
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task RecordScanDeletions_WhenRerun_ReplacesEarlierResult()
+    {
+        // Arrange: a file recorded as deleted by one attempt reappears before the retry scans it.
+        var files = CreateTestFileMetadata(1);
+        await SaveBackupState(files);
+
+        var deviceId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        await _sut.SavePendingBackupRunAsync(CreatePendingRun(deviceId, runId));
+
+        await _sut.BeginScanAsync();
+        (await _sut.RecordScanDeletionsAsync(deviceId, runId)).Should().Be(1);
+
+        // Act
+        await _sut.BeginScanAsync();
+        await _sut.AppendScannedPathsAsync([files[0].FilePath]);
+        var second = await _sut.RecordScanDeletionsAsync(deviceId, runId);
+
+        // Assert
+        second.Should().Be(0);
+        var header = await _sut.GetPendingBackupRunAsync(deviceId);
+        header!.DeletedFileCount.Should().Be(0);
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task ApplyPendingRunDeletions_DropsTrackedStateForDeletedFiles()
+    {
+        // Arrange
+        var files = CreateTestFileMetadata(2);
+        await SaveBackupState(files);
+
+        var deviceId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        await _sut.SavePendingBackupRunAsync(CreatePendingRun(deviceId, runId));
+
+        await _sut.BeginScanAsync();
+        await _sut.AppendScannedPathsAsync([files[0].FilePath]);
+        await _sut.RecordScanDeletionsAsync(deviceId, runId);
+
+        // Act
+        await _sut.ApplyPendingRunDeletionsAsync(deviceId, runId);
+
+        // Assert
+        var remaining = await _sut.GetAllFileStatesAsync();
+        remaining.Select(f => f.RelativePath).Should().BeEquivalentTo([files[0].FilePath]);
     }
 
     #endregion
@@ -695,19 +880,24 @@ public class BackupStateServiceTests : IDisposable
                 BasePath = "runs/device/run",
                 IsPathEmbedded = false
             },
-            UploadedChangedFiles =
-            [
-                new TaggedFile(
-                    "documents",
-                    "/source",
-                    new FileMetadata("/source/file.txt", 5, now, now, "hash-1"))
-                {
-                    UniqueFileId = "unique-file-1",
-                    UploadSha256 = "hash-1",
-                    UploadSizeBytes = 5
-                }
-            ],
-            DeletedFiles = ["documents/deleted.txt"]
+        };
+    }
+
+    private static TaggedFile CreateJournalFile(
+        string relativePath = "file.txt",
+        string hash = "hash-1",
+        long size = 5,
+        string uniqueFileId = "unique-file-1")
+    {
+        var now = DateTimeOffset.UtcNow;
+        return new TaggedFile(
+            "documents",
+            "/source",
+            new FileMetadata($"/source/{relativePath}", size, now, now, hash))
+        {
+            UniqueFileId = uniqueFileId,
+            UploadSha256 = hash,
+            UploadSizeBytes = size
         };
     }
 

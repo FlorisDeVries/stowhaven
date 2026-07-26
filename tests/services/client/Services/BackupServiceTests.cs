@@ -119,11 +119,6 @@ public class BackupServiceTests : IDisposable
                 It.IsAny<CancellationToken>()))
             .Returns(ToAsync<TaggedFile>());
 
-        _mockScanner.Setup(x => x.DetectDeletedFilesAsync(
-                It.IsAny<HashSet<string>>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(Array.Empty<string>());
-
         // Act
         var result = await _sut.Backup(CancellationToken.None);
 
@@ -165,17 +160,6 @@ public class BackupServiceTests : IDisposable
 
         _mockScanner.Setup(x => x.AnalyzeFileAsync(It.IsAny<TaggedFile>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((TaggedFile f, CancellationToken _) => (f, true, FileChangeType.New));
-
-        _mockScanner.Setup(x => x.DetectDeletedFilesAsync(
-                It.IsAny<HashSet<string>>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(Array.Empty<string>());
-
-        _mockStateService.Setup(x => x.UpsertFileStateBatchAsync(
-                It.IsAny<IReadOnlyList<TaggedFile>>(),
-                It.IsAny<Guid>(),
-                It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
 
         _mockStateService.Setup(x => x.SaveBackupSuccessAsync(
                 It.IsAny<Guid>(),
@@ -226,8 +210,13 @@ public class BackupServiceTests : IDisposable
             It.IsAny<Azure.Storage.Blobs.BlobContainerClient>(),
             It.Is<IReadOnlyList<TaggedFile>>(files => files.Count == 1),
             It.IsAny<CancellationToken>()), Times.Once);
-        _mockStateService.Verify(x => x.UpsertFileStateBatchAsync(
-            It.IsAny<IReadOnlyList<TaggedFile>>(),
+        _mockStateService.Verify(x => x.AppendPendingRunFilesAsync(
+            It.IsAny<Guid>(),
+            It.Is<Guid>(id => id == runId),
+            It.Is<IReadOnlyList<TaggedFile>>(files => files.Count == 1),
+            It.IsAny<CancellationToken>()), Times.Once);
+        _mockStateService.Verify(x => x.PromotePendingRunFilesToStateAsync(
+            It.IsAny<Guid>(),
             It.Is<Guid>(id => id == runId),
             It.IsAny<CancellationToken>()), Times.Once);
         _mockStateService.Verify(x => x.SaveBackupSuccessAsync(
@@ -270,14 +259,6 @@ public class BackupServiceTests : IDisposable
         _mockScanner.Setup(x => x.AnalyzeFileAsync(It.IsAny<TaggedFile>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((TaggedFile f, CancellationToken _) => (f, true, FileChangeType.New));
 
-        _mockScanner.Setup(x => x.DetectDeletedFilesAsync(
-                It.IsAny<HashSet<string>>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(Array.Empty<string>());
-
-        _mockStateService.Setup(x => x.UpsertFileStateBatchAsync(
-                It.IsAny<IReadOnlyList<TaggedFile>>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
         _mockStateService.Setup(x => x.SaveBackupSuccessAsync(
                 It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<FileMetadata>>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);
@@ -341,8 +322,6 @@ public class BackupServiceTests : IDisposable
             .Returns(ToAsync(file1));
         _mockScanner.Setup(x => x.AnalyzeFileAsync(It.IsAny<TaggedFile>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((TaggedFile f, CancellationToken _) => (f, true, FileChangeType.New));
-        _mockScanner.Setup(x => x.DetectDeletedFilesAsync(It.IsAny<HashSet<string>>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(Array.Empty<string>());
         _mockApiClient.Setup(x => x.StartBackupRun(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new StartBackupRunResponse
             {
@@ -471,17 +450,6 @@ public class BackupServiceTests : IDisposable
         _mockScanner.Setup(x => x.AnalyzeFileAsync(It.IsAny<TaggedFile>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((TaggedFile f, CancellationToken _) => (f, true, FileChangeType.Modified));
 
-        _mockScanner.Setup(x => x.DetectDeletedFilesAsync(
-                It.IsAny<HashSet<string>>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(Array.Empty<string>());
-
-        _mockStateService.Setup(x => x.UpsertFileStateBatchAsync(
-                It.IsAny<IReadOnlyList<TaggedFile>>(),
-                It.IsAny<Guid>(),
-                It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
-
         _mockStateService.Setup(x => x.SaveBackupSuccessAsync(
                 It.IsAny<Guid>(),
                 It.IsAny<string>(),
@@ -529,6 +497,37 @@ public class BackupServiceTests : IDisposable
 
     [Fact]
     [Trait("Category", "Unit")]
+    public async Task Backup_WhenNoDeletionsDetected_ShouldStillRederiveRunDeletions()
+    {
+        // Arrange: an interrupted earlier attempt at this run may have journaled deletions for files
+        // that exist again. Re-deriving must happen even when this scan finds nothing deleted,
+        // otherwise those stale entries reach the manifest and drop live files from tracked state.
+        var deviceId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        ArrangeSingleFileBackup(deviceId, runId, sasExpiresIn: TimeSpan.FromMinutes(60));
+
+        _mockStateService.Setup(x => x.CountScanDeletionsAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(0);
+
+        _mockUploader.Setup(x => x.UploadFilesAsync(
+                It.IsAny<Azure.Storage.Blobs.BlobContainerClient>(),
+                It.IsAny<IReadOnlyList<TaggedFile>>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((Azure.Storage.Blobs.BlobContainerClient _, IReadOnlyList<TaggedFile> files, CancellationToken _) => new UploadBatchResult(files, [], 0));
+
+        // Act
+        var result = await _sut.Backup(CancellationToken.None);
+
+        // Assert
+        result.Should().BeTrue();
+        _mockStateService.Verify(x => x.RecordScanDeletionsAsync(
+            It.Is<Guid>(id => id == deviceId),
+            It.Is<Guid>(id => id == runId),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
     public async Task Backup_WhenDeletedFilesOnly_ShouldStartRunAndCommitDeletionManifest()
     {
         // Arrange
@@ -545,16 +544,12 @@ public class BackupServiceTests : IDisposable
                 It.IsAny<CancellationToken>()))
             .Returns(ToAsync<TaggedFile>());
 
-        var deletedFiles = new[] { "/path/to/deleted1.txt", "/path/to/deleted2.txt" };
-        _mockScanner.Setup(x => x.DetectDeletedFilesAsync(
-                It.IsAny<HashSet<string>>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(deletedFiles);
-
-        _mockStateService.Setup(x => x.RemoveDeletedFilesAsync(
-                It.IsAny<IReadOnlyList<string>>(),
-                It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
+        // Deletions are detected inside the state store and never surfaced as a list.
+        _mockStateService.Setup(x => x.CountScanDeletionsAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(2);
+        _mockStateService.Setup(x => x.RecordScanDeletionsAsync(
+                It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(2);
 
         _mockStateService.Setup(x => x.SaveBackupSuccessAsync(
                 It.IsAny<Guid>(),
@@ -585,8 +580,13 @@ public class BackupServiceTests : IDisposable
             It.Is<Guid>(id => id == deviceId),
             It.IsAny<CommitBackupRunRequest>(),
             It.IsAny<CancellationToken>()), Times.Once);
-        _mockStateService.Verify(x => x.RemoveDeletedFilesAsync(
-            It.Is<IReadOnlyList<string>>(files => files.Count == 2),
+        _mockStateService.Verify(x => x.RecordScanDeletionsAsync(
+            It.Is<Guid>(id => id == deviceId),
+            It.IsAny<Guid>(),
+            It.IsAny<CancellationToken>()), Times.Once);
+        _mockStateService.Verify(x => x.ApplyPendingRunDeletionsAsync(
+            It.Is<Guid>(id => id == deviceId),
+            It.IsAny<Guid>(),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -619,11 +619,6 @@ public class BackupServiceTests : IDisposable
 
         _mockScanner.Setup(x => x.AnalyzeFileAsync(It.IsAny<TaggedFile>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((TaggedFile f, CancellationToken _) => (f, false, FileChangeType.Unchanged));
-
-        _mockScanner.Setup(x => x.DetectDeletedFilesAsync(
-                It.IsAny<HashSet<string>>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(Array.Empty<string>());
 
         // Act
         var result = await _sut.Backup(CancellationToken.None);
@@ -667,17 +662,6 @@ public class BackupServiceTests : IDisposable
         _mockScanner.Setup(x => x.AnalyzeFileAsync(It.IsAny<TaggedFile>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((TaggedFile f, CancellationToken _) => (f, true, FileChangeType.New));
 
-        _mockScanner.Setup(x => x.DetectDeletedFilesAsync(
-                It.IsAny<HashSet<string>>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(Array.Empty<string>());
-
-        _mockStateService.Setup(x => x.UpsertFileStateBatchAsync(
-                It.IsAny<IReadOnlyList<TaggedFile>>(),
-                It.IsAny<Guid>(),
-                It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
-
         _mockStateService.Setup(x => x.SaveBackupSuccessAsync(
                 It.IsAny<Guid>(),
                 It.IsAny<string>(),
@@ -719,10 +703,16 @@ public class BackupServiceTests : IDisposable
         // Act
         var result = await _sut.Backup(CancellationToken.None);
 
-        // Assert
+        // Assert: only the files that actually uploaded reach the journal, and the journal is what
+        // becomes tracked state at commit time.
         result.Should().BeTrue();
-        _mockStateService.Verify(x => x.UpsertFileStateBatchAsync(
+        _mockStateService.Verify(x => x.AppendPendingRunFilesAsync(
+            It.IsAny<Guid>(),
+            It.Is<Guid>(id => id == runId),
             It.Is<IReadOnlyList<TaggedFile>>(f => f.Count == 10),
+            It.IsAny<CancellationToken>()), Times.Once);
+        _mockStateService.Verify(x => x.PromotePendingRunFilesToStateAsync(
+            It.IsAny<Guid>(),
             It.Is<Guid>(id => id == runId),
             It.IsAny<CancellationToken>()), Times.Once);
     }
@@ -753,17 +743,6 @@ public class BackupServiceTests : IDisposable
 
         _mockScanner.Setup(x => x.AnalyzeFileAsync(It.IsAny<TaggedFile>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((TaggedFile f, CancellationToken _) => (f, true, FileChangeType.New));
-
-        _mockScanner.Setup(x => x.DetectDeletedFilesAsync(
-                It.IsAny<HashSet<string>>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(Array.Empty<string>());
-
-        _mockStateService.Setup(x => x.UpsertFileStateBatchAsync(
-                It.IsAny<IReadOnlyList<TaggedFile>>(),
-                It.IsAny<Guid>(),
-                It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
 
         _mockApiClient.Setup(x => x.StartBackupRun(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new StartBackupRunResponse 
@@ -874,17 +853,6 @@ public class BackupServiceTests : IDisposable
             _mockScanner.Setup(x => x.AnalyzeFileAsync(It.IsAny<TaggedFile>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync((TaggedFile f, CancellationToken _) => (f, true, FileChangeType.New));
 
-            _mockScanner.Setup(x => x.DetectDeletedFilesAsync(
-                    It.IsAny<HashSet<string>>(),
-                    It.IsAny<CancellationToken>()))
-                .ReturnsAsync(Array.Empty<string>());
-
-            _mockStateService.Setup(x => x.UpsertFileStateBatchAsync(
-                    It.IsAny<IReadOnlyList<TaggedFile>>(),
-                    It.IsAny<Guid>(),
-                    It.IsAny<CancellationToken>()))
-                .Returns(Task.CompletedTask);
-
             _mockStateService.Setup(x => x.SaveBackupSuccessAsync(
                     It.IsAny<Guid>(),
                     It.IsAny<string>(),
@@ -972,17 +940,6 @@ public class BackupServiceTests : IDisposable
         _mockScanner.Setup(x => x.AnalyzeFileAsync(It.Is<TaggedFile>(f => f.Metadata.Hash == "hash3"), It.IsAny<CancellationToken>()))
             .ReturnsAsync((TaggedFile f, CancellationToken _) => (f, false, FileChangeType.Unchanged));
 
-        _mockScanner.Setup(x => x.DetectDeletedFilesAsync(
-                It.IsAny<HashSet<string>>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(Array.Empty<string>());
-
-        _mockStateService.Setup(x => x.UpsertFileStateBatchAsync(
-                It.IsAny<IReadOnlyList<TaggedFile>>(),
-                It.IsAny<Guid>(),
-                It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
-
         _mockStateService.Setup(x => x.SaveBackupSuccessAsync(
                 It.IsAny<Guid>(),
                 It.IsAny<string>(),
@@ -1051,17 +1008,6 @@ public class BackupServiceTests : IDisposable
 
         _mockScanner.Setup(x => x.AnalyzeFileAsync(It.IsAny<TaggedFile>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((TaggedFile f, CancellationToken _) => (f, true, FileChangeType.New));
-
-        _mockScanner.Setup(x => x.DetectDeletedFilesAsync(
-                It.IsAny<HashSet<string>>(),
-                It.IsAny<CancellationToken>()))
-            .ReturnsAsync(Array.Empty<string>());
-
-        _mockStateService.Setup(x => x.UpsertFileStateBatchAsync(
-                It.IsAny<IReadOnlyList<TaggedFile>>(),
-                It.IsAny<Guid>(),
-                It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
 
         _mockApiClient.Setup(x => x.StartBackupRun(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new StartBackupRunResponse 
@@ -1215,11 +1161,6 @@ public class BackupServiceTests : IDisposable
             .Returns(ToAsync(file));
         _mockScanner.Setup(x => x.AnalyzeFileAsync(It.IsAny<TaggedFile>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((TaggedFile f, CancellationToken _) => (f, true, FileChangeType.New));
-        _mockScanner.Setup(x => x.DetectDeletedFilesAsync(It.IsAny<HashSet<string>>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(Array.Empty<string>());
-        _mockStateService.Setup(x => x.UpsertFileStateBatchAsync(
-                It.IsAny<IReadOnlyList<TaggedFile>>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
         _mockStateService.Setup(x => x.SaveBackupSuccessAsync(
                 It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<FileMetadata>>(), It.IsAny<CancellationToken>()))
             .Returns(Task.CompletedTask);

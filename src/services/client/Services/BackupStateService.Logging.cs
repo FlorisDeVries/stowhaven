@@ -42,4 +42,16 @@ public partial class BackupStateService
         Level = LogLevel.Information,
         Message = "Batch upserted {Count} file states for run {RunId}")]
     private partial void LogFileStatesBatchUpserted(int count, Guid runId);
+
+    [LoggerMessage(
+        EventId = 7,
+        Level = LogLevel.Information,
+        Message = "Recorded {Count} deleted file(s) for run {RunId}")]
+    private partial void LogDeletedFilesRecorded(int count, Guid runId);
+
+    [LoggerMessage(
+        EventId = 8,
+        Level = LogLevel.Warning,
+        Message = "Local state schema upgraded from v{FromVersion} to v{ToVersion}; dropped {DroppedRuns} unresumable in-flight run journal(s).")]
+    private partial void LogSchemaUpgraded(long fromVersion, long toVersion, int droppedRuns);
 }

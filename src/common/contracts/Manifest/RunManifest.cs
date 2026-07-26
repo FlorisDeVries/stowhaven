@@ -6,7 +6,10 @@ namespace FlorisDeV.BackupContracts.Manifest;
 /// </summary>
 public sealed record RunManifest
 {
-    public int SchemaVersion { get; init; } = 1;
+    /// <summary>Schema version written by the current client.</summary>
+    public const int CurrentSchemaVersion = 1;
+
+    public int SchemaVersion { get; init; } = CurrentSchemaVersion;
     public required string DeviceId { get; init; }
     public required string RunId { get; init; }
     public required List<ManifestFileEntry> Files { get; init; }

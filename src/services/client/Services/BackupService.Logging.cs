@@ -55,11 +55,6 @@ public partial class BackupService
         Message = "Backup run {RunId} committed")]
     partial void LogBackupRunCommitted(Guid runId);
 
-    [LoggerMessage(
-        EventId = 14,
-        Level = LogLevel.Information,
-        Message = "Tracked {Count} deleted files")]
-    partial void LogDeletedFilesTracked(int count);
 
     [LoggerMessage(
         EventId = 15,
@@ -121,11 +116,6 @@ public partial class BackupService
         Message = "Backup failure rate approaching threshold: {FailedCount}/{TotalAttempts} files failed ({FailurePercentage:F1}%), threshold is {MaxPercentage}%")]
     partial void LogBackupFailureWarning(int failedCount, int totalAttempts, double failurePercentage, int maxPercentage);
 
-    [LoggerMessage(
-        EventId = 30,
-        Level = LogLevel.Warning,
-        Message = "High memory usage detected: {FileCount} files queued for backup ({TotalBytes} bytes). Consider adding exclusion patterns if backup is too large.")]
-    partial void LogBackpressureWarning(int fileCount, long totalBytes);
 
     [LoggerMessage(
         EventId = 31,

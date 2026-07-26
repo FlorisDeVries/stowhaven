@@ -60,4 +60,10 @@ public partial class FileUploader
         Level = LogLevel.Information,
         Message = "Run manifest already exists at {BlobPath}; treating manifest upload as resumed.")]
     private partial void LogRunManifestAlreadyExists(string blobPath);
+
+    [LoggerMessage(
+        EventId = 10,
+        Level = LogLevel.Information,
+        Message = "Streamed run manifest to {BlobPath}: {FileCount} file entries, {DeletedCount} deletions.")]
+    private partial void LogRunManifestStreamed(string blobPath, int fileCount, int deletedCount);
 }

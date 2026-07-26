@@ -117,22 +117,39 @@ public class BackupServiceIntegrationTests : IDisposable
         public List<string> UploadedPaths { get; } = new();
         public List<string> UploadedManifests { get; } = new();
 
+        /// <summary>Entries drained from the streamed manifest, so tests can assert on its contents.</summary>
+        public List<ManifestFileEntry> ManifestEntries { get; } = new();
+
+        public List<string> ManifestDeletions { get; } = new();
+
         public void SetBasePath(string? basePath, bool isPathEmbedded = false)
         {
 
         }
 
-        public Task UploadRunManifestAsync(
+        public async Task UploadRunManifestAsync(
             BlobContainerClient containerClient,
-            RunManifest manifest,
+            Guid deviceId,
+            Guid runId,
+            IAsyncEnumerable<ManifestFileEntry> files,
+            IAsyncEnumerable<string> deleted,
             string? basePath,
             bool isPathEmbedded,
             CancellationToken cancellationToken)
         {
+            await foreach (var entry in files.WithCancellation(cancellationToken))
+            {
+                ManifestEntries.Add(entry);
+            }
+
+            await foreach (var path in deleted.WithCancellation(cancellationToken))
+            {
+                ManifestDeletions.Add(path);
+            }
+
             UploadedManifests.Add(isPathEmbedded || string.IsNullOrWhiteSpace(basePath)
                 ? "run-manifest.json"
                 : $"{basePath.TrimEnd('/')}/run-manifest.json");
-            return Task.CompletedTask;
         }
 
         public Task<UploadBatchResult> UploadFilesAsync(
