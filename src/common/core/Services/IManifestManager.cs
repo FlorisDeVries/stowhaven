@@ -19,6 +19,17 @@ public interface IManifestManager
 
     Task SaveRunManifestAsync(Guid deviceId, Guid runId, RunManifest manifest, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Persists a run manifest from a stream of entries, filling and writing chunk documents as they
+    /// arrive so a manifest with hundreds of thousands of entries never has to be held in memory.
+    /// Returns the file and deletion counts observed.
+    /// </summary>
+    Task<(int FileCount, int DeletedCount)> SaveRunManifestAsync(
+        Guid deviceId,
+        Guid runId,
+        IAsyncEnumerable<RunManifestStreamItem> items,
+        CancellationToken cancellationToken = default);
+
     Task<RunManifest?> GetRunManifestAsync(Guid deviceId, Guid runId, CancellationToken cancellationToken = default);
 
     Task<CommitJob> CreateCommitJobAsync(Guid deviceId, Guid runId, CancellationToken cancellationToken = default);

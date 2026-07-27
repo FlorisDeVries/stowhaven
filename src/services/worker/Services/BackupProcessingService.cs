@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Azure;
 using Azure.Storage.Blobs;
@@ -67,74 +68,83 @@ public partial class BackupProcessingService(
             // Download and parse run-manifest.json. Derive the path from the event identity
             // instead of trusting ManifestPath from the message body.
             var manifestPath = GetManifestPath(backupEvent.DeviceId, backupEvent.RunId);
-            var manifest = await DownloadManifestAsync(manifestPath, cancellationToken);
 
-            if (manifest == null)
+            if (!await ManifestExistsAsync(manifestPath, cancellationToken))
             {
                 throw new InvalidOperationException($"Run manifest not found at {manifestPath}");
             }
 
-            LogManifestLoaded(logger, backupEvent.DeviceId, backupEvent.RunId, manifest.Files.Count, manifest.Deleted.Count);
-
             // Persists the manifest as the durable record the ops/status endpoint reads once the temporary
-            // blob copy (just downloaded above) is cleaned up below. Runs with enough files can exceed Cosmos's
-            // per-document size limit here; that must not abort processing of an otherwise-valid backup run, so on
-            // failure we keep the blob copy around instead (see manifestPersisted below).
-            var manifestPersisted = await TryPersistRunManifestAsync(backupEvent.DeviceId, backupEvent.RunId, manifest, cancellationToken);
+            // blob copy is cleaned up below. Runs with enough files can exceed Cosmos's per-document size
+            // limit here; that must not abort processing of an otherwise-valid backup run, so on failure we
+            // keep the blob copy around instead (see manifestPersisted below).
+            // This pass also yields the entry counts, which the progress reporting below needs up front.
+            var (manifestPersisted, fileCount, deletedCount) =
+                await TryPersistRunManifestAsync(backupEvent.DeviceId, backupEvent.RunId, manifestPath, cancellationToken);
+
+            LogManifestLoaded(logger, backupEvent.DeviceId, backupEvent.RunId, fileCount, deletedCount);
 
             // Record the total up front so commit-status polling can report progress.
-            commitJob.TotalFiles = manifest.Files.Count + manifest.Deleted.Count;
+            commitJob.TotalFiles = fileCount + deletedCount;
             commitJob = await manifestManager.UpdateCommitJobAsync(commitJob, cancellationToken);
 
             var containerClient = await blobStorageService.GetContainerClientAsync(cancellationToken);
             var processedCount = 0;
             var skippedFiles = 0;
 
-            // Process new/changed files
-            foreach (var fileEntry in manifest.Files)
+            // Counted from this pass rather than taken from the persist pass above: the failure
+            // threshold below decides whether the run is trustworthy, so it must be measured against
+            // the entries actually processed here.
+            var filesSeen = 0;
+
+            // Second streamed pass: process entries as they are read, so the manifest is never held in
+            // memory even for a run with hundreds of thousands of files.
+            await foreach (var item in StreamManifestAsync(manifestPath, cancellationToken))
             {
-                try
+                if (item.File is { } fileEntry)
                 {
-                    await ProcessFileEntryAsync(
+                    filesSeen++;
+
+                    try
+                    {
+                        await ProcessFileEntryAsync(
+                            backupEvent.DeviceId,
+                            backupEvent.RunId,
+                            commitJob.CommitId,
+                            fileEntry,
+                            containerClient,
+                            cancellationToken);
+                        processedCount++;
+                    }
+                    catch (StagedBlobValidationException ex)
+                    {
+                        skippedFiles++;
+                        LogStagedBlobSkipped(logger, backupEvent.DeviceId, backupEvent.RunId, fileEntry.LogicalPath, ex.Message);
+                    }
+                }
+                else if (item.DeletedPath is { } deletedPath)
+                {
+                    await ProcessFileDeletionAsync(
                         backupEvent.DeviceId,
                         backupEvent.RunId,
-                        commitJob.CommitId,
-                        fileEntry,
+                        deletedPath,
                         containerClient,
                         cancellationToken);
                     processedCount++;
                 }
-                catch (StagedBlobValidationException ex)
-                {
-                    skippedFiles++;
-                    LogStagedBlobSkipped(logger, backupEvent.DeviceId, backupEvent.RunId, fileEntry.LogicalPath, ex.Message);
-                }
 
-                commitJob = await CheckpointProgressAsync(commitJob, processedCount, skippedFiles, cancellationToken);
-            }
-
-            // Process deleted files
-            foreach (var deletedPath in manifest.Deleted)
-            {
-                await ProcessFileDeletionAsync(
-                    backupEvent.DeviceId,
-                    backupEvent.RunId,
-                    deletedPath,
-                    containerClient,
-                    cancellationToken);
-                processedCount++;
                 commitJob = await CheckpointProgressAsync(commitJob, processedCount, skippedFiles, cancellationToken);
             }
 
             // Too many skipped files means the run is not trustworthy - fail it loudly so it is retried
             // (and surfaced) rather than silently recording a mostly-empty backup.
-            var failurePercentage = manifest.Files.Count == 0
+            var failurePercentage = filesSeen == 0
                 ? 0
-                : skippedFiles * 100.0 / manifest.Files.Count;
+                : skippedFiles * 100.0 / filesSeen;
             if (failurePercentage > _maxFailurePercentage)
             {
                 throw new InvalidOperationException(
-                    $"Backup run failed: {skippedFiles}/{manifest.Files.Count} files failed staged-content validation " +
+                    $"Backup run failed: {skippedFiles}/{filesSeen} files failed staged-content validation " +
                     $"({failurePercentage:F1}%), exceeding the {_maxFailurePercentage}% threshold.");
             }
 
@@ -147,7 +157,7 @@ public partial class BackupProcessingService(
                 backupEvent.DeviceId,
                 backupEvent.RunId,
                 terminalStatus,
-                manifest.Files.Count - skippedFiles,
+                filesSeen - skippedFiles,
                 cancellationToken);
 
             // Update CommitJob terminal status
@@ -256,26 +266,30 @@ public partial class BackupProcessingService(
             _ => ex.GetType().Name
         };
 
-    private async Task<RunManifest?> DownloadManifestAsync(string manifestPath, CancellationToken cancellationToken)
+    private async Task<bool> ManifestExistsAsync(string manifestPath, CancellationToken cancellationToken)
+    {
+        var containerClient = await blobStorageService.GetContainerClientAsync(cancellationToken);
+        return await containerClient.GetBlobClient(manifestPath).ExistsAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Streams the run manifest's entries, reading the blob through a fixed-size buffer rather than
+    /// downloading and deserializing it whole: a run covering hundreds of thousands of files produces
+    /// a manifest far too large to materialize inside the container's memory limit. Each call
+    /// re-opens the blob, so the manifest can be walked more than once without being held in memory.
+    /// </summary>
+    private async IAsyncEnumerable<RunManifestStreamItem> StreamManifestAsync(
+        string manifestPath,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         var containerClient = await blobStorageService.GetContainerClientAsync(cancellationToken);
         var blobClient = containerClient.GetBlobClient(manifestPath);
 
-        try
-        {
-            var downloadResponse = await blobClient.DownloadContentAsync(cancellationToken);
-            var content = downloadResponse.Value.Content.ToString();
+        await using var stream = await blobClient.OpenReadAsync(cancellationToken: cancellationToken);
 
-            var manifest = JsonSerializer.Deserialize<RunManifest>(content, new JsonSerializerOptions
-            {
-                PropertyNameCaseInsensitive = true
-            });
-
-            return manifest;
-        }
-        catch (RequestFailedException ex) when (ex.Status == 404)
+        await foreach (var item in RunManifestStreamReader.ReadAsync(stream, cancellationToken))
         {
-            return null;
+            yield return item;
         }
     }
 
@@ -526,17 +540,44 @@ public partial class BackupProcessingService(
         LogFileDeletionProcessed(logger, relativePath);
     }
 
-    private async Task<bool> TryPersistRunManifestAsync(Guid deviceId, Guid runId, RunManifest manifest, CancellationToken cancellationToken)
+    /// <summary>
+    /// Streams the manifest into chunked storage, reporting whether it was persisted along with the
+    /// entry counts the caller needs for progress reporting. When persistence fails the counts are
+    /// still established with a read-only pass, so an otherwise-valid run can continue.
+    /// </summary>
+    private async Task<(bool Persisted, int FileCount, int DeletedCount)> TryPersistRunManifestAsync(
+        Guid deviceId,
+        Guid runId,
+        string manifestPath,
+        CancellationToken cancellationToken)
     {
         try
         {
-            await manifestManager.SaveRunManifestAsync(deviceId, runId, manifest, cancellationToken);
-            return true;
+            var (fileCount, deletedCount) = await manifestManager.SaveRunManifestAsync(
+                deviceId, runId, StreamManifestAsync(manifestPath, cancellationToken), cancellationToken);
+
+            return (true, fileCount, deletedCount);
         }
         catch (Exception ex)
         {
-            LogRunManifestPersistFailed(logger, deviceId, runId, manifest.Files.Count, ex);
-            return false;
+            LogRunManifestPersistFailed(logger, deviceId, runId, ex);
+
+            var files = 0;
+            var deletions = 0;
+
+            await foreach (var item in StreamManifestAsync(manifestPath, cancellationToken))
+            {
+                if (item.File is not null)
+                {
+                    files++;
+                }
+                else
+                {
+                    deletions++;
+                }
+            }
+
+            return (false, files, deletions);
         }
     }
 
@@ -665,8 +706,8 @@ public partial class BackupProcessingService(
     [LoggerMessage(LogLevel.Information, "Loaded manifest for run {runId} device {deviceId}: {fileCount} files, {deletedCount} deletions")]
     static partial void LogManifestLoaded(ILogger logger, Guid deviceId, Guid runId, int fileCount, int deletedCount);
 
-    [LoggerMessage(LogLevel.Warning, "Failed to persist manifest cache for run {runId} device {deviceId} ({fileCount} files); continuing with blob copy as source of truth.")]
-    static partial void LogRunManifestPersistFailed(ILogger logger, Guid deviceId, Guid runId, int fileCount, Exception exception);
+    [LoggerMessage(LogLevel.Warning, "Failed to persist manifest cache for run {runId} device {deviceId}; continuing with blob copy as source of truth.")]
+    static partial void LogRunManifestPersistFailed(ILogger logger, Guid deviceId, Guid runId, Exception exception);
 
     [LoggerMessage(LogLevel.Warning, "Skipped file '{logicalPath}' in run {runId} device {deviceId}: {reason}. It will be re-detected and retried on the next backup.")]
     static partial void LogStagedBlobSkipped(ILogger logger, Guid deviceId, Guid runId, string logicalPath, string reason);

@@ -155,45 +155,76 @@ public partial class ManifestManager
     // chunk well under the state store's per-document size limit (Cosmos ~2MB).
     private const int RunManifestChunkSize = 500;
 
-    public async Task SaveRunManifestAsync(Guid deviceId, Guid runId, RunManifest manifest, CancellationToken cancellationToken = default)
+    public Task SaveRunManifestAsync(Guid deviceId, Guid runId, RunManifest manifest, CancellationToken cancellationToken = default)
+        => SaveRunManifestAsync(deviceId, runId, ToStream(manifest), cancellationToken);
+
+    private static async IAsyncEnumerable<RunManifestStreamItem> ToStream(RunManifest manifest)
+    {
+        foreach (var file in manifest.Files)
+        {
+            yield return new RunManifestStreamItem(file, null);
+        }
+
+        foreach (var path in manifest.Deleted)
+        {
+            yield return new RunManifestStreamItem(null, path);
+        }
+
+        await Task.CompletedTask;
+    }
+
+    public async Task<(int FileCount, int DeletedCount)> SaveRunManifestAsync(
+        Guid deviceId,
+        Guid runId,
+        IAsyncEnumerable<RunManifestStreamItem> items,
+        CancellationToken cancellationToken = default)
     {
         // Split the manifest across small chunk documents so a run with many files never produces a
-        // single document that exceeds the store's per-document size limit. Files come first in the
-        // chunk sequence, then deletions; a small header document records the totals for reassembly.
+        // single document that exceeds the store's per-document size limit. Chunks are filled and
+        // written as entries arrive, so a manifest with hundreds of thousands of entries is never held
+        // in memory: at most one chunk's worth is buffered at a time. A small header document written
+        // last records the totals for reassembly.
         var chunkIndex = 0;
+        var fileCount = 0;
+        var deletedCount = 0;
+        var files = new List<ManifestFileEntry>(RunManifestChunkSize);
+        var deleted = new List<string>(RunManifestChunkSize);
 
-        for (var offset = 0; offset < manifest.Files.Count; offset += RunManifestChunkSize)
+        await foreach (var item in items.WithCancellation(cancellationToken))
         {
-            var slice = manifest.Files.GetRange(offset, Math.Min(RunManifestChunkSize, manifest.Files.Count - offset));
-            await SaveRunManifestChunkAsync(deviceId, runId, chunkIndex++, new RunManifestChunk
+            if (item.File is not null)
             {
-                DeviceId = $"{deviceId:N}",
-                RunId = $"{runId:N}",
-                Index = chunkIndex - 1,
-                Files = slice
-            }, cancellationToken);
+                files.Add(item.File);
+                fileCount++;
+
+                if (files.Count == RunManifestChunkSize)
+                {
+                    await FlushFilesAsync();
+                }
+            }
+            else if (item.DeletedPath is not null)
+            {
+                deleted.Add(item.DeletedPath);
+                deletedCount++;
+
+                if (deleted.Count == RunManifestChunkSize)
+                {
+                    await FlushDeletedAsync();
+                }
+            }
         }
 
-        for (var offset = 0; offset < manifest.Deleted.Count; offset += RunManifestChunkSize)
-        {
-            var slice = manifest.Deleted.GetRange(offset, Math.Min(RunManifestChunkSize, manifest.Deleted.Count - offset));
-            await SaveRunManifestChunkAsync(deviceId, runId, chunkIndex++, new RunManifestChunk
-            {
-                DeviceId = $"{deviceId:N}",
-                RunId = $"{runId:N}",
-                Index = chunkIndex - 1,
-                Deleted = slice
-            }, cancellationToken);
-        }
+        await FlushFilesAsync();
+        await FlushDeletedAsync();
 
         // Write the header last so any reader that observes it can also read every chunk it references.
         var header = new RunManifestHeader
         {
             SchemaVersion = RunManifestHeader.ChunkedSchemaVersion,
-            DeviceId = manifest.DeviceId,
-            RunId = manifest.RunId,
-            FileCount = manifest.Files.Count,
-            DeletedCount = manifest.Deleted.Count,
+            DeviceId = $"{deviceId:N}",
+            RunId = $"{runId:N}",
+            FileCount = fileCount,
+            DeletedCount = deletedCount,
             ChunkCount = chunkIndex,
             ChunkSize = RunManifestChunkSize
         };
@@ -203,6 +234,46 @@ public partial class ManifestManager
             cancellationToken: cancellationToken);
 
         telemetry.StateOperations.Add(1, new TagList { { "operation", "save" }, { "store", "manifest" }, { "entity", "runmanifest" } });
+
+        return (fileCount, deletedCount);
+
+        async Task FlushFilesAsync()
+        {
+            if (files.Count == 0)
+            {
+                return;
+            }
+
+            await SaveRunManifestChunkAsync(deviceId, runId, chunkIndex, new RunManifestChunk
+            {
+                DeviceId = $"{deviceId:N}",
+                RunId = $"{runId:N}",
+                Index = chunkIndex,
+                Files = [.. files]
+            }, cancellationToken);
+
+            chunkIndex++;
+            files.Clear();
+        }
+
+        async Task FlushDeletedAsync()
+        {
+            if (deleted.Count == 0)
+            {
+                return;
+            }
+
+            await SaveRunManifestChunkAsync(deviceId, runId, chunkIndex, new RunManifestChunk
+            {
+                DeviceId = $"{deviceId:N}",
+                RunId = $"{runId:N}",
+                Index = chunkIndex,
+                Deleted = [.. deleted]
+            }, cancellationToken);
+
+            chunkIndex++;
+            deleted.Clear();
+        }
     }
 
     public async Task<RunManifest?> GetRunManifestAsync(Guid deviceId, Guid runId, CancellationToken cancellationToken = default)

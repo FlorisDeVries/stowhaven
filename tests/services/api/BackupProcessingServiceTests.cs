@@ -899,12 +899,13 @@ public class BackupProcessingServiceTests
 
     private void SetupManifestDownload(RunManifest manifest, Action<string>? pathCallback = null)
     {
-        var manifestJson = JsonSerializer.Serialize(manifest);
-
-        var downloadResult = BlobsModelFactory.BlobDownloadResult(
-            content: BinaryData.FromString(manifestJson));
-
-        var response = Response.FromValue(downloadResult, Mock.Of<Response>());
+        // The manifest is consumed as a stream and walked more than once, so every OpenReadAsync must
+        // hand back a fresh reader over the same bytes.
+        var manifestJson = JsonSerializer.Serialize(manifest, new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        });
+        var manifestBytes = Encoding.UTF8.GetBytes(manifestJson);
 
         // Find or create the manifest blob client in the dictionary
         var manifestPath = $"runs/{manifest.DeviceId}/{manifest.RunId}/run-manifest.json";
@@ -914,10 +915,16 @@ public class BackupProcessingServiceTests
         }
 
         var manifestBlobClient = _blobClients[manifestPath];
+
         manifestBlobClient
-            .Setup(x => x.DownloadContentAsync(It.IsAny<CancellationToken>()))
-            .Callback<CancellationToken>(ct => pathCallback?.Invoke(manifestPath))
-            .ReturnsAsync(response);
+            .Setup(x => x.ExistsAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Response.FromValue(true, Mock.Of<Response>()));
+
+        manifestBlobClient
+            .Setup(x => x.OpenReadAsync(
+                It.IsAny<long>(), It.IsAny<int?>(), It.IsAny<BlobRequestConditions>(), It.IsAny<CancellationToken>()))
+            .Callback(() => pathCallback?.Invoke(manifestPath))
+            .ReturnsAsync(() => new MemoryStream(manifestBytes, writable: false));
 
         foreach (var fileEntry in manifest.Files)
         {
