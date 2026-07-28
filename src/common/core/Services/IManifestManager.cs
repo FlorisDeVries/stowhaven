@@ -30,7 +30,25 @@ public interface IManifestManager
         IAsyncEnumerable<RunManifestStreamItem> items,
         CancellationToken cancellationToken = default);
 
-    Task<RunManifest?> GetRunManifestAsync(Guid deviceId, Guid runId, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// Reads only the manifest's header document: totals and chunk layout, no entries. Cheap
+    /// regardless of run size, so it is the right way to test availability or report counts.
+    /// </summary>
+    Task<RunManifestHeader?> GetRunManifestHeaderAsync(Guid deviceId, Guid runId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Reads one page of a manifest's entries, walking the chunk documents rather than materializing
+    /// the manifest. <paramref name="chunkToken"/> and <paramref name="skip"/> come from the previous
+    /// page's <see cref="RunManifestEntryPage.NextChunkToken"/> and
+    /// <see cref="RunManifestEntryPage.NextSkip"/>; pass null and 0 for the first page.
+    /// </summary>
+    Task<RunManifestEntryPage> GetRunManifestEntryPageAsync(
+        Guid deviceId,
+        Guid runId,
+        int pageSize,
+        string? chunkToken = null,
+        int skip = 0,
+        CancellationToken cancellationToken = default);
 
     Task<CommitJob> CreateCommitJobAsync(Guid deviceId, Guid runId, CancellationToken cancellationToken = default);
 

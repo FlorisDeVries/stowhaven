@@ -56,6 +56,11 @@ public class BackupClientOptions
     public int MaxParallelUploads { get; init; } = 4;
 
     /// <summary>
+    /// Access tier for staged uploads ("Hot", "Cool" or "Cold"). Default "Hot".
+    /// </summary>
+    public string StagingAccessTier { get; init; } = "Hot";
+
+    /// <summary>
     /// Size threshold in bytes above which file upload progress will be tracked.
     /// Default is 10 MB. Set to 0 to track all files.
     /// </summary>

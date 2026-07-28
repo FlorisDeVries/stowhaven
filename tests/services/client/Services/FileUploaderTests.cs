@@ -486,4 +486,55 @@ public class FileUploaderTests
         result.Should().HaveCount(1);
         mockContainer.Verify(x => x.GetBlobClient("documents/subfolder/report.pdf"), Times.Once);
     }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task UploadFilesAsync_StagesToHotTierByDefault()
+    {
+        // Arrange: staging is transient, and Hot write operations cost about half of Cool's while
+        // carrying no minimum-retention period for blobs that get renamed or aged out within days.
+        var file = new TaggedFile(
+            "test", "/test/path",
+            new FileMetadata("/test/path/file.txt", 1000, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "hash"));
+
+        var mockContainer = new Mock<BlobContainerClient>();
+        var mockBlobClient = new Mock<BlobClient>();
+        mockContainer.Setup(x => x.GetBlobClient(It.IsAny<string>())).Returns(mockBlobClient.Object);
+
+        _mockFileSystemService.Setup(x => x.GetFileStreamAsync(
+                It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new MemoryStream(new byte[1000]));
+
+        BlobUploadOptions? captured = null;
+        mockBlobClient.Setup(x => x.UploadAsync(
+                It.IsAny<Stream>(), It.IsAny<BlobUploadOptions>(), It.IsAny<CancellationToken>()))
+            .Callback<Stream, BlobUploadOptions, CancellationToken>((_, o, _) => captured = o)
+            .ReturnsAsync(Mock.Of<Response<BlobContentInfo>>());
+
+        // Act
+        await _sut.UploadFilesAsync(mockContainer.Object, new[] { file }, CancellationToken.None);
+
+        // Assert
+        captured.Should().NotBeNull();
+        captured!.AccessTier.Should().Be(AccessTier.Hot);
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public void Constructor_WhenStagingTierIsNotUsable_Throws()
+    {
+        // Arrange: staged blobs are read back during commit, so Archive would need rehydration first.
+        // Failing at construction beats failing on every upload.
+        var options = Options.Create(new BackupClientOptions
+        {
+            BackupTargets = new Dictionary<string, string> { ["test"] = "/test/path" },
+            StagingAccessTier = "Archive"
+        });
+
+        // Act
+        var act = () => new FileUploader(_encryptionService, _resiliencePipelines, options, _mockLogger.Object);
+
+        // Assert
+        act.Should().Throw<InvalidOperationException>().WithMessage("*Archive*");
+    }
 }

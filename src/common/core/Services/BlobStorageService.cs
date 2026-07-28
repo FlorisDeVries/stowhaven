@@ -305,11 +305,6 @@ public partial class BlobStorageService(
         var sourceBlobClient = containerClient.GetBlobClient(sourceBlobName);
         var destinationBlobClient = containerClient.GetBlobClient(destinationBlobName);
 
-        // Check if source exists
-        if (!await sourceBlobClient.ExistsAsync(cancellationToken))
-        {
-            throw new InvalidOperationException($"Source blob not found: {sourceBlobName}");
-        }
 
         // For ADLS Gen2 (HNS ON), use rename operation in Azure to avoid early deletion fees.
         // Copy+delete is used automatically only for Azurite/local development.
@@ -324,17 +319,8 @@ public partial class BlobStorageService(
                 var fileSystemClient = dataLakeServiceClient.GetFileSystemClient(await GetContainerNameAsync(cancellationToken));
                 var sourceFileClient = fileSystemClient.GetFileClient(sourceBlobName);
 
-                // ADLS rename fails with RenameDestinationParentPathNotFound if the
-                // destination's parent directory does not exist yet.
-                var parentSeparator = destinationBlobName.LastIndexOf('/');
-                if (parentSeparator > 0)
-                {
-                    await fileSystemClient
-                        .GetDirectoryClient(destinationBlobName[..parentSeparator])
-                        .CreateIfNotExistsAsync(cancellationToken: cancellationToken);
-                }
-
-                await sourceFileClient.RenameAsync(destinationBlobName, cancellationToken: cancellationToken);
+                await RenameCreatingParentIfMissingAsync(
+                    fileSystemClient, sourceFileClient, destinationBlobName, cancellationToken);
 
                 // Set blob index tags if provided (after rename)
                 if (tags != null && tags.Count > 0)
@@ -344,6 +330,11 @@ public partial class BlobStorageService(
                 }
 
                 return;
+            }
+            catch (RequestFailedException ex) when (IsSourceMissing(ex))
+            {
+                // Nothing to move.
+                throw new InvalidOperationException($"Source blob not found: {sourceBlobName}", ex);
             }
             catch (Exception ex)
             {
@@ -362,13 +353,21 @@ public partial class BlobStorageService(
         }
 
         // Fallback: Copy + Delete
-        var copyOperation = await destinationBlobClient.StartCopyFromUriAsync(
-            sourceBlobClient.Uri,
-            new BlobCopyFromUriOptions
-            {
-                DestinationConditions = new BlobRequestConditions { IfNoneMatch = ETag.All }
-            },
-            cancellationToken);
+        CopyFromUriOperation copyOperation;
+        try
+        {
+            copyOperation = await destinationBlobClient.StartCopyFromUriAsync(
+                sourceBlobClient.Uri,
+                new BlobCopyFromUriOptions
+                {
+                    DestinationConditions = new BlobRequestConditions { IfNoneMatch = ETag.All }
+                },
+                cancellationToken);
+        }
+        catch (RequestFailedException ex) when (ex.Status == 404)
+        {
+            throw new InvalidOperationException($"Source blob not found: {sourceBlobName}", ex);
+        }
 
         await copyOperation.WaitForCompletionAsync(cancellationToken);
 
@@ -380,6 +379,61 @@ public partial class BlobStorageService(
             await destinationBlobClient.SetTagsAsync(tags, cancellationToken: cancellationToken);
         }
     }
+
+    /// <summary>
+    /// Renames a file within ADLS Gen2, creating the destination's parent directory only when the
+    /// rename actually reports it missing.
+    ///
+    /// Creating it up front instead would cost one conditional directory PUT per moved file, and every
+    /// file in a device's backup shares the same parent (<c>devices/{deviceId}/files</c> when staging
+    /// is committed, <c>devices/{deviceId}/retired</c> when a version is superseded). After the first
+    /// file that is a 409 apiece — hundreds of thousands of them on a large run, each one a billed
+    /// request, added latency in the per-file path, and noise that buries real conflicts in the storage
+    /// account's metrics. Attempting the rename first makes the steady state zero extra requests.
+    /// </summary>
+    internal static async Task RenameCreatingParentIfMissingAsync(
+        DataLakeFileSystemClient fileSystemClient,
+        DataLakeFileClient sourceFileClient,
+        string destinationBlobName,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await sourceFileClient.RenameAsync(destinationBlobName, cancellationToken: cancellationToken);
+            return;
+        }
+        catch (RequestFailedException ex) when (IsDestinationParentMissing(ex))
+        {
+            // First file into this directory: create it, then rename again below.
+        }
+
+        var parentSeparator = destinationBlobName.LastIndexOf('/');
+        if (parentSeparator > 0)
+        {
+            await fileSystemClient
+                .GetDirectoryClient(destinationBlobName[..parentSeparator])
+                .CreateIfNotExistsAsync(cancellationToken: cancellationToken);
+        }
+
+        await sourceFileClient.RenameAsync(destinationBlobName, cancellationToken: cancellationToken);
+    }
+
+    /// <summary>
+    /// Matches on the error code rather than the status so the check holds regardless of which status
+    /// the service pairs with it.
+    /// </summary>
+    internal static bool IsDestinationParentMissing(RequestFailedException exception)
+        => string.Equals(exception.ErrorCode, "RenameDestinationParentPathNotFound", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Whether a failed move means the thing being moved is not there. Replaces the existence
+    /// pre-check that used to cost a HEAD on every move.
+    /// </summary>
+    internal static bool IsSourceMissing(RequestFailedException exception)
+        => exception.Status == 404
+           && (string.Equals(exception.ErrorCode, "SourcePathNotFound", StringComparison.OrdinalIgnoreCase)
+               || string.Equals(exception.ErrorCode, "PathNotFound", StringComparison.OrdinalIgnoreCase)
+               || string.Equals(exception.ErrorCode, "BlobNotFound", StringComparison.OrdinalIgnoreCase));
 
     private async Task<bool> IsCopyDeleteFallbackAllowedAsync(CancellationToken cancellationToken)
     {

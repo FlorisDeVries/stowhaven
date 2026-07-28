@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Azure;
 using Azure.Storage.Blobs;
 using Azure.Storage.Blobs.Models;
@@ -28,7 +29,7 @@ public class BackupProcessingServiceTests
     private readonly Mock<IManifestManager> _manifestManagerMock;
     private readonly Mock<TelemetryProvider> _telemetryMock;
     private readonly Mock<BlobContainerClient> _containerClientMock;
-    private readonly Dictionary<string, Mock<BlobClient>> _blobClients;
+    private readonly ConcurrentDictionary<string, Mock<BlobClient>> _blobClients;
     private readonly BackupProcessingService _sut;
 
     public BackupProcessingServiceTests()
@@ -38,7 +39,7 @@ public class BackupProcessingServiceTests
         _manifestManagerMock = new Mock<IManifestManager>();
         _telemetryMock = new Mock<TelemetryProvider>();
         _containerClientMock = new Mock<BlobContainerClient>();
-        _blobClients = new Dictionary<string, Mock<BlobClient>>();
+        _blobClients = new ConcurrentDictionary<string, Mock<BlobClient>>();
 
         _sut = new BackupProcessingService(
             _loggerMock.Object,
@@ -69,13 +70,7 @@ public class BackupProcessingServiceTests
         _containerClientMock
             .Setup(x => x.GetBlobClient(It.IsAny<string>()))
             .Returns<string>(blobName =>
-            {
-                if (!_blobClients.ContainsKey(blobName))
-                {
-                    _blobClients[blobName] = new Mock<BlobClient>();
-                }
-                return _blobClients[blobName].Object;
-            });
+                _blobClients.GetOrAdd(blobName, _ => new Mock<BlobClient>()).Object);
     }
 
     #region Idempotency Tests
@@ -972,6 +967,144 @@ public class BackupProcessingServiceTests
             Size = 1024,
             Mtime = DateTimeOffset.UtcNow
         };
+    }
+
+    #endregion
+
+    #region Concurrency And Round Trip Tests
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task ProcessBackupRunAsync_WithManyEntries_ProcessesEachExactlyOnce()
+    {
+        // Arrange: enough entries to run several concurrently and to cross checkpoint boundaries.
+        var deviceId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var commitId = Guid.NewGuid();
+
+        var backupEvent = CreateBackupEvent(deviceId, runId, commitId);
+        SetupQueuedCommitJob(commitId, deviceId, runId);
+        SetupBackupRun(deviceId, runId);
+
+        var files = Enumerable.Range(0, 250)
+            .Select(i => CreateFileEntry($"documents/file-{i:D4}.txt", $"uid-{i:D4}"))
+            .ToList();
+        var deleted = Enumerable.Range(0, 50).Select(i => $"documents/gone-{i:D4}.txt").ToList();
+
+        SetupManifestDownload(CreateManifest(deviceId, runId, files, deleted));
+
+        // The service mutates and reuses one CommitJob instance, so Moq's recorded arguments all point
+        // at its final state. Snapshot the values at call time to assert on what was actually written.
+        var jobWrites = new ConcurrentBag<(CommitJobStatus Status, int Processed, int Failed)>();
+        _manifestManagerMock
+            .Setup(x => x.UpdateCommitJobAsync(It.IsAny<CommitJob>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((CommitJob job, CancellationToken _) =>
+            {
+                jobWrites.Add((job.Status, job.FilesProcessed, job.FilesFailed));
+                return job;
+            });
+
+        var movedSources = new ConcurrentBag<string>();
+        _blobStorageServiceMock
+            .Setup(x => x.MoveBlobAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Dictionary<string, string>>(), It.IsAny<CancellationToken>()))
+            .Returns((string source, string _, Dictionary<string, string>? _, CancellationToken _) =>
+            {
+                movedSources.Add(source);
+                return Task.CompletedTask;
+            });
+
+        // Act
+        await _sut.ProcessBackupRunAsync(backupEvent);
+
+        // Assert: every file moved exactly once, and the terminal counts reflect all 300 entries.
+        movedSources.Should().HaveCount(250);
+        movedSources.Should().OnlyHaveUniqueItems();
+
+        _manifestManagerMock.Verify(x => x.SaveFileVersionAsync(
+            It.IsAny<FileVersion>(), It.IsAny<CancellationToken>()), Times.Exactly(250));
+
+        jobWrites.Should().Contain(w =>
+            w.Status == CommitJobStatus.Succeeded && w.Processed == 300 && w.Failed == 0);
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task ProcessBackupRunAsync_WritesOneProgressRecordPerFile()
+    {
+        // Arrange: the per-file state ladder (Pending/Moved/StateUpdated/Succeeded) was four writes per
+        // file. Only the terminal outcome is recorded now, which is what keeps a large run inside the
+        // state store's request-unit budget.
+        var deviceId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var commitId = Guid.NewGuid();
+
+        var backupEvent = CreateBackupEvent(deviceId, runId, commitId);
+        SetupQueuedCommitJob(commitId, deviceId, runId);
+        SetupBackupRun(deviceId, runId);
+
+        var fileEntry = CreateFileEntry("documents/test.txt", "uid-1");
+        SetupManifestDownload(CreateManifest(deviceId, runId, [fileEntry], []));
+
+        var statuses = new ConcurrentBag<CommitFileStatus>();
+        _manifestManagerMock
+            .Setup(x => x.SaveCommitFileProgressAsync(It.IsAny<CommitFileProgress>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((CommitFileProgress p, CancellationToken _) =>
+            {
+                statuses.Add(p.Status);
+                return p;
+            });
+
+        // Act
+        await _sut.ProcessBackupRunAsync(backupEvent);
+
+        // Assert
+        statuses.Should().ContainSingle().Which.Should().Be(CommitFileStatus.Succeeded);
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task ProcessBackupRunAsync_WhenFileAlreadySucceeded_SkipsItWithoutMoving()
+    {
+        // Arrange: resume after an interrupted attempt must not redo completed files.
+        var deviceId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var commitId = Guid.NewGuid();
+
+        var backupEvent = CreateBackupEvent(deviceId, runId, commitId);
+        SetupQueuedCommitJob(commitId, deviceId, runId);
+        SetupBackupRun(deviceId, runId);
+
+        var done = CreateFileEntry("documents/done.txt", "uid-done");
+        var pending = CreateFileEntry("documents/pending.txt", "uid-pending");
+        SetupManifestDownload(CreateManifest(deviceId, runId, [done, pending], []));
+
+        _manifestManagerMock
+            .Setup(x => x.GetCommitFileProgressAsync(commitId, "uid-done", It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CommitFileProgress
+            {
+                CommitId = commitId,
+                DeviceId = deviceId,
+                RunId = runId,
+                UniqueFileId = "uid-done",
+                LogicalPath = "documents/done.txt",
+                Status = CommitFileStatus.Succeeded
+            });
+
+        var movedSources = new ConcurrentBag<string>();
+        _blobStorageServiceMock
+            .Setup(x => x.MoveBlobAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<Dictionary<string, string>>(), It.IsAny<CancellationToken>()))
+            .Returns((string source, string _, Dictionary<string, string>? _, CancellationToken _) =>
+            {
+                movedSources.Add(source);
+                return Task.CompletedTask;
+            });
+
+        // Act
+        await _sut.ProcessBackupRunAsync(backupEvent);
+
+        // Assert
+        movedSources.Should().ContainSingle()
+            .Which.Should().EndWith("uid-pending");
     }
 
     #endregion

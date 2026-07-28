@@ -38,14 +38,21 @@ public sealed class OperationsController(IOperationalService operationalService)
         CancellationToken cancellationToken)
         => operationalService.GetManifestDetailsAsync(deviceId, runId, cancellationToken);
 
+    /// <summary>
+    /// Lists a run's manifest entries a page at a time. Runs can cover hundreds of thousands of
+    /// files, so entries are only ever served through this paged route.
+    /// </summary>
     [HttpGet("manifests/{deviceId:guid}/{runId:guid}/files")]
     [ProducesResponseType(typeof(ManifestFilesResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
     public Task<ManifestFilesResponse> ListManifestFiles(
         Guid deviceId,
         Guid runId,
-        CancellationToken cancellationToken)
-        => operationalService.ListManifestFilesAsync(deviceId, runId, cancellationToken);
+        [FromQuery] int pageSize = 100,
+        [FromQuery] string? continuationToken = null,
+        CancellationToken cancellationToken = default)
+        => operationalService.ListManifestFilesAsync(deviceId, runId, pageSize, continuationToken, cancellationToken);
 
     [HttpGet("commits")]
     [ProducesResponseType(typeof(ListCommitJobsResponse), StatusCodes.Status200OK)]

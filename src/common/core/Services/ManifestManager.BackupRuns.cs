@@ -276,7 +276,7 @@ public partial class ManifestManager
         }
     }
 
-    public async Task<RunManifest?> GetRunManifestAsync(Guid deviceId, Guid runId, CancellationToken cancellationToken = default)
+    public async Task<RunManifestHeader?> GetRunManifestHeaderAsync(Guid deviceId, Guid runId, CancellationToken cancellationToken = default)
     {
         var document = await store.GetAsync<RunManifestHeader>(
             RunManifestDocument, DevicePartition(deviceId), $"{runId:N}", cancellationToken);
@@ -285,65 +285,134 @@ public partial class ManifestManager
         {
             { "operation", "get" },
             { "store", "manifest" },
-            { "entity", "runmanifest" },
+            { "entity", "runmanifestheader" },
             { "result", document == null ? "not_found" : "found" }
         });
 
-        if (document == null)
+        return document?.Data;
+    }
+
+    public async Task<RunManifestEntryPage> GetRunManifestEntryPageAsync(
+        Guid deviceId,
+        Guid runId,
+        int pageSize,
+        string? chunkToken = null,
+        int skip = 0,
+        CancellationToken cancellationToken = default)
+    {
+        if (pageSize <= 0)
         {
-            return null;
+            throw new ArgumentOutOfRangeException(nameof(pageSize), pageSize, "Page size must be greater than zero.");
         }
 
-        var header = document.Data;
+        var header = await GetRunManifestHeaderAsync(deviceId, runId, cancellationToken);
 
-        // Legacy (v1) manifests were persisted inline as a single document; their entries live on the
-        // header itself rather than in chunk documents.
-        if (header.SchemaVersion < RunManifestHeader.ChunkedSchemaVersion)
+        // Legacy (v1) manifests kept their entries inline on the header. Those documents had to fit
+        // the store's per-document limit, so paging them in memory is bounded.
+        if (header != null && header.SchemaVersion < RunManifestHeader.ChunkedSchemaVersion)
         {
-            return new RunManifest
-            {
-                SchemaVersion = header.SchemaVersion,
-                DeviceId = header.DeviceId,
-                RunId = header.RunId,
-                Files = header.Files ?? [],
-                Deleted = header.Deleted ?? []
-            };
+            return PageInlineHeader(header, pageSize, skip);
         }
 
-        var files = new List<ManifestFileEntry>(header.FileCount);
-        var deleted = new List<string>(header.DeletedCount);
+        var files = new List<ManifestFileEntry>();
+        var deleted = new List<string>();
 
-        string? continuationToken = null;
-        do
+        // One chunk per query: a page can end mid-chunk, and the token that fetched that chunk is
+        // what the next page needs in order to resume inside it.
+        var currentToken = chunkToken;
+
+        while (files.Count + deleted.Count < pageSize)
         {
             var page = await store.QueryAsync<RunManifestChunk>(new DocumentQuery
             {
                 Type = RunManifestChunkDocument,
                 PartitionKey = RunManifestPartition(deviceId, runId),
                 Order = DocumentOrder.SortKeyAscending,
-                PageSize = 100,
-                ContinuationToken = continuationToken
+                PageSize = 1,
+                ContinuationToken = currentToken
             }, cancellationToken);
 
-            foreach (var chunk in page.Items)
+            if (page.Items.Count == 0)
             {
-                files.AddRange(chunk.Data.Files);
-                deleted.AddRange(chunk.Data.Deleted);
+                return Result(files, deleted, nextToken: null, nextSkip: 0, hasMore: false);
             }
 
-            continuationToken = page.NextContinuationToken;
-        }
-        while (!string.IsNullOrEmpty(continuationToken));
+            var chunk = page.Items[0].Data;
+            var chunkTotal = chunk.Files.Count + chunk.Deleted.Count;
+            var remaining = pageSize - (files.Count + deleted.Count);
+            var taken = 0;
 
-        return new RunManifest
+            // A chunk carries either files or deletions, never both, so a single running offset
+            // walks whichever collection this chunk holds.
+            foreach (var entry in chunk.Files.Skip(skip).Take(remaining))
+            {
+                files.Add(entry);
+                taken++;
+            }
+
+            foreach (var path in chunk.Deleted.Skip(skip).Take(remaining))
+            {
+                deleted.Add(path);
+                taken++;
+            }
+
+            if (skip + taken < chunkTotal)
+            {
+                // Stopped inside this chunk; resume here next time.
+                return Result(files, deleted, currentToken, skip + taken, hasMore: true);
+            }
+
+            skip = 0;
+            currentToken = page.NextContinuationToken;
+
+            if (string.IsNullOrEmpty(currentToken))
+            {
+                return Result(files, deleted, nextToken: null, nextSkip: 0, hasMore: false);
+            }
+        }
+
+        return Result(files, deleted, currentToken, skip, hasMore: !string.IsNullOrEmpty(currentToken));
+
+        static RunManifestEntryPage Result(
+            List<ManifestFileEntry> files,
+            List<string> deleted,
+            string? nextToken,
+            int nextSkip,
+            bool hasMore)
+            => new()
+            {
+                Files = files,
+                Deleted = deleted,
+                NextChunkToken = nextToken,
+                NextSkip = nextSkip,
+                HasMore = hasMore
+            };
+
+        static RunManifestEntryPage PageInlineHeader(RunManifestHeader header, int pageSize, int skip)
         {
-            SchemaVersion = header.SchemaVersion,
-            DeviceId = header.DeviceId,
-            RunId = header.RunId,
-            Files = files,
-            Deleted = deleted
-        };
+            var inlineFiles = header.Files ?? [];
+            var inlineDeleted = header.Deleted ?? [];
+
+            var files = inlineFiles.Skip(skip).Take(pageSize).ToList();
+            var deleted = inlineDeleted
+                .Skip(Math.Max(0, skip - inlineFiles.Count))
+                .Take(pageSize - files.Count)
+                .ToList();
+
+            var consumed = skip + files.Count + deleted.Count;
+            var total = inlineFiles.Count + inlineDeleted.Count;
+
+            return new RunManifestEntryPage
+            {
+                Files = files,
+                Deleted = deleted,
+                NextChunkToken = null,
+                NextSkip = consumed,
+                HasMore = consumed < total
+            };
+        }
     }
+
 
     private Task<string> SaveRunManifestChunkAsync(Guid deviceId, Guid runId, int index, RunManifestChunk chunk,
         CancellationToken cancellationToken)

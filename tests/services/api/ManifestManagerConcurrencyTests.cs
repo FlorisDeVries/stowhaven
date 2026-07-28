@@ -254,23 +254,65 @@ public sealed class ManifestManagerConcurrencyTests : IDisposable
 
         await _service.SaveRunManifestAsync(deviceId, runId, manifest);
 
-        var reassembled = await _service.GetRunManifestAsync(deviceId, runId);
+        var header = await _service.GetRunManifestHeaderAsync(deviceId, runId);
+        Assert.NotNull(header);
+        Assert.Equal(1250, header.EffectiveFileCount);
+        Assert.Equal(600, header.EffectiveDeletedCount);
 
-        Assert.NotNull(reassembled);
-        Assert.Equal(1250, reassembled.Files.Count);
-        Assert.Equal(600, reassembled.Deleted.Count);
-        // Order preserved across chunk boundaries.
-        Assert.Equal("file-00000", reassembled.Files[0].UniqueFileId);
-        Assert.Equal("file-00499", reassembled.Files[499].UniqueFileId);
-        Assert.Equal("file-00500", reassembled.Files[500].UniqueFileId);
-        Assert.Equal("file-01249", reassembled.Files[1249].UniqueFileId);
-        Assert.Equal("old/removed-00000.txt", reassembled.Deleted[0]);
-        Assert.Equal("old/removed-00599.txt", reassembled.Deleted[599]);
+        // Walk every page, using a page size that deliberately does not divide the 500-entry chunk
+        // size so pages end mid-chunk and have to resume inside one.
+        var (reassembledFiles, reassembledDeleted, pages) = await DrainManifestPagesAsync(deviceId, runId, pageSize: 300);
+
+        Assert.Equal(1250, reassembledFiles.Count);
+        Assert.Equal(600, reassembledDeleted.Count);
+        // Order preserved across chunk and page boundaries.
+        Assert.Equal("file-00000", reassembledFiles[0].UniqueFileId);
+        Assert.Equal("file-00499", reassembledFiles[499].UniqueFileId);
+        Assert.Equal("file-00500", reassembledFiles[500].UniqueFileId);
+        Assert.Equal("file-01249", reassembledFiles[1249].UniqueFileId);
+        Assert.Equal("old/removed-00000.txt", reassembledDeleted[0]);
+        Assert.Equal("old/removed-00599.txt", reassembledDeleted[599]);
+        Assert.True(pages > 1, "expected the walk to span multiple pages");
+    }
+
+    /// <summary>
+    /// Reads every page of a run's manifest entries, returning them in order along with the page count.
+    /// </summary>
+    private async Task<(List<ManifestFileEntry> Files, List<string> Deleted, int Pages)> DrainManifestPagesAsync(
+        Guid deviceId, Guid runId, int pageSize)
+    {
+        var files = new List<ManifestFileEntry>();
+        var deleted = new List<string>();
+        string? chunkToken = null;
+        var skip = 0;
+        var pages = 0;
+
+        while (true)
+        {
+            var page = await _service.GetRunManifestEntryPageAsync(deviceId, runId, pageSize, chunkToken, skip);
+            pages++;
+
+            files.AddRange(page.Files);
+            deleted.AddRange(page.Deleted);
+
+            Assert.True(page.Files.Count + page.Deleted.Count <= pageSize, "page exceeded the requested size");
+
+            if (!page.HasMore)
+            {
+                break;
+            }
+
+            chunkToken = page.NextChunkToken;
+            skip = page.NextSkip;
+            Assert.True(pages < 100, "paging did not terminate");
+        }
+
+        return (files, deleted, pages);
     }
 
     [Fact]
     [Trait("Category", "Unit")]
-    public async Task GetRunManifestAsync_LegacyInlineDocument_IsReadFromHeader()
+    public async Task GetRunManifestEntryPageAsync_LegacyInlineDocument_IsReadFromHeader()
     {
         var deviceId = Guid.NewGuid();
         var runId = Guid.NewGuid();
@@ -298,17 +340,21 @@ public sealed class ManifestManagerConcurrencyTests : IDisposable
 
         await _store.UpsertAsync("runManifest", $"device:{deviceId:N}", $"{runId:N}", legacy);
 
-        var result = await _service.GetRunManifestAsync(deviceId, runId);
+        var header = await _service.GetRunManifestHeaderAsync(deviceId, runId);
+        Assert.NotNull(header);
+        Assert.Equal(1, header.EffectiveFileCount);
+        Assert.Equal(1, header.EffectiveDeletedCount);
 
-        Assert.NotNull(result);
-        Assert.Single(result.Files);
-        Assert.Equal("legacy-file", result.Files[0].UniqueFileId);
-        Assert.Equal(["legacy/gone.txt"], result.Deleted);
+        var (files, deleted, _) = await DrainManifestPagesAsync(deviceId, runId, pageSize: 100);
+
+        Assert.Single(files);
+        Assert.Equal("legacy-file", files[0].UniqueFileId);
+        Assert.Equal(["legacy/gone.txt"], deleted);
     }
 
     [Fact]
     [Trait("Category", "Unit")]
-    public async Task GetRunManifestAsync_EmptyManifest_RoundTripsAsEmpty()
+    public async Task GetRunManifestEntryPageAsync_EmptyManifest_RoundTripsAsEmpty()
     {
         var deviceId = Guid.NewGuid();
         var runId = Guid.NewGuid();
@@ -321,18 +367,22 @@ public sealed class ManifestManagerConcurrencyTests : IDisposable
             Deleted = []
         });
 
-        var result = await _service.GetRunManifestAsync(deviceId, runId);
+        var header = await _service.GetRunManifestHeaderAsync(deviceId, runId);
+        Assert.NotNull(header);
+        Assert.Equal(0, header.EffectiveFileCount);
 
-        Assert.NotNull(result);
-        Assert.Empty(result.Files);
-        Assert.Empty(result.Deleted);
+        var page = await _service.GetRunManifestEntryPageAsync(deviceId, runId, pageSize: 100);
+
+        Assert.Empty(page.Files);
+        Assert.Empty(page.Deleted);
+        Assert.False(page.HasMore);
     }
 
     [Fact]
     [Trait("Category", "Unit")]
-    public async Task GetRunManifestAsync_Missing_ReturnsNull()
+    public async Task GetRunManifestHeaderAsync_Missing_ReturnsNull()
     {
-        var result = await _service.GetRunManifestAsync(Guid.NewGuid(), Guid.NewGuid());
+        var result = await _service.GetRunManifestHeaderAsync(Guid.NewGuid(), Guid.NewGuid());
 
         Assert.Null(result);
     }

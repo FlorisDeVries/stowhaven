@@ -33,4 +33,15 @@
         <ProjectReference Include="..\security\FlorisDeV.Security.csproj" />
     </ItemGroup>
 
+    <ItemGroup>
+        <!-- For the associated test project -->
+        <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+            <_Parameter1>FlorisDeV.BackupApi.Tests</_Parameter1>
+        </AssemblyAttribute>
+        <!-- Moq needs to subclass internals when they are mocked -->
+        <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+            <_Parameter1>DynamicProxyGenAssembly2</_Parameter1>
+        </AssemblyAttribute>
+    </ItemGroup>
+
 </Project>

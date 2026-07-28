@@ -21,7 +21,12 @@ public interface IOperationalService
     Task<StaleStagingCleanupResult> CleanupStaleStagingAsync(StaleStagingCleanupRequest request, CancellationToken cancellationToken = default);
     Task<ListManifestsResponse> ListManifestsAsync(BackupRunQuery query, CancellationToken cancellationToken = default);
     Task<ManifestDetailsResponse> GetManifestDetailsAsync(Guid deviceId, Guid runId, CancellationToken cancellationToken = default);
-    Task<ManifestFilesResponse> ListManifestFilesAsync(Guid deviceId, Guid runId, CancellationToken cancellationToken = default);
+    Task<ManifestFilesResponse> ListManifestFilesAsync(
+        Guid deviceId,
+        Guid runId,
+        int pageSize,
+        string? continuationToken = null,
+        CancellationToken cancellationToken = default);
 }
 
 public sealed record StaleStagingCleanupRequest(
@@ -94,17 +99,19 @@ public partial class OperationalService(
         var commitJob = await manifestManager.GetCommitJobAsync(commitId, cancellationToken);
         var backupRun = await TryGetBackupRunAsync(commitJob.DeviceId, commitJob.RunId, cancellationToken);
         var progress = await GetCommitFileProgressCountsAsync(commitId, cancellationToken);
-        var manifest = await GetPersistedOrBlobRunManifestAsync(commitJob.DeviceId, commitJob.RunId, cancellationToken);
+
+        // Only availability is reported here, so probe for it rather than reading the manifest.
+        var availability = await GetManifestAvailabilityAsync(commitJob.DeviceId, commitJob.RunId, cancellationToken);
 
         return new CommitJobDetailsResponse
         {
             Commit = ToCommitStatusResponse(commitJob),
             BackupRun = backupRun,
             Progress = progress,
-            ManifestAvailable = manifest != null,
-            ManifestUnavailableReason = manifest == null
-                ? "Manifest payload is not available for this commit's backup run."
-                : null
+            ManifestAvailable = availability.Available,
+            ManifestUnavailableReason = availability.Available
+                ? null
+                : "Manifest payload is not available for this commit's backup run."
         };
     }
 
@@ -152,38 +159,59 @@ public partial class OperationalService(
     {
         var run = await manifestManager.GetBackupRunAsync(deviceId, runId, cancellationToken);
         var summary = await ToManifestSummaryAsync(run, cancellationToken);
-        var manifest = await GetPersistedOrBlobRunManifestAsync(deviceId, runId, cancellationToken);
+        var availability = await GetManifestAvailabilityAsync(deviceId, runId, cancellationToken);
         var commit = await TryGetCommitStatusAsync(CreateDeterministicCommitId(deviceId, runId), cancellationToken);
 
         return new ManifestDetailsResponse
         {
             Summary = summary,
             Commit = commit,
-            Manifest = manifest,
-            ManifestAvailable = manifest != null,
-            ManifestUnavailableReason = manifest == null
-                ? "Manifest payload is not available. New successful runs are persisted in manifest state before temporary blob cleanup."
+            ManifestAvailable = availability.Available,
+            ManifestUnavailableReason = availability.Available
+                ? null
+                : "Manifest payload is not available. New successful runs are persisted in manifest state before temporary blob cleanup.",
+            FileCount = availability.Available ? availability.FileCount : null,
+            DeletedCount = availability.Available ? availability.DeletedCount : null,
+            FilesUrl = availability.Available
+                ? $"/api/ops/manifests/{deviceId:D}/{runId:D}/files"
                 : null
         };
     }
 
-    public async Task<ManifestFilesResponse> ListManifestFilesAsync(Guid deviceId, Guid runId, CancellationToken cancellationToken = default)
+    public async Task<ManifestFilesResponse> ListManifestFilesAsync(
+        Guid deviceId,
+        Guid runId,
+        int pageSize,
+        string? continuationToken = null,
+        CancellationToken cancellationToken = default)
     {
         _ = await manifestManager.GetBackupRunAsync(deviceId, runId, cancellationToken);
-        var run = await GetPersistedOrBlobRunManifestAsync(deviceId, runId, cancellationToken);
-        if (run == null)
+
+        pageSize = Math.Clamp(pageSize, 1, MaxManifestFilesPageSize);
+
+        var availability = await GetManifestAvailabilityAsync(deviceId, runId, cancellationToken);
+        if (!availability.Available)
         {
             throw new ManifestPayloadNotAvailableException(deviceId, runId);
         }
+
+        var cursor = ManifestFilesCursor.Decode(continuationToken);
+
+        var (files, deleted, next) = availability.Source == ManifestSource.State
+            ? await ReadStatePageAsync(deviceId, runId, pageSize, cursor, cancellationToken)
+            : await ReadBlobPageAsync(deviceId, runId, pageSize, cursor, cancellationToken);
 
         return new ManifestFilesResponse
         {
             DeviceId = deviceId,
             RunId = runId,
-            Files = run.Files,
-            Deleted = run.Deleted,
-            FileCount = run.Files.Count,
-            DeletedCount = run.Deleted.Count
+            Files = files,
+            Deleted = deleted,
+            FileCount = availability.FileCount,
+            DeletedCount = availability.DeletedCount,
+            PageSize = pageSize,
+            ContinuationToken = continuationToken,
+            NextContinuationToken = next?.Encode()
         };
     }
 
@@ -338,29 +366,157 @@ public partial class OperationalService(
         };
     }
 
-    private async Task<RunManifest?> GetPersistedOrBlobRunManifestAsync(Guid deviceId, Guid runId, CancellationToken cancellationToken)
+    /// <summary>Upper bound on entries per page, so no response can grow unbounded.</summary>
+    private const int MaxManifestFilesPageSize = 1000;
+
+    private enum ManifestSource
     {
-        var manifest = await manifestManager.GetRunManifestAsync(deviceId, runId, cancellationToken);
-        if (manifest != null)
+        None,
+
+        /// <summary>Chunked documents in the state store: the durable record.</summary>
+        State,
+
+        /// <summary>The run's temporary blob, before it is cleaned up post-commit.</summary>
+        Blob
+    }
+
+    private sealed record ManifestAvailability(bool Available, int FileCount, int DeletedCount, ManifestSource Source);
+
+    /// <summary>
+    /// Establishes whether a run's manifest can be read, and how many entries it has, without
+    /// materializing it. The state store answers from a single header document; the blob fallback
+    /// counts by streaming, which is bounded in memory but proportional in time to the manifest size.
+    /// </summary>
+    private async Task<ManifestAvailability> GetManifestAvailabilityAsync(
+        Guid deviceId,
+        Guid runId,
+        CancellationToken cancellationToken)
+    {
+        var header = await manifestManager.GetRunManifestHeaderAsync(deviceId, runId, cancellationToken);
+        if (header != null)
         {
-            return manifest;
+            return new ManifestAvailability(true, header.EffectiveFileCount, header.EffectiveDeletedCount, ManifestSource.State);
         }
 
-        var containerClient = await blobStorageService.GetContainerClientAsync(cancellationToken);
-        var blobClient = containerClient.GetBlobClient($"runs/{deviceId:N}/{runId:N}/run-manifest.json");
-
-        try
+        var blobClient = await GetManifestBlobClientAsync(deviceId, runId, cancellationToken);
+        if (!await blobClient.ExistsAsync(cancellationToken))
         {
-            var content = await blobClient.DownloadContentAsync(cancellationToken);
-            return JsonSerializer.Deserialize<RunManifest>(content.Value.Content.ToString(), new JsonSerializerOptions
+            return new ManifestAvailability(false, 0, 0, ManifestSource.None);
+        }
+
+        var files = 0;
+        var deletions = 0;
+
+        await using var stream = await blobClient.OpenReadAsync(cancellationToken: cancellationToken);
+        await foreach (var item in RunManifestStreamReader.ReadAsync(stream, cancellationToken))
+        {
+            if (item.File is not null)
             {
-                PropertyNameCaseInsensitive = true
-            });
+                files++;
+            }
+            else
+            {
+                deletions++;
+            }
         }
-        catch (RequestFailedException ex) when (ex.Status == StatusCodes.Status404NotFound)
+
+        return new ManifestAvailability(true, files, deletions, ManifestSource.Blob);
+    }
+
+    private async Task<BlobClient> GetManifestBlobClientAsync(Guid deviceId, Guid runId, CancellationToken cancellationToken)
+    {
+        var containerClient = await blobStorageService.GetContainerClientAsync(cancellationToken);
+        return containerClient.GetBlobClient($"runs/{deviceId:N}/{runId:N}/run-manifest.json");
+    }
+
+    private async Task<(IReadOnlyList<ManifestFileEntry> Files, IReadOnlyList<string> Deleted, ManifestFilesCursor? Next)>
+        ReadStatePageAsync(Guid deviceId, Guid runId, int pageSize, ManifestFilesCursor cursor, CancellationToken cancellationToken)
+    {
+        var page = await manifestManager.GetRunManifestEntryPageAsync(
+            deviceId, runId, pageSize, cursor.ChunkToken, cursor.Skip, cancellationToken);
+
+        var next = page.HasMore
+            ? new ManifestFilesCursor(page.NextChunkToken, page.NextSkip, 0)
+            : null;
+
+        return (page.Files, page.Deleted, next);
+    }
+
+    /// <summary>
+    /// Pages a manifest that is still only a blob by streaming past the entries already returned.
+    /// Deep pages therefore re-read the prefix; acceptable because this path only applies to runs
+    /// whose manifest has not been persisted to the state store yet.
+    /// </summary>
+    private async Task<(IReadOnlyList<ManifestFileEntry> Files, IReadOnlyList<string> Deleted, ManifestFilesCursor? Next)>
+        ReadBlobPageAsync(Guid deviceId, Guid runId, int pageSize, ManifestFilesCursor cursor, CancellationToken cancellationToken)
+    {
+        var blobClient = await GetManifestBlobClientAsync(deviceId, runId, cancellationToken);
+
+        var files = new List<ManifestFileEntry>();
+        var deleted = new List<string>();
+        var index = 0;
+        var hasMore = false;
+
+        await using var stream = await blobClient.OpenReadAsync(cancellationToken: cancellationToken);
+
+        await foreach (var item in RunManifestStreamReader.ReadAsync(stream, cancellationToken))
         {
-            return null;
+            if (index++ < cursor.Offset)
+            {
+                continue;
+            }
+
+            if (files.Count + deleted.Count == pageSize)
+            {
+                // One entry beyond the page proves there is more without returning it.
+                hasMore = true;
+                break;
+            }
+
+            if (item.File is { } file)
+            {
+                files.Add(file);
+            }
+            else if (item.DeletedPath is { } path)
+            {
+                deleted.Add(path);
+            }
         }
+
+        var next = hasMore
+            ? new ManifestFilesCursor(null, 0, cursor.Offset + files.Count + deleted.Count)
+            : null;
+
+        return (files, deleted, next);
+    }
+
+    /// <summary>
+    /// Opaque page cursor. Chunked manifests resume from a store token plus an offset inside that
+    /// chunk; blob-backed manifests resume from a plain entry offset.
+    /// </summary>
+    private sealed record ManifestFilesCursor(string? ChunkToken, int Skip, int Offset)
+    {
+        public static ManifestFilesCursor Decode(string? token)
+        {
+            if (string.IsNullOrWhiteSpace(token))
+            {
+                return new ManifestFilesCursor(null, 0, 0);
+            }
+
+            try
+            {
+                var json = Encoding.UTF8.GetString(Convert.FromBase64String(token));
+                return JsonSerializer.Deserialize<ManifestFilesCursor>(json)
+                    ?? throw new InvalidContinuationTokenException();
+            }
+            catch (Exception ex) when (ex is FormatException or JsonException)
+            {
+                throw new InvalidContinuationTokenException();
+            }
+        }
+
+        public string Encode()
+            => Convert.ToBase64String(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(this)));
     }
 
     private async Task<CommitJob?> TryGetCommitJobAsync(Guid commitId, CancellationToken cancellationToken)

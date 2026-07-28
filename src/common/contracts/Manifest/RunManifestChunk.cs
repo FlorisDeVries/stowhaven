@@ -32,6 +32,37 @@ public sealed record RunManifestHeader
 
     /// <summary>Legacy inline deletion paths; present only for v1 manifests.</summary>
     public List<string>? Deleted { get; init; }
+
+    /// <summary>
+    /// File count regardless of schema version. v1 headers carried their entries inline instead of
+    /// recording totals.
+    /// </summary>
+    public int EffectiveFileCount => SchemaVersion < ChunkedSchemaVersion
+        ? Files?.Count ?? FileCount
+        : FileCount;
+
+    /// <summary>Deletion count regardless of schema version.</summary>
+    public int EffectiveDeletedCount => SchemaVersion < ChunkedSchemaVersion
+        ? Deleted?.Count ?? DeletedCount
+        : DeletedCount;
+}
+
+/// <summary>
+/// One page of a run manifest's entries. Files and deletions are stored in separate chunk documents,
+/// so a page may carry either or both depending on where its window falls.
+/// </summary>
+public sealed record RunManifestEntryPage
+{
+    public required IReadOnlyList<ManifestFileEntry> Files { get; init; }
+    public required IReadOnlyList<string> Deleted { get; init; }
+
+    /// <summary>Store continuation token for the chunk the next page starts in, if any.</summary>
+    public string? NextChunkToken { get; init; }
+
+    /// <summary>Entries of that chunk already returned, which the next page must skip.</summary>
+    public int NextSkip { get; init; }
+
+    public bool HasMore { get; init; }
 }
 
 /// <summary>

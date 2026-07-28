@@ -27,8 +27,18 @@ public partial class BackupProcessingService(
     TelemetryProvider telemetry
 ) : IBackupProcessingService
 {
+    /// <summary>Entries between commit-job progress publications.</summary>
+    private const int CheckpointEveryEntries = 100;
+
     private readonly int _maxCommitAttempts = Math.Max(1, configuration.GetValue("CommitProcessing:MaxAttempts", 5));
     private readonly double _maxFailurePercentage = Math.Max(0, configuration.GetValue("CommitProcessing:MaxFailurePercentage", 5.0));
+
+    /// <summary>
+    /// Manifest entries processed concurrently. Each entry is a short chain of round trips, so this
+    /// trades directly against the state store's request-unit ceiling rather than against CPU: raise it
+    /// only alongside the provisioned throughput, or the extra concurrency just produces throttling.
+    /// </summary>
+    private readonly int _maxParallelFiles = Math.Max(1, configuration.GetValue("CommitProcessing:MaxParallelFiles", 8));
 
     public async Task ProcessBackupRunAsync(BackupRunCommittedEvent backupEvent, CancellationToken cancellationToken = default)
     {
@@ -89,52 +99,59 @@ public partial class BackupProcessingService(
             commitJob = await manifestManager.UpdateCommitJobAsync(commitJob, cancellationToken);
 
             var containerClient = await blobStorageService.GetContainerClientAsync(cancellationToken);
-            var processedCount = 0;
-            var skippedFiles = 0;
+            var counters = new ProcessingCounters();
+            var checkpoint = new CommitJobCheckpoint(commitJob, manifestManager);
 
-            // Counted from this pass rather than taken from the persist pass above: the failure
-            // threshold below decides whether the run is trustworthy, so it must be measured against
-            // the entries actually processed here.
-            var filesSeen = 0;
-
-            // Second streamed pass: process entries as they are read, so the manifest is never held in
-            // memory even for a run with hundreds of thousands of files.
-            await foreach (var item in StreamManifestAsync(manifestPath, cancellationToken))
-            {
-                if (item.File is { } fileEntry)
+            // Second streamed pass: entries are processed as they are read, so the manifest is never
+            // held in memory even for a run with hundreds of thousands of files.
+            await Parallel.ForEachAsync(
+                StreamManifestAsync(manifestPath, cancellationToken),
+                new ParallelOptions
                 {
-                    filesSeen++;
-
-                    try
+                    MaxDegreeOfParallelism = _maxParallelFiles,
+                    CancellationToken = cancellationToken
+                },
+                async (item, token) =>
+                {
+                    if (item.File is { } fileEntry)
                     {
-                        await ProcessFileEntryAsync(
+                        counters.CountFileSeen();
+
+                        try
+                        {
+                            await ProcessFileEntryAsync(
+                                backupEvent.DeviceId,
+                                backupEvent.RunId,
+                                commitJob.CommitId,
+                                fileEntry,
+                                containerClient,
+                                token);
+                            counters.CountProcessed();
+                        }
+                        catch (StagedBlobValidationException ex)
+                        {
+                            counters.CountSkipped();
+                            LogStagedBlobSkipped(logger, backupEvent.DeviceId, backupEvent.RunId, fileEntry.LogicalPath, ex.Message);
+                        }
+                    }
+                    else if (item.DeletedPath is { } deletedPath)
+                    {
+                        await ProcessFileDeletionAsync(
                             backupEvent.DeviceId,
                             backupEvent.RunId,
-                            commitJob.CommitId,
-                            fileEntry,
+                            deletedPath,
                             containerClient,
-                            cancellationToken);
-                        processedCount++;
+                            token);
+                        counters.CountProcessed();
                     }
-                    catch (StagedBlobValidationException ex)
-                    {
-                        skippedFiles++;
-                        LogStagedBlobSkipped(logger, backupEvent.DeviceId, backupEvent.RunId, fileEntry.LogicalPath, ex.Message);
-                    }
-                }
-                else if (item.DeletedPath is { } deletedPath)
-                {
-                    await ProcessFileDeletionAsync(
-                        backupEvent.DeviceId,
-                        backupEvent.RunId,
-                        deletedPath,
-                        containerClient,
-                        cancellationToken);
-                    processedCount++;
-                }
 
-                commitJob = await CheckpointProgressAsync(commitJob, processedCount, skippedFiles, cancellationToken);
-            }
+                    await checkpoint.RecordAsync(counters.Processed, counters.Skipped, token);
+                });
+
+            var processedCount = counters.Processed;
+            var skippedFiles = counters.Skipped;
+            var filesSeen = counters.FilesSeen;
+            commitJob = checkpoint.Current;
 
             // Too many skipped files means the run is not trustworthy - fail it loudly so it is retried
             // (and surfaced) rather than silently recording a mostly-empty backup.
@@ -239,19 +256,70 @@ public partial class BackupProcessingService(
         }
     }
 
-    private async Task<CommitJob> CheckpointProgressAsync(CommitJob commitJob, int processedCount, int skippedFiles, CancellationToken cancellationToken)
+    /// <summary>
+    /// Thread-safe tallies for a run's entries, shared across the concurrent processing of a manifest.
+    /// </summary>
+    private sealed class ProcessingCounters
     {
-        commitJob.FilesProcessed = processedCount;
-        commitJob.FilesFailed = skippedFiles;
+        private int _processed;
+        private int _skipped;
+        private int _filesSeen;
 
-        // Persist every 100 items so commit-status polling shows progress on large
-        // runs; the final counts are written with the terminal status update.
-        if ((processedCount + skippedFiles) % 100 == 0)
+        public int Processed => Volatile.Read(ref _processed);
+        public int Skipped => Volatile.Read(ref _skipped);
+        public int FilesSeen => Volatile.Read(ref _filesSeen);
+
+        public void CountProcessed() => Interlocked.Increment(ref _processed);
+        public void CountSkipped() => Interlocked.Increment(ref _skipped);
+        public void CountFileSeen() => Interlocked.Increment(ref _filesSeen);
+    }
+
+    /// <summary>
+    /// Publishes progress onto the commit job so status polling can see it during a long run.
+    ///
+    /// The commit job is a single document updated with optimistic concurrency, so concurrent writers
+    /// would fight over its ETag. Only one checkpoint is ever in flight: any entry that finishes while
+    /// a write is in progress skips its own, which is harmless because progress reporting is advisory
+    /// and the terminal status update writes the final counts.
+    /// </summary>
+    private sealed class CommitJobCheckpoint(CommitJob commitJob, IManifestManager manifestManager)
+    {
+        private readonly SemaphoreSlim _gate = new(1, 1);
+        private CommitJob _current = commitJob;
+        private int _lastPublishedTotal;
+
+        public CommitJob Current => _current;
+
+        public async Task RecordAsync(int processedCount, int skippedFiles, CancellationToken cancellationToken)
         {
-            commitJob = await manifestManager.UpdateCommitJobAsync(commitJob, cancellationToken);
-        }
+            var total = processedCount + skippedFiles;
+            if (total - Volatile.Read(ref _lastPublishedTotal) < CheckpointEveryEntries)
+            {
+                return;
+            }
 
-        return commitJob;
+            if (!await _gate.WaitAsync(0, cancellationToken))
+            {
+                return;
+            }
+
+            try
+            {
+                if (total - _lastPublishedTotal < CheckpointEveryEntries)
+                {
+                    return;
+                }
+
+                _current.FilesProcessed = processedCount;
+                _current.FilesFailed = skippedFiles;
+                _current = await manifestManager.UpdateCommitJobAsync(_current, cancellationToken);
+                Volatile.Write(ref _lastPublishedTotal, total);
+            }
+            finally
+            {
+                _gate.Release();
+            }
+        }
     }
 
     private static string ClassifyFailure(Exception ex)
@@ -307,41 +375,30 @@ public partial class BackupProcessingService(
         var sourceBlobName = $"staging/{deviceId:N}/{runId:N}/{fileEntry.UniqueFileId}";
         var destinationBlobName = $"devices/{deviceId:N}/files/{fileEntry.UniqueFileId}";
 
-        var progress = await GetOrCreateFileProgressAsync(commitId, deviceId, runId, fileEntry, logicalPath, cancellationToken);
+        var progress = await manifestManager.GetCommitFileProgressAsync(commitId, fileEntry.UniqueFileId, cancellationToken);
 
-        if (progress.Status == CommitFileStatus.Succeeded)
+        if (progress?.Status == CommitFileStatus.Succeeded)
         {
             LogCommitFileAlreadySucceeded(logger, commitId, fileEntry.UniqueFileId, logicalPath);
             return;
         }
 
-        if (progress.Status == CommitFileStatus.StateUpdated)
-        {
-            await SaveFileProgressAsync(progress, CommitFileStatus.Succeeded, cancellationToken);
-            return;
-        }
-
         try
         {
-            if (progress.Status == CommitFileStatus.Pending || progress.Status == CommitFileStatus.Failed)
+            await ValidateStagedBlobAsync(containerClient, sourceBlobName, destinationBlobName, fileEntry, cancellationToken);
+            try
             {
-                await ValidateStagedBlobAsync(containerClient, sourceBlobName, destinationBlobName, fileEntry, cancellationToken);
-                try
+                // Move blob from staging to files/
+                await blobStorageService.MoveBlobAsync(sourceBlobName, destinationBlobName, null, cancellationToken);
+            }
+            catch (InvalidOperationException ex)
+            {
+                if (!await IsDestinationBlobPresentAsync(containerClient, destinationBlobName, cancellationToken))
                 {
-                    // Move blob from staging to files/
-                    await blobStorageService.MoveBlobAsync(sourceBlobName, destinationBlobName, null, cancellationToken);
-                }
-                catch (InvalidOperationException ex)
-                {
-                    if (!await IsDestinationBlobPresentAsync(containerClient, destinationBlobName, cancellationToken))
-                    {
-                        throw;
-                    }
-
-                    LogSourceMissingDestinationPresent(logger, sourceBlobName, destinationBlobName, ex);
+                    throw;
                 }
 
-                progress = await SaveFileProgressAsync(progress, CommitFileStatus.Moved, cancellationToken);
+                LogSourceMissingDestinationPresent(logger, sourceBlobName, destinationBlobName, ex);
             }
 
             // Check if file already exists
@@ -385,54 +442,50 @@ public partial class BackupProcessingService(
             };
             await manifestManager.SaveFileEntryAsync(fileEntryRecord, cancellationToken);
 
-            progress = await SaveFileProgressAsync(progress, CommitFileStatus.StateUpdated, cancellationToken);
-            await SaveFileProgressAsync(progress, CommitFileStatus.Succeeded, cancellationToken);
+            await SaveTerminalProgressAsync(
+                progress, commitId, deviceId, runId, fileEntry, logicalPath,
+                CommitFileStatus.Succeeded, error: null, cancellationToken);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            progress.Status = CommitFileStatus.Failed;
-            progress.Error = ex.Message;
-            await manifestManager.SaveCommitFileProgressAsync(progress, cancellationToken);
+            await SaveTerminalProgressAsync(
+                progress, commitId, deviceId, runId, fileEntry, logicalPath,
+                CommitFileStatus.Failed, ex.Message, cancellationToken);
             throw;
         }
 
         LogFileEntryProcessed(logger, logicalPath, fileEntry.UniqueFileId);
     }
 
-    private async Task<CommitFileProgress> GetOrCreateFileProgressAsync(
+    /// <summary>
+    /// Writes the file's terminal outcome, reusing the record an earlier attempt left behind so its
+    /// ETag is carried forward, or creating one when this is the first attempt.
+    /// </summary>
+    private Task SaveTerminalProgressAsync(
+        CommitFileProgress? existing,
         Guid commitId,
         Guid deviceId,
         Guid runId,
         ManifestFileEntry fileEntry,
         string logicalPath,
+        CommitFileStatus status,
+        string? error,
         CancellationToken cancellationToken)
     {
-        var progress = await manifestManager.GetCommitFileProgressAsync(commitId, fileEntry.UniqueFileId, cancellationToken);
-        if (progress != null)
-        {
-            return progress;
-        }
-
-        return await manifestManager.SaveCommitFileProgressAsync(new CommitFileProgress
+        var progress = existing ?? new CommitFileProgress
         {
             CommitId = commitId,
             DeviceId = deviceId,
             RunId = runId,
             UniqueFileId = fileEntry.UniqueFileId,
-            LogicalPath = logicalPath,
-            Status = CommitFileStatus.Pending,
-            UpdatedAt = DateTimeOffset.UtcNow
-        }, cancellationToken);
-    }
+            LogicalPath = logicalPath
+        };
 
-    private async Task<CommitFileProgress> SaveFileProgressAsync(
-        CommitFileProgress progress,
-        CommitFileStatus status,
-        CancellationToken cancellationToken)
-    {
         progress.Status = status;
-        progress.Error = null;
-        return await manifestManager.SaveCommitFileProgressAsync(progress, cancellationToken);
+        progress.Error = error;
+        progress.UpdatedAt = DateTimeOffset.UtcNow;
+
+        return manifestManager.SaveCommitFileProgressAsync(progress, cancellationToken);
     }
 
     private static async Task ValidateStagedBlobAsync(

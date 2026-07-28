@@ -25,8 +25,32 @@ public partial class FileUploader(
     : IFileUploader
 {
     private readonly BackupClientOptions _options = options.Value;
+    private readonly AccessTier _stagingAccessTier = ResolveStagingAccessTier(options.Value.StagingAccessTier);
     private string? _basePath; // Base path for uploaded blobs (e.g., "staging/device/run/")
     private bool _isPathEmbedded;
+
+    /// <summary>
+    /// Validates the configured staging tier up front, so a typo fails at startup rather than on every
+    /// upload. Archive is rejected: staged blobs are read back during commit and archived blobs must be
+    /// rehydrated first.
+    /// </summary>
+    private static AccessTier ResolveStagingAccessTier(string configured)
+    {
+        if (string.IsNullOrWhiteSpace(configured))
+        {
+            return AccessTier.Hot;
+        }
+
+        var tier = new AccessTier(configured);
+
+        if (tier != AccessTier.Hot && tier != AccessTier.Cool && tier != AccessTier.Cold)
+        {
+            throw new InvalidOperationException(
+                $"Unsupported staging access tier '{configured}'. Use Hot, Cool or Cold.");
+        }
+
+        return tier;
+    }
 
     /// <summary>
     /// Sets the base path prefix for uploaded blobs. Must be called before uploading files.
@@ -184,7 +208,8 @@ public partial class FileUploader(
                 {
                     ProgressHandler = progress,
                     Metadata = CreateBackupMetadata(uploadFile),
-                    Conditions = new BlobRequestConditions { IfNoneMatch = ETag.All }
+                    Conditions = new BlobRequestConditions { IfNoneMatch = ETag.All },
+                    AccessTier = _stagingAccessTier
                 };
 
                 await blobClient.UploadAsync(preparedUpload.Content, uploadOptions, timeoutCts.Token);
