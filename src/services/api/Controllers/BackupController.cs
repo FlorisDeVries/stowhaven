@@ -201,6 +201,7 @@ public partial class BackupController(
             CreatedAt = commitJob.CreatedAt,
             UpdatedAt = commitJob.UpdatedAt,
             CompletedAt = commitJob.CompletedAt,
+            TotalFiles = commitJob.TotalFiles,
             FilesProcessed = commitJob.Status is CommitJobStatus.Succeeded or CommitJobStatus.CompletedWithErrors ? commitJob.FilesProcessed : null,
             FilesFailed = commitJob.FilesFailed,
             AttemptCount = commitJob.AttemptCount,
