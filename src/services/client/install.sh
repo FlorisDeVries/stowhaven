@@ -44,8 +44,69 @@ if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
     echo "  export PATH=\"\$HOME/.local/bin:\$PATH\""
 fi
 
+SYSTEMD_TIMER_CONFIGURED=false
+
+if command -v systemctl >/dev/null 2>&1; then
+    echo
+    echo "Preparing daily systemd timer ($SCHEDULE_TIME)..."
+    mkdir -p "$SYSTEMD_USER_DIR"
+
+    SERVICE_UNIT_TMP="$(mktemp "$SYSTEMD_USER_DIR/.${TIMER_UNIT}.service.XXXXXX")"
+    TIMER_UNIT_TMP="$(mktemp "$SYSTEMD_USER_DIR/.${TIMER_UNIT}.timer.XXXXXX")"
+
+    cat > "$SERVICE_UNIT_TMP" <<EOF
+[Unit]
+Description=FlorisDeV Backup Client
+
+[Service]
+Type=oneshot
+ExecStart=$INSTALL_DIR/$EXE_NAME
+EOF
+
+    cat > "$TIMER_UNIT_TMP" <<EOF
+[Unit]
+Description=Run Backup Client daily
+
+[Timer]
+OnCalendar=*-*-* $SCHEDULE_TIME
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+    chmod 0644 "$SERVICE_UNIT_TMP" "$TIMER_UNIT_TMP"
+    mv -f "$SERVICE_UNIT_TMP" "$SYSTEMD_USER_DIR/$TIMER_UNIT.service"
+    mv -f "$TIMER_UNIT_TMP" "$SYSTEMD_USER_DIR/$TIMER_UNIT.timer"
+
+    SYSTEMD_TIMER_CONFIGURED=true
+else
+    echo
+    echo "Note: systemctl not found; skipping daily timer setup. See README.md for manual scheduling options."
+fi
+
 echo
 echo "Launching first-time setup..."
 echo
 
-exec "$INSTALL_DIR/$EXE_NAME" configure "$@"
+"$INSTALL_DIR/$EXE_NAME" configure "$@"
+
+if [[ "$SYSTEMD_TIMER_CONFIGURED" == true ]]; then
+    echo
+    echo "Enabling daily systemd timer..."
+
+    if systemctl --user daemon-reload 2>/dev/null && systemctl --user enable --now "$TIMER_UNIT.timer" 2>/dev/null; then
+        echo "Enabled $TIMER_UNIT.timer - runs daily at $SCHEDULE_TIME."
+
+        if command -v loginctl >/dev/null 2>&1 && [[ "$(loginctl show-user "$(id -un)" --property=Linger --value 2>/dev/null)" != "yes" ]]; then
+            echo
+            echo "Note: linger is not enabled, so the timer only fires while you're logged in."
+            echo "To let it run even when logged out, run:"
+            echo "  loginctl enable-linger $(id -un)"
+        fi
+    else
+        echo "Could not talk to a systemd user session (common under WSL/containers)."
+        echo "Unit files were written to $SYSTEMD_USER_DIR - enable them manually once systemd --user is available:"
+        echo "  systemctl --user daemon-reload && systemctl --user enable --now $TIMER_UNIT.timer"
+    fi
+fi
