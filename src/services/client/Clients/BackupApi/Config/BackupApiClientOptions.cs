@@ -43,4 +43,15 @@ public sealed class ApiWakeUpOptions
     /// Maximum total time to wait for the API to wake up before giving up, in seconds. Default is 180s (3 minutes).
     /// </summary>
     public int MaxWaitSeconds { get; init; } = 180;
+
+    /// <summary>
+    /// Maximum duration of one anonymous health probe. Default is 10 seconds.
+    /// </summary>
+    public int ProbeTimeoutSeconds { get; init; } = 10;
+
+    /// <summary>
+    /// How long a successful probe is reused by subsequent API calls. Default is 60 seconds.
+    /// Set to 0 to probe before every API request.
+    /// </summary>
+    public int RecheckIntervalSeconds { get; init; } = 60;
 }

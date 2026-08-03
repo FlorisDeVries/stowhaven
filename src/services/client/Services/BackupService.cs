@@ -30,7 +30,6 @@ public partial class BackupService(
     ILogger<BackupService> logger,
     TelemetryProvider telemetry,
     IBackupApiClient backupApiClient,
-    IApiWakeUpService apiWakeUpService,
     IBackupStateService backupStateService,
     IBackupScanner scanner,
     IFileUploader uploader,
@@ -51,9 +50,6 @@ public partial class BackupService(
         {
             // Step 0: Validate all backup targets before starting
             ValidateTargets(targets);
-
-            // Wake up a scaled-to-zero API/gateway before sending real requests
-            await apiWakeUpService.EnsureApiAwakeAsync(cancellationToken);
 
             // Get or create device state (generates persistent device ID on first run)
             var deviceState = await backupStateService.GetOrCreateDeviceStateAsync(cancellationToken);
@@ -643,9 +639,6 @@ public partial class BackupService(
         var commitId = pendingRun?.CommitId;
         if (commitId == null)
         {
-            // The upload phase can take long enough for a scaled-to-zero API/gateway to idle back down.
-            await apiWakeUpService.EnsureApiAwakeAsync(cancellationToken);
-
             var commitRequest = new CommitBackupRunRequest
             {
                 RunId = runId.Value
@@ -848,9 +841,6 @@ public partial class BackupService(
         var commitId = pendingRun.CommitId;
         if (commitId == null)
         {
-            // A restart resuming a stale pending run may be hitting a scaled-to-zero API/gateway too.
-            await apiWakeUpService.EnsureApiAwakeAsync(cancellationToken);
-
             var commitResponse = await backupApiClient.CommitBackupRun(pendingRun.DeviceId, new CommitBackupRunRequest
             {
                 RunId = pendingRun.RunId
@@ -1001,7 +991,6 @@ public partial class BackupService(
 
         LogRefreshingUploadSas(runId, current.UploadSasUrlInfo.ExpiresAt);
 
-        await apiWakeUpService.EnsureApiAwakeAsync(cancellationToken);
         var refreshed = await backupApiClient.RefreshBackupRunSas(deviceId, runId, cancellationToken);
 
         var containerClient = new BlobContainerClient(TranslateStorageUrlForLocalDevelopment(refreshed.SasUrlInfo.Url));

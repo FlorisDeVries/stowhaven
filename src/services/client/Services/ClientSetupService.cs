@@ -38,7 +38,6 @@ public partial class ClientSetupService(
     IConfiguration configuration,
     IOptions<BackupApiClientOptions> apiOptions,
     TokenCredential credential,
-    IApiWakeUpService apiWakeUpService,
     IBackupApiClient backupApiClient,
     IBackupStateService backupStateService,
     ILogger<ClientSetupService> logger) : IClientSetupService
@@ -102,8 +101,6 @@ public partial class ClientSetupService(
     {
         try
         {
-            await apiWakeUpService.EnsureApiAwakeAsync(cancellationToken);
-
             var deviceState = await backupStateService.GetOrCreateDeviceStateAsync(cancellationToken);
             var response = await backupApiClient.RegisterDevice(new RegisterDeviceRequest
             {

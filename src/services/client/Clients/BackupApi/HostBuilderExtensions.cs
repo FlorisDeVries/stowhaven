@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Azure.Core;
 using FlorisDeV.BackupClient.Clients.BackupApi.Config;
+using FlorisDeV.BackupClient.Services;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -28,6 +29,12 @@ public static class HostBuilderExtensions
             .Validate(o => !string.IsNullOrWhiteSpace(o.ApiUrl), "ApiUrl must be configured.")
             .Validate(o => !string.IsNullOrWhiteSpace(o.AuthenticationScope), "AuthenticationScope must be configured.")
             .Validate(o => !string.IsNullOrWhiteSpace(o.AuthenticationTenant), "AuthenticationTenant must be configured.")
+            .Validate(o => !o.WakeUp.Enabled || o.WakeUp.InitialDelaySeconds > 0, "WakeUp:InitialDelaySeconds must be greater than zero.")
+            .Validate(o => !o.WakeUp.Enabled || o.WakeUp.MaxDelaySeconds > 0, "WakeUp:MaxDelaySeconds must be greater than zero.")
+            .Validate(o => !o.WakeUp.Enabled || o.WakeUp.MaxDelaySeconds >= o.WakeUp.InitialDelaySeconds, "WakeUp:MaxDelaySeconds must be greater than or equal to WakeUp:InitialDelaySeconds.")
+            .Validate(o => !o.WakeUp.Enabled || o.WakeUp.MaxWaitSeconds > 0, "WakeUp:MaxWaitSeconds must be greater than zero.")
+            .Validate(o => !o.WakeUp.Enabled || o.WakeUp.ProbeTimeoutSeconds > 0, "WakeUp:ProbeTimeoutSeconds must be greater than zero.")
+            .Validate(o => o.WakeUp.RecheckIntervalSeconds >= 0, "WakeUp:RecheckIntervalSeconds cannot be negative.")
             .ValidateOnStart();
 
         var retryConfigSection = configuration.GetSection(retrySectionName);
@@ -56,7 +63,19 @@ public static class HostBuilderExtensions
                 """);
         }
 
+        services.TryAddSingleton<IApiWakeUpService, ApiWakeUpService>();
+        services.TryAddTransient<BackupApiWakeUpHandler>();
         services.TryAddTransient<BackupApiAuthHandler>();
+
+        // The wake-up probe deliberately bypasses the Refit pipeline. Running it through the same
+        // handler would recurse, and running it through standard retries would multiply two separate
+        // retry loops. This anonymous client is used only for /api/health/alive.
+        services.AddHttpClient(ApiWakeUpService.HttpClientName, (provider, client) =>
+        {
+            var options = provider.GetRequiredService<IOptions<BackupApiClientOptions>>();
+            client.BaseAddress = new Uri(options.Value.ApiUrl.TrimEnd('/'));
+            client.Timeout = Timeout.InfiniteTimeSpan;
+        });
 
         // Add client(s) with resilience. By default, the following outcomes are handled:
         //
@@ -91,6 +110,7 @@ public static class HostBuilderExtensions
                 client.BaseAddress = new Uri(options.Value.ApiUrl.TrimEnd('/'));
                 client.Timeout = TimeSpan.FromSeconds(backupOptions.Value.HttpTimeoutSeconds);
             })
+            .AddHttpMessageHandler<BackupApiWakeUpHandler>()
             .AddHttpMessageHandler<BackupApiAuthHandler>()
             .RedactLoggedHeaders([ HeaderNames.Authorization ])
             .AddStandardResilienceHandler(retryConfigSection);
