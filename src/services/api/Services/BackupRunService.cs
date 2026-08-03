@@ -12,6 +12,12 @@ public interface IBackupRunService
     Task<BackupRunSasRefreshResult> RefreshSasUrlsAsync(Guid deviceId, Guid runId, string? clientIp = null, CancellationToken cancellationToken = default);
     Task<CommitJob> CommitBackupRunAsync(Guid deviceId, Guid runId, CancellationToken cancellationToken = default);
     Task<CommitJob> GetCommitStatusAsync(Guid commitId, CancellationToken cancellationToken = default);
+    Task<CommitFileProgressPage> GetFailedCommitFilesPageAsync(
+        Guid deviceId,
+        Guid commitId,
+        int pageSize,
+        string? continuationToken = null,
+        CancellationToken cancellationToken = default);
 }
 
 public class BackupRunService(
@@ -229,5 +235,26 @@ public class BackupRunService(
 
             throw;
         }
+    }
+
+    public async Task<CommitFileProgressPage> GetFailedCommitFilesPageAsync(
+        Guid deviceId,
+        Guid commitId,
+        int pageSize,
+        string? continuationToken = null,
+        CancellationToken cancellationToken = default)
+    {
+        var commitJob = await manifestManager.GetCommitJobAsync(commitId, cancellationToken);
+        if (commitJob.DeviceId != deviceId)
+        {
+            throw new InvalidOperationException($"CommitJob {commitId} does not belong to device {deviceId}");
+        }
+
+        return await manifestManager.GetCommitFileProgressByStatusPageAsync(
+            commitId,
+            CommitFileStatus.Failed,
+            pageSize,
+            continuationToken,
+            cancellationToken);
     }
 }

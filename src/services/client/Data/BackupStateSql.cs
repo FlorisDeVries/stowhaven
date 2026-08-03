@@ -108,6 +108,9 @@ internal static class BackupStateSql
     internal const string SelectDeviceStateQuery =
         "SELECT DeviceId, LastSuccessfulBackup, LastRunId, LastCommitId, TotalFilesTracked, TotalBytesTracked FROM DeviceState LIMIT 1";
 
+    internal const string SelectDeviceStateTotalsQuery =
+        "SELECT TotalFilesTracked, TotalBytesTracked FROM DeviceState LIMIT 1";
+
     /// <summary>
     /// Inserts a new device state record.
     /// </summary>
@@ -125,6 +128,11 @@ internal static class BackupStateSql
             LastRunId = @LastRunId,
             LastCommitId = @LastCommitId,
             TotalFilesTracked = COALESCE((SELECT COUNT(*) FROM BackupFiles), 0),
+            TotalBytesTracked = COALESCE((SELECT SUM(SizeBytes) FROM BackupFiles), 0)";
+
+    internal const string UpdateDeviceStateTotalsQuery = @"
+        UPDATE DeviceState
+        SET TotalFilesTracked = COALESCE((SELECT COUNT(*) FROM BackupFiles), 0),
             TotalBytesTracked = COALESCE((SELECT SUM(SizeBytes) FROM BackupFiles), 0)";
 
     /// <summary>
@@ -210,6 +218,10 @@ internal static class BackupStateSql
 
     internal const string DeletePendingRunFilesQuery =
         "DELETE FROM PendingRunFiles WHERE DeviceId = @DeviceId AND RunId = @RunId";
+
+    internal const string DeletePendingRunFileByPathQuery = @"
+        DELETE FROM PendingRunFiles
+        WHERE DeviceId = @DeviceId AND RunId = @RunId AND StoragePath = @StoragePath";
 
     /// <summary>
     /// Records this run's deletions as the set of tracked files the current scan never saw.

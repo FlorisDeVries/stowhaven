@@ -1141,6 +1141,302 @@ public class BackupServiceTests : IDisposable
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task Backup_WhenPendingCommitFinished_ContinuesWithCurrentFilesystemScan()
+    {
+        var deviceId = Guid.NewGuid();
+        var pendingRunId = Guid.NewGuid();
+        var commitId = Guid.NewGuid();
+        var initialState = new DeviceState(deviceId, null, null, null, 0, 0);
+        var finalizedState = new DeviceState(
+            deviceId,
+            DateTimeOffset.UtcNow,
+            pendingRunId,
+            commitId.ToString("N"),
+            2_000_000,
+            123_456);
+
+        _mockStateService.SetupSequence(x => x.GetOrCreateDeviceStateAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(initialState)
+            .ReturnsAsync(finalizedState);
+        _mockStateService.Setup(x => x.GetPendingBackupRunAsync(deviceId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CreatePendingRun(deviceId, pendingRunId, commitId));
+        _mockApiClient.Setup(x => x.GetCommitStatus(deviceId, commitId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CommitStatusResponse
+            {
+                DeviceId = deviceId,
+                RunId = pendingRunId,
+                CommitId = commitId,
+                Status = CommitJobStatus.Succeeded,
+                CreatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = DateTimeOffset.UtcNow,
+                CompletedAt = DateTimeOffset.UtcNow
+            });
+        _mockScanner.Setup(x => x.ScanAllTargetsAsync(
+                It.IsAny<IReadOnlyDictionary<string, string>>(),
+                It.IsAny<string[]?>(),
+                It.IsAny<CancellationToken>()))
+            .Returns(ToAsync<TaggedFile>());
+
+        var result = await _sut.Backup(CancellationToken.None);
+
+        result.Should().BeTrue();
+        _mockStateService.Verify(
+            x => x.GetOrCreateDeviceStateAsync(It.IsAny<CancellationToken>()),
+            Times.Exactly(2));
+        _mockScanner.Verify(x => x.ScanAllTargetsAsync(
+            It.IsAny<IReadOnlyDictionary<string, string>>(),
+            It.IsAny<string[]?>(),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task Backup_WhenPendingCommitStillProcessing_DoesNotStartAnotherScan()
+    {
+        var deviceId = Guid.NewGuid();
+        var pendingRunId = Guid.NewGuid();
+        var commitId = Guid.NewGuid();
+        var options = Options.Create(new BackupClientOptions
+        {
+            BackupTargets = new Dictionary<string, string> { ["default"] = _testDirectory },
+            MaxFailurePercentage = 10,
+            CommitStatusTimeoutSeconds = 0,
+            CommitStatusPollIntervalSeconds = 1
+        });
+        var sut = new BackupService(
+            _mockLogger.Object,
+            _telemetryProvider,
+            _mockApiClient.Object,
+            _mockApiWakeUpService.Object,
+            _mockStateService.Object,
+            _mockScanner.Object,
+            _mockUploader.Object,
+            options);
+
+        _mockStateService.Setup(x => x.GetOrCreateDeviceStateAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DeviceState(deviceId, null, null, null, 0, 0));
+        _mockStateService.Setup(x => x.GetPendingBackupRunAsync(deviceId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CreatePendingRun(deviceId, pendingRunId, commitId));
+        _mockApiClient.Setup(x => x.GetCommitStatus(deviceId, commitId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CommitStatusResponse
+            {
+                DeviceId = deviceId,
+                RunId = pendingRunId,
+                CommitId = commitId,
+                Status = CommitJobStatus.Processing,
+                CreatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = DateTimeOffset.UtcNow
+            });
+
+        var result = await sut.Backup(CancellationToken.None);
+
+        result.Should().BeTrue();
+        _mockScanner.Verify(x => x.ScanAllTargetsAsync(
+            It.IsAny<IReadOnlyDictionary<string, string>>(),
+            It.IsAny<string[]?>(),
+            It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task Backup_WhenServerSkippedFiles_RemovesThemBeforePromotingJournal()
+    {
+        var deviceId = Guid.NewGuid();
+        var pendingRunId = Guid.NewGuid();
+        var commitId = Guid.NewGuid();
+        var state = new DeviceState(deviceId, null, null, null, 0, 0);
+
+        _mockStateService.Setup(x => x.GetOrCreateDeviceStateAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(state);
+        _mockStateService.Setup(x => x.GetPendingBackupRunAsync(deviceId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CreatePendingRun(deviceId, pendingRunId, commitId));
+        _mockApiClient.Setup(x => x.GetCommitStatus(deviceId, commitId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CommitStatusResponse
+            {
+                DeviceId = deviceId,
+                RunId = pendingRunId,
+                CommitId = commitId,
+                Status = CommitJobStatus.CompletedWithErrors,
+                FilesFailed = 2,
+                CreatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = DateTimeOffset.UtcNow,
+                CompletedAt = DateTimeOffset.UtcNow
+            });
+        _mockApiClient.Setup(x => x.ListFailedCommitFiles(
+                deviceId, commitId, 500, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ListCommitFileProgressResponse
+            {
+                DeviceId = deviceId,
+                RunId = pendingRunId,
+                CommitId = commitId,
+                Files =
+                [
+                    CreateCommitFileProgress(deviceId, pendingRunId, commitId, "data/a.txt"),
+                    CreateCommitFileProgress(deviceId, pendingRunId, commitId, "projects/b.txt")
+                ],
+                PageSize = 500
+            });
+        _mockScanner.Setup(x => x.ScanAllTargetsAsync(
+                It.IsAny<IReadOnlyDictionary<string, string>>(),
+                It.IsAny<string[]?>(),
+                It.IsAny<CancellationToken>()))
+            .Returns(ToAsync<TaggedFile>());
+
+        var result = await _sut.Backup(CancellationToken.None);
+
+        result.Should().BeTrue();
+        _mockStateService.Verify(x => x.RemovePendingRunFilesAsync(
+            deviceId,
+            pendingRunId,
+            It.Is<IReadOnlyList<string>>(paths =>
+                paths.SequenceEqual(new[] { "data/a.txt", "projects/b.txt" })),
+            It.IsAny<CancellationToken>()), Times.Once);
+        _mockStateService.Verify(x => x.PromotePendingRunFilesToStateAsync(
+            deviceId, pendingRunId, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task Backup_WhenFailedFilePageIsIncomplete_PreservesPendingJournal()
+    {
+        var deviceId = Guid.NewGuid();
+        var pendingRunId = Guid.NewGuid();
+        var commitId = Guid.NewGuid();
+        _mockStateService.Setup(x => x.GetOrCreateDeviceStateAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DeviceState(deviceId, null, null, null, 0, 0));
+        _mockStateService.Setup(x => x.GetPendingBackupRunAsync(deviceId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CreatePendingRun(deviceId, pendingRunId, commitId));
+        _mockApiClient.Setup(x => x.GetCommitStatus(deviceId, commitId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CommitStatusResponse
+            {
+                DeviceId = deviceId,
+                RunId = pendingRunId,
+                CommitId = commitId,
+                Status = CommitJobStatus.CompletedWithErrors,
+                FilesFailed = 2,
+                CreatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = DateTimeOffset.UtcNow,
+                CompletedAt = DateTimeOffset.UtcNow
+            });
+        _mockApiClient.Setup(x => x.ListFailedCommitFiles(
+                deviceId, commitId, 500, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ListCommitFileProgressResponse
+            {
+                DeviceId = deviceId,
+                RunId = pendingRunId,
+                CommitId = commitId,
+                Files = [CreateCommitFileProgress(deviceId, pendingRunId, commitId, "data/only-one.txt")],
+                PageSize = 500
+            });
+
+        var act = () => _sut.Backup(CancellationToken.None);
+
+        await act.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("*reported 2 failed file(s)*returned 1*");
+        _mockStateService.Verify(x => x.PromotePendingRunFilesToStateAsync(
+            It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+        _mockStateService.Verify(x => x.ClearPendingBackupRunAsync(
+            It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task Backup_WhenOlderClientPromotedRejectedFiles_RemovesThemBeforeScan()
+    {
+        var deviceId = Guid.NewGuid();
+        var lastRunId = Guid.NewGuid();
+        var lastCommitId = Guid.NewGuid();
+        _mockStateService.Setup(x => x.GetOrCreateDeviceStateAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new DeviceState(
+                deviceId,
+                DateTimeOffset.UtcNow.AddHours(-1),
+                lastRunId,
+                lastCommitId.ToString("N"),
+                100,
+                1_000));
+        _mockApiClient.Setup(x => x.GetCommitStatus(deviceId, lastCommitId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CommitStatusResponse
+            {
+                DeviceId = deviceId,
+                RunId = lastRunId,
+                CommitId = lastCommitId,
+                Status = CommitJobStatus.CompletedWithErrors,
+                FilesFailed = 1,
+                CreatedAt = DateTimeOffset.UtcNow.AddHours(-1),
+                UpdatedAt = DateTimeOffset.UtcNow,
+                CompletedAt = DateTimeOffset.UtcNow
+            });
+        _mockApiClient.Setup(x => x.ListFailedCommitFiles(
+                deviceId, lastCommitId, 500, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ListCommitFileProgressResponse
+            {
+                DeviceId = deviceId,
+                RunId = lastRunId,
+                CommitId = lastCommitId,
+                Files = [CreateCommitFileProgress(deviceId, lastRunId, lastCommitId, "projects/rejected.txt")],
+                PageSize = 500
+            });
+        _mockScanner.Setup(x => x.ScanAllTargetsAsync(
+                It.IsAny<IReadOnlyDictionary<string, string>>(),
+                It.IsAny<string[]?>(),
+                It.IsAny<CancellationToken>()))
+            .Returns(ToAsync<TaggedFile>());
+
+        var result = await _sut.Backup(CancellationToken.None);
+
+        result.Should().BeTrue();
+        _mockStateService.Verify(x => x.RemoveTrackedFilesAsync(
+            It.Is<IReadOnlyList<string>>(paths => paths.SequenceEqual(new[] { "projects/rejected.txt" })),
+            It.IsAny<CancellationToken>()), Times.Once);
+        _mockScanner.Verify(x => x.ScanAllTargetsAsync(
+            It.IsAny<IReadOnlyDictionary<string, string>>(),
+            It.IsAny<string[]?>(),
+            It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    private static PendingBackupRun CreatePendingRun(Guid deviceId, Guid runId, Guid commitId)
+    {
+        var now = DateTimeOffset.UtcNow;
+        return new PendingBackupRun
+        {
+            DeviceId = deviceId,
+            RunId = runId,
+            StartedAt = now.AddHours(-1),
+            UploadSasUrlInfo = new SasUrlInfo
+            {
+                Url = new Uri("https://test.blob.core.windows.net/backups?sas=upload"),
+                ExpiresAt = now.AddMinutes(30),
+                TtlMinutes = 60
+            },
+            ManifestSasUrlInfo = new SasUrlInfo
+            {
+                Url = new Uri("https://test.blob.core.windows.net/backups?sas=manifest"),
+                ExpiresAt = now.AddMinutes(30),
+                TtlMinutes = 60
+            },
+            ManifestUploaded = true,
+            CommitId = commitId
+        };
+    }
+
+    private static CommitFileProgressResponse CreateCommitFileProgress(
+        Guid deviceId,
+        Guid runId,
+        Guid commitId,
+        string logicalPath)
+        => new()
+        {
+            DeviceId = deviceId,
+            RunId = runId,
+            CommitId = commitId,
+            UniqueFileId = $"uid-{logicalPath}",
+            LogicalPath = logicalPath,
+            Status = CommitFileStatus.Failed,
+            UpdatedAt = DateTimeOffset.UtcNow
+        };
+
     /// <summary>
     /// Wires up scanner/state/api mocks for a backup of a single new file, returning that file.
     /// The run's SAS expiry is set to <paramref name="sasExpiresIn"/> from now.

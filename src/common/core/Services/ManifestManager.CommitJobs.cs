@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 using FlorisDeV.BackupApi.Data;
 using FlorisDeV.BackupContracts.State;
 using FlorisDeV.Logging.OpenTelemetry;
@@ -250,6 +251,51 @@ public partial class ManifestManager
             Type = CommitFileProgressDocument,
             PartitionKey = CommitPartition(commitId),
             Order = DocumentOrder.SortKeyAscending,
+            PageSize = normalizedPageSize,
+            ContinuationToken = continuationToken
+        }, cancellationToken);
+
+        var files = new List<CommitFileProgress>(page.Items.Count);
+        foreach (var document in page.Items)
+        {
+            var progress = document.Data;
+            progress.ETag = document.ETag;
+            files.Add(progress);
+        }
+
+        return new CommitFileProgressPage
+        {
+            Files = files,
+            PageSize = normalizedPageSize,
+            ContinuationToken = continuationToken,
+            NextContinuationToken = page.NextContinuationToken
+        };
+    }
+
+    public async Task<CommitFileProgressPage> GetCommitFileProgressByStatusPageAsync(
+        Guid commitId,
+        CommitFileStatus status,
+        int pageSize,
+        string? continuationToken = null,
+        CancellationToken cancellationToken = default)
+    {
+        using var activity = telemetry.ActivitySource.StartActivity("GetCommitFileProgressByStatusPage");
+        var normalizedPageSize = Math.Clamp(pageSize, 1, 500);
+
+        activity?.SetTag("commit_id", commitId.ToString());
+        activity?.SetTag("commit_file_status", status.ToString());
+        activity?.SetTag("state.page_size", normalizedPageSize);
+
+        var page = await store.QueryAsync<CommitFileProgress>(new DocumentQuery
+        {
+            Type = CommitFileProgressDocument,
+            PartitionKey = CommitPartition(commitId),
+            FieldEquals =
+            [
+                new DocumentFieldEquals(
+                    "status",
+                    JsonNamingPolicy.CamelCase.ConvertName(status.ToString()))
+            ],
             PageSize = normalizedPageSize,
             ContinuationToken = continuationToken
         }, cancellationToken);

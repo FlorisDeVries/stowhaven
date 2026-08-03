@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using Azure.Storage.Blobs;
@@ -7,11 +8,13 @@ using FlorisDeV.BackupClient.Config;
 using FlorisDeV.BackupClient.Models;
 using FlorisDeV.BackupClient.Telemetry;
 using FlorisDeV.BackupContracts.Api.Requests;
+using FlorisDeV.BackupContracts.Api.Responses;
 using FlorisDeV.BackupContracts.Infrastructure;
 using FlorisDeV.BackupContracts.Manifest;
 using FlorisDeV.BackupContracts.State;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Refit;
 
 namespace FlorisDeV.BackupClient.Services;
 
@@ -57,17 +60,34 @@ public partial class BackupService(
             var deviceId = deviceState.DeviceId;
 
             await RegisterDeviceAsync(deviceId, cancellationToken);
+            SetupTelemetryBackupStart(activity, deviceId, targets);
 
             var pendingRun = await LoadUsablePendingRunAsync(deviceId, cancellationToken);
+            var finalizedPendingRun = false;
             if (pendingRun is { ManifestUploaded: true } or { CommitId: not null })
             {
-                var result = await ResumeFinalizedRunAsync(pendingRun, activity, cancellationToken);
-                stopwatch.Stop();
-                RecordOperationDuration(activity, metricTags, stopwatch, "resumed");
-                return result;
+                var finalized = await ResumeFinalizedRunAsync(pendingRun, cancellationToken);
+                if (!finalized)
+                {
+                    stopwatch.Stop();
+                    RecordOperationDuration(activity, metricTags, stopwatch, "commit_pending");
+                    return true;
+                }
+
+                // The invocation that notices a completed pending run must still inspect the live
+                // filesystem. Files may have changed while the server was committing (or since the
+                // previous timer tick), and returning here would defer them for a whole interval.
+                deviceState = await backupStateService.GetOrCreateDeviceStateAsync(cancellationToken);
+                pendingRun = null;
+                finalizedPendingRun = true;
             }
 
-            SetupTelemetryBackupStart(activity, deviceId, targets);
+            if (!finalizedPendingRun)
+            {
+                // Repairs state written by older clients that promoted every journal entry even when
+                // the server rejected some staged blobs. Removing those paths makes this scan retry them.
+                await ReconcileLastCommitFailuresAsync(deviceState, cancellationToken);
+            }
 
             // Step 1: Resolve exclusion patterns
             var excludePatterns = ResolveExclusionPatterns();
@@ -638,13 +658,14 @@ public partial class BackupService(
 
         LogBackupRunCommitted(runId.Value);
 
-        if (!await WaitForCommitCompletionAsync(deviceId, commitId.Value, cancellationToken))
+        var commitStatus = await WaitForCommitCompletionAsync(deviceId, commitId.Value, cancellationToken);
+        if (commitStatus == null)
         {
             // Commit still processing server-side; leave the pending run so a later run finalizes it.
             return false;
         }
 
-        await FinalizeRunStateAsync(deviceId, runId.Value, commitId.Value, cancellationToken);
+        await FinalizeRunStateAsync(deviceId, runId.Value, commitStatus, cancellationToken);
         return true;
     }
 
@@ -653,18 +674,128 @@ public partial class BackupService(
     /// the journal. Every step is set-based inside SQLite, so finalizing a run with hundreds of
     /// thousands of files costs no managed memory.
     /// </summary>
-    private async Task FinalizeRunStateAsync(Guid deviceId, Guid runId, Guid commitId, CancellationToken cancellationToken)
+    private async Task FinalizeRunStateAsync(
+        Guid deviceId,
+        Guid runId,
+        CommitStatusResponse commitStatus,
+        CancellationToken cancellationToken)
     {
+        if (commitStatus.Status == CommitJobStatus.CompletedWithErrors)
+        {
+            await RemoveServerRejectedFilesFromJournalAsync(
+                deviceId,
+                runId,
+                commitStatus.CommitId,
+                commitStatus.FilesFailed ?? 0,
+                cancellationToken);
+        }
+
         await backupStateService.PromotePendingRunFilesToStateAsync(deviceId, runId, cancellationToken);
         await backupStateService.ApplyPendingRunDeletionsAsync(deviceId, runId, cancellationToken);
 
         await backupStateService.SaveBackupSuccessAsync(
             runId,
-            commitId.ToString("N"),
+            commitStatus.CommitId.ToString("N"),
             [],
             cancellationToken);
 
         await backupStateService.ClearPendingBackupRunAsync(deviceId, runId, cancellationToken);
+    }
+
+    private async Task RemoveServerRejectedFilesFromJournalAsync(
+        Guid deviceId,
+        Guid runId,
+        Guid commitId,
+        int expectedFailedFiles,
+        CancellationToken cancellationToken)
+        => await ProcessServerRejectedFilesAsync(
+            deviceId,
+            runId,
+            commitId,
+            expectedFailedFiles,
+            (paths, token) => backupStateService.RemovePendingRunFilesAsync(deviceId, runId, paths, token),
+            cancellationToken);
+
+    private async Task ReconcileLastCommitFailuresAsync(
+        DeviceState deviceState,
+        CancellationToken cancellationToken)
+    {
+        if (!Guid.TryParse(deviceState.LastCommitId, out var commitId) || deviceState.LastRunId == null)
+        {
+            return;
+        }
+
+        CommitStatusResponse commitStatus;
+        try
+        {
+            commitStatus = await backupApiClient.GetCommitStatus(deviceState.DeviceId, commitId, cancellationToken);
+        }
+        catch (ApiException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            // Commit progress may have aged out under a future retention policy. That must not block
+            // ordinary backups; there is simply no server-side failure detail left to reconcile.
+            return;
+        }
+
+        if (commitStatus.Status != CommitJobStatus.CompletedWithErrors)
+        {
+            return;
+        }
+
+        await ProcessServerRejectedFilesAsync(
+            deviceState.DeviceId,
+            deviceState.LastRunId.Value,
+            commitId,
+            commitStatus.FilesFailed ?? 0,
+            (paths, token) => backupStateService.RemoveTrackedFilesAsync(paths, token),
+            cancellationToken);
+    }
+
+    private async Task ProcessServerRejectedFilesAsync(
+        Guid deviceId,
+        Guid runId,
+        Guid commitId,
+        int expectedFailedFiles,
+        Func<IReadOnlyList<string>, CancellationToken, Task> removeFiles,
+        CancellationToken cancellationToken)
+    {
+        string? continuationToken = null;
+        var failedFilesRead = 0;
+
+        do
+        {
+            var page = await backupApiClient.ListFailedCommitFiles(
+                deviceId,
+                commitId,
+                pageSize: 500,
+                continuationToken,
+                cancellationToken);
+
+            if (page.DeviceId != deviceId || page.RunId != runId || page.CommitId != commitId)
+            {
+                throw new InvalidOperationException($"Failed-file results did not match commit {commitId}");
+            }
+
+            if (page.Files.Any(file => file.Status != CommitFileStatus.Failed))
+            {
+                throw new InvalidOperationException($"Failed-file results for commit {commitId} contained a non-failed entry");
+            }
+
+            await removeFiles(
+                page.Files.Select(file => file.LogicalPath).ToArray(),
+                cancellationToken);
+
+            failedFilesRead += page.Files.Count;
+            continuationToken = page.NextContinuationToken;
+        } while (!string.IsNullOrWhiteSpace(continuationToken));
+
+        // Do not promote the journal on a stale/partial read. The pending run remains durable and a
+        // later timer invocation can retry once every terminal progress record is visible.
+        if (failedFilesRead != expectedFailedFiles)
+        {
+            throw new InvalidOperationException(
+                $"Commit {commitId} reported {expectedFailedFiles} failed file(s), but the failed-file endpoint returned {failedFilesRead}");
+        }
     }
 
     /// <summary>
@@ -710,10 +841,10 @@ public partial class BackupService(
         return null;
     }
 
-    private async Task<bool> ResumeFinalizedRunAsync(PendingBackupRun pendingRun, Activity? activity, CancellationToken cancellationToken)
+    private async Task<bool> ResumeFinalizedRunAsync(
+        PendingBackupRun pendingRun,
+        CancellationToken cancellationToken)
     {
-        SetupTelemetryBackupStart(activity, pendingRun.DeviceId, _options.GetEffectiveTargets());
-
         var commitId = pendingRun.CommitId;
         if (commitId == null)
         {
@@ -733,13 +864,14 @@ public partial class BackupService(
             }, cancellationToken);
         }
 
-        if (!await WaitForCommitCompletionAsync(pendingRun.DeviceId, commitId.Value, cancellationToken))
+        var commitStatus = await WaitForCommitCompletionAsync(pendingRun.DeviceId, commitId.Value, cancellationToken);
+        if (commitStatus == null)
         {
             // Still processing server-side; keep the pending run so a later run finalizes it.
-            return true;
+            return false;
         }
 
-        await FinalizeRunStateAsync(pendingRun.DeviceId, pendingRun.RunId, commitId.Value, cancellationToken);
+        await FinalizeRunStateAsync(pendingRun.DeviceId, pendingRun.RunId, commitStatus, cancellationToken);
         LogPendingBackupRunFinalized(pendingRun.RunId, commitId.Value);
         return true;
     }
@@ -766,13 +898,16 @@ public partial class BackupService(
 
     /// <summary>
     /// Polls the server-side commit until it reaches a terminal state.
-    /// Returns <c>true</c> when the commit completed (<see cref="CommitJobStatus.Succeeded"/> or
-    /// <see cref="CommitJobStatus.CompletedWithErrors"/>) and the run should be finalized locally.
-    /// Returns <c>false</c> when the commit is still processing after the configured wait: large runs
+    /// Returns the terminal response when the commit completed (<see cref="CommitJobStatus.Succeeded"/> or
+    /// <see cref="CommitJobStatus.CompletedWithErrors"/>), and <c>null</c> when the commit is still
+    /// processing after the configured wait. Large runs
     /// can take far longer server-side than the client wants to block, so the caller leaves the pending
     /// run in place and a later run finalizes it. Throws only on a genuine commit failure.
     /// </summary>
-    private async Task<bool> WaitForCommitCompletionAsync(Guid deviceId, Guid commitId, CancellationToken cancellationToken)
+    private async Task<CommitStatusResponse?> WaitForCommitCompletionAsync(
+        Guid deviceId,
+        Guid commitId,
+        CancellationToken cancellationToken)
     {
         var timeout = TimeSpan.FromSeconds(_options.CommitStatusTimeoutSeconds);
         var pollInterval = TimeSpan.FromSeconds(_options.CommitStatusPollIntervalSeconds);
@@ -787,12 +922,12 @@ public partial class BackupService(
             switch (status.Status)
             {
                 case CommitJobStatus.Succeeded:
-                    return true;
+                    return status;
                 case CommitJobStatus.CompletedWithErrors:
                     // Non-fatal: the server committed the run but skipped some files whose staged content
                     // did not match. Those files stay un-backed-up locally and are retried on the next run.
                     LogCommitCompletedWithErrors(status.FilesFailed ?? 0, status.Error ?? string.Empty);
-                    return true;
+                    return status;
                 case CommitJobStatus.Failed:
                     throw new InvalidOperationException($"Backup commit {commitId} failed: {status.Error ?? "Unknown error"}");
             }
@@ -802,7 +937,7 @@ public partial class BackupService(
                 // Still Queued/Processing. Don't fail - the commit is durable server-side and will finish;
                 // hand off finalization to a later run, which resumes from the pending-run journal.
                 LogCommitStillProcessing(commitId, status.Status.ToString(), timeout.TotalSeconds);
-                return false;
+                return null;
             }
 
             await Task.Delay(pollInterval, cancellationToken);

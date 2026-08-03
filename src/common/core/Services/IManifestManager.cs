@@ -65,6 +65,13 @@ public interface IManifestManager
     Task<CommitFileProgressPage> GetCommitFileProgressPageAsync(Guid commitId, int pageSize, string? continuationToken = null,
         CancellationToken cancellationToken = default);
 
+    Task<CommitFileProgressPage> GetCommitFileProgressByStatusPageAsync(
+        Guid commitId,
+        CommitFileStatus status,
+        int pageSize,
+        string? continuationToken = null,
+        CancellationToken cancellationToken = default);
+
     Task<CommitFileProgress> SaveCommitFileProgressAsync(CommitFileProgress progress, CancellationToken cancellationToken = default);
 
     Task<FileEntry?> GetFileEntryAsync(Guid deviceId, string relativePath, CancellationToken cancellationToken = default);

@@ -216,6 +216,53 @@ public partial class BackupController(
         return Ok(response);
     }
 
+    [HttpGet("/api/devices/{deviceId:guid}/backup/commit-status/{commitId:guid}/failed-files")]
+    [ProducesResponseType(typeof(ListCommitFileProgressResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<ListCommitFileProgressResponse>> ListFailedCommitFiles(
+        Guid deviceId,
+        Guid commitId,
+        [FromQuery] int pageSize = 100,
+        [FromQuery] string? continuationToken = null,
+        CancellationToken cancellationToken = default)
+    {
+        await deviceAuthorizationService.AuthorizeDeviceAsync(User, deviceId, cancellationToken);
+
+        var commitJob = await backupRunService.GetCommitStatusAsync(commitId, cancellationToken);
+        if (commitJob.DeviceId != deviceId)
+        {
+            return NotFound();
+        }
+
+        var page = await backupRunService.GetFailedCommitFilesPageAsync(
+            deviceId,
+            commitId,
+            pageSize,
+            continuationToken,
+            cancellationToken);
+
+        return Ok(new ListCommitFileProgressResponse
+        {
+            CommitId = commitId,
+            DeviceId = deviceId,
+            RunId = commitJob.RunId,
+            Files = page.Files.Select(file => new CommitFileProgressResponse
+            {
+                CommitId = file.CommitId,
+                DeviceId = file.DeviceId,
+                RunId = file.RunId,
+                UniqueFileId = file.UniqueFileId,
+                LogicalPath = file.LogicalPath,
+                Status = file.Status,
+                UpdatedAt = file.UpdatedAt,
+                Error = file.Error
+            }).ToArray(),
+            PageSize = page.PageSize,
+            ContinuationToken = page.ContinuationToken,
+            NextContinuationToken = page.NextContinuationToken
+        });
+    }
+
     #region Logging
 
     [LoggerMessage(LogLevel.Information, "Starting backup run for device {deviceId}")]

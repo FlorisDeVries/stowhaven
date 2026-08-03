@@ -411,4 +411,54 @@ public class BackupControllerTests
     }
 
     #endregion
+
+    #region Failed Commit Files Tests
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task ListFailedCommitFiles_ReturnsOnlyFailedProgressForAuthorizedDevice()
+    {
+        var deviceId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var commitId = Guid.NewGuid();
+        _backupRunServiceMock.Setup(x => x.GetCommitStatusAsync(commitId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CommitJob
+            {
+                DeviceId = deviceId,
+                RunId = runId,
+                CommitId = commitId,
+                Status = CommitJobStatus.CompletedWithErrors
+            });
+        _backupRunServiceMock.Setup(x => x.GetFailedCommitFilesPageAsync(
+                deviceId, commitId, 100, null, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CommitFileProgressPage
+            {
+                Files =
+                [
+                    new CommitFileProgress
+                    {
+                        DeviceId = deviceId,
+                        RunId = runId,
+                        CommitId = commitId,
+                        UniqueFileId = "uid-failed",
+                        LogicalPath = "data/failed.txt",
+                        Status = CommitFileStatus.Failed
+                    }
+                ],
+                PageSize = 100
+            });
+
+        var result = await _sut.ListFailedCommitFiles(deviceId, commitId);
+
+        var response = result.Result.Should().BeOfType<OkObjectResult>()
+            .Which.Value.Should().BeOfType<ListCommitFileProgressResponse>()
+            .Which;
+        response.RunId.Should().Be(runId);
+        response.Files.Should().ContainSingle(file =>
+            file.LogicalPath == "data/failed.txt" && file.Status == CommitFileStatus.Failed);
+        _deviceAuthorizationServiceMock.Verify(x => x.AuthorizeDeviceAsync(
+            It.IsAny<ClaimsPrincipal>(), deviceId, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    #endregion
 }

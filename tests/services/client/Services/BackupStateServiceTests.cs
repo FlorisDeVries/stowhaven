@@ -684,6 +684,42 @@ public class BackupStateServiceTests : IDisposable
         tracked.BackupRunId.Should().Be(runId);
     }
 
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task RemovePendingRunFiles_LeavesRejectedEntriesUntracked()
+    {
+        var deviceId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        await _sut.SavePendingBackupRunAsync(CreatePendingRun(deviceId, runId));
+        await _sut.AppendPendingRunFilesAsync(deviceId, runId,
+        [
+            CreateJournalFile("accepted.txt", "hash-a", 11, "uid-a"),
+            CreateJournalFile("rejected.txt", "hash-b", 12, "uid-b")
+        ]);
+
+        await _sut.RemovePendingRunFilesAsync(deviceId, runId, ["documents/rejected.txt"]);
+        await _sut.PromotePendingRunFilesToStateAsync(deviceId, runId);
+
+        (await _sut.GetFileStateAsync("documents/accepted.txt")).Should().NotBeNull();
+        (await _sut.GetFileStateAsync("documents/rejected.txt")).Should().BeNull();
+    }
+
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task RemoveTrackedFiles_DeletesRejectedStateAndRefreshesTotals()
+    {
+        var files = CreateTestFileMetadata(2);
+        await _sut.SaveBackupSuccessAsync(Guid.NewGuid(), Guid.NewGuid().ToString("N"), files);
+
+        await _sut.RemoveTrackedFilesAsync([files[1].FilePath]);
+
+        (await _sut.GetFileStateAsync(files[0].FilePath)).Should().NotBeNull();
+        (await _sut.GetFileStateAsync(files[1].FilePath)).Should().BeNull();
+        var state = await _sut.GetOrCreateDeviceStateAsync();
+        state.TotalFilesTracked.Should().Be(1);
+        state.TotalBytesTracked.Should().Be(files[0].SizeBytes);
+    }
+
     #endregion
 
     #region Scan Deletion Detection Tests

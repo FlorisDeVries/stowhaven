@@ -32,6 +32,14 @@ public interface IBackupApiClient
     Task<CommitStatusResponse> GetCommitStatus(Guid deviceId, Guid commitId,
         CancellationToken cancellationToken = default);
 
+    [Get("/api/devices/{deviceId}/backup/commit-status/{commitId}/failed-files")]
+    Task<ListCommitFileProgressResponse> ListFailedCommitFiles(
+        Guid deviceId,
+        Guid commitId,
+        [Query] int pageSize = 100,
+        [Query] string? continuationToken = null,
+        CancellationToken cancellationToken = default);
+
     [Get("/api/devices/{deviceId}/restore/files")]
     Task<ListRestoreFilesResponse> ListRestoreFiles(Guid deviceId, [Query] int pageSize = 100,
         [Query] string? continuationToken = null,

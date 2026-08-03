@@ -29,7 +29,7 @@ public partial class BackupStateService
         EventId = 4,
         Level = LogLevel.Information,
         Message = "Backup state saved: RunId={RunId}, Files={FileCount}, Bytes={TotalBytes}")]
-    private partial void LogBackupStateSaved(Guid runId, int fileCount, long totalBytes);
+    private partial void LogBackupStateSaved(Guid runId, long fileCount, long totalBytes);
 
     [LoggerMessage(
         EventId = 5,
@@ -54,4 +54,10 @@ public partial class BackupStateService
         Level = LogLevel.Warning,
         Message = "Local state schema upgraded from v{FromVersion} to v{ToVersion}; dropped {DroppedRuns} unresumable in-flight run journal(s).")]
     private partial void LogSchemaUpgraded(long fromVersion, long toVersion, int droppedRuns);
+
+    [LoggerMessage(
+        EventId = 9,
+        Level = LogLevel.Warning,
+        Message = "Removed {Count} server-rejected file record(s) from tracked state so they will be retried")]
+    private partial void LogRejectedTrackedFilesRemoved(int count);
 }

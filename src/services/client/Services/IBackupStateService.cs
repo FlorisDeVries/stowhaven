@@ -93,6 +93,25 @@ public interface IBackupStateService
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Removes server-rejected files from an in-flight journal before the remaining successful
+    /// entries are promoted. The removed paths remain absent from tracked state and are therefore
+    /// detected again by the next scan.
+    /// </summary>
+    Task RemovePendingRunFilesAsync(
+        Guid deviceId,
+        Guid runId,
+        IReadOnlyList<string> storagePaths,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Removes paths that an older client incorrectly promoted even though the server rejected them.
+    /// The next scan consequently treats them as new files.
+    /// </summary>
+    Task RemoveTrackedFilesAsync(
+        IReadOnlyList<string> storagePaths,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Begins a scan, discarding any scanned-path scratch data from a previous scan.
     /// </summary>
     Task BeginScanAsync(CancellationToken cancellationToken = default);

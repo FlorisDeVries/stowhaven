@@ -206,6 +206,40 @@ public sealed class ManifestManagerConcurrencyTests : IDisposable
 
     [Fact]
     [Trait("Category", "Unit")]
+    public async Task GetCommitFileProgressByStatusPageAsync_ReturnsOnlyRequestedStatus()
+    {
+        var deviceId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var commitJob = await _service.CreateCommitJobAsync(deviceId, runId);
+
+        foreach (var (fileId, status) in new[]
+                 {
+                     ("accepted", CommitFileStatus.Succeeded),
+                     ("rejected-a", CommitFileStatus.Failed),
+                     ("rejected-b", CommitFileStatus.Failed)
+                 })
+        {
+            await _service.SaveCommitFileProgressAsync(new CommitFileProgress
+            {
+                CommitId = commitJob.CommitId,
+                DeviceId = deviceId,
+                RunId = runId,
+                UniqueFileId = fileId,
+                LogicalPath = $"docs/{fileId}.txt",
+                Status = status
+            });
+        }
+
+        var page = await _service.GetCommitFileProgressByStatusPageAsync(
+            commitJob.CommitId,
+            CommitFileStatus.Failed,
+            pageSize: 10);
+
+        Assert.Equal(["rejected-a", "rejected-b"], page.Files.Select(file => file.UniqueFileId).ToArray());
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
     public async Task GetBackupRunsPageAsync_FiltersByDeviceAndOrdersNewestFirst()
     {
         var deviceId = Guid.NewGuid();

@@ -115,8 +115,6 @@ public partial class BackupStateService : IBackupStateService, IDisposable
             try
             {
                 var now = DateTimeOffset.UtcNow;
-                long totalBytes = 0;
-
                 foreach (var file in backedUpFiles)
                 {
                     await using var command = new SqliteCommand(BackupStateSql.UpsertBackupFileQuery, connection, transaction);
@@ -129,7 +127,6 @@ public partial class BackupStateService : IBackupStateService, IDisposable
                     command.Parameters.AddWithValue("@UniqueFileId", file.Hash != null ? $"{file.Hash}_{now:yyyyMMddTHHmmssZ}" : DBNull.Value);
 
                     await command.ExecuteNonQueryAsync(cancellationToken);
-                    totalBytes += file.SizeBytes;
                 }
 
                 await using var updateCommand = new SqliteCommand(BackupStateSql.UpdateDeviceStateQuery, connection, transaction);
@@ -139,9 +136,26 @@ public partial class BackupStateService : IBackupStateService, IDisposable
 
                 await updateCommand.ExecuteNonQueryAsync(cancellationToken);
 
+                long totalFiles;
+                long totalBytes;
+                await using (var totalsCommand = new SqliteCommand(
+                                 BackupStateSql.SelectDeviceStateTotalsQuery,
+                                 connection,
+                                 transaction))
+                await using (var totalsReader = await totalsCommand.ExecuteReaderAsync(cancellationToken))
+                {
+                    if (!await totalsReader.ReadAsync(cancellationToken))
+                    {
+                        throw new InvalidOperationException("Device state was missing after a successful backup");
+                    }
+
+                    totalFiles = totalsReader.GetInt64(0);
+                    totalBytes = totalsReader.GetInt64(1);
+                }
+
                 await transaction.CommitAsync(cancellationToken);
 
-                LogBackupStateSaved(runId, backedUpFiles.Count, totalBytes);
+                LogBackupStateSaved(runId, totalFiles, totalBytes);
             }
             catch
             {
@@ -484,6 +498,106 @@ public partial class BackupStateService : IBackupStateService, IDisposable
 
             var promoted = await command.ExecuteNonQueryAsync(cancellationToken);
             LogFileStatesBatchUpserted(promoted, runId);
+        }
+        finally
+        {
+            _dbLock.Release();
+        }
+    }
+
+    public async Task RemovePendingRunFilesAsync(
+        Guid deviceId,
+        Guid runId,
+        IReadOnlyList<string> storagePaths,
+        CancellationToken cancellationToken = default)
+    {
+        if (storagePaths.Count == 0)
+            return;
+
+        await EnsureInitializedAsync(cancellationToken);
+
+        await _dbLock.WaitAsync(cancellationToken);
+        try
+        {
+            await using var connection = new SqliteConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+            await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+
+            try
+            {
+                foreach (var storagePath in storagePaths)
+                {
+                    await using var command = new SqliteCommand(
+                        BackupStateSql.DeletePendingRunFileByPathQuery,
+                        connection,
+                        transaction);
+                    command.Parameters.AddWithValue("@DeviceId", deviceId.ToString());
+                    command.Parameters.AddWithValue("@RunId", runId.ToString());
+                    command.Parameters.AddWithValue("@StoragePath", storagePath);
+                    await command.ExecuteNonQueryAsync(cancellationToken);
+                }
+
+                await transaction.CommitAsync(cancellationToken);
+            }
+            catch
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                throw;
+            }
+        }
+        finally
+        {
+            _dbLock.Release();
+        }
+    }
+
+    public async Task RemoveTrackedFilesAsync(
+        IReadOnlyList<string> storagePaths,
+        CancellationToken cancellationToken = default)
+    {
+        if (storagePaths.Count == 0)
+            return;
+
+        await EnsureInitializedAsync(cancellationToken);
+
+        await _dbLock.WaitAsync(cancellationToken);
+        try
+        {
+            await using var connection = new SqliteConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+            await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+
+            try
+            {
+                var removed = 0;
+                foreach (var storagePath in storagePaths)
+                {
+                    await using var command = new SqliteCommand(
+                        BackupStateSql.DeleteFileByPathQuery,
+                        connection,
+                        transaction);
+                    command.Parameters.AddWithValue("@RelativePath", storagePath);
+                    removed += await command.ExecuteNonQueryAsync(cancellationToken);
+                }
+
+                await using var updateCommand = new SqliteCommand(
+                    BackupStateSql.UpdateDeviceStateTotalsQuery,
+                    connection,
+                    transaction);
+                await updateCommand.ExecuteNonQueryAsync(cancellationToken);
+
+                await transaction.CommitAsync(cancellationToken);
+
+                if (removed > 0)
+                {
+                    LogRejectedTrackedFilesRemoved(removed);
+                }
+            }
+            catch
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                throw;
+            }
         }
         finally
         {
