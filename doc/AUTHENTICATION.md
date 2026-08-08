@@ -164,7 +164,7 @@ MSAL caches tokens per platform:
 
 Cache location: `%LOCALAPPDATA%\backup-client\backup-client.cache` (Windows) or `~/.local/share/backup-client/backup-client.cache` (Linux/macOS) — the same folder used for the local state DB and, on Linux, the installed app itself.
 
-On subsequent runs MSAL silently refreshes from cache — no browser window unless the refresh token has also expired or been revoked.
+On subsequent runs MSAL silently refreshes from cache. Operational backup and restore runs never open a browser; if the refresh token has expired, been revoked, or otherwise requires user interaction, they fail immediately with a hint to run `backup-client login`. Only the explicit `configure` and `login` commands are allowed to fall back to interactive authentication.
 
 ---
 

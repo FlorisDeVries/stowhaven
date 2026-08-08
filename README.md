@@ -228,7 +228,7 @@ Re-running `install.sh` later (e.g. after publishing an updated build) updates t
 
 **What `configure` does**, on either platform: collects backup target folders (validated the same way a real backup run would validate them, with suggestions for common folders like Documents/Pictures/Desktop/Downloads that already exist on the machine), signs in (opens a browser once — MSAL caches the token afterward using DPAPI on Windows or libsecret on Linux), and verifies the signed-in account can actually reach the backup API end-to-end.
 
-Re-run with flags to repeat only part of the flow, e.g. `configure --skip-targets` to just re-check login/access, or `configure --skip-login --skip-access-check` to only add/edit targets. Use `login` alone to just refresh the token.
+Re-run with flags to repeat only part of the flow, e.g. `configure --skip-targets` to just re-check login/access, or `configure --skip-login --skip-access-check` to only add/edit targets. Use `login` alone to refresh the token or sign in again when required. Backup and restore runs are deliberately silent-only: they never open a browser and instead fail with a hint to run `backup-client login` if Entra requires user interaction.
 
 ### 3. Schedule daily runs
 

@@ -30,7 +30,11 @@ public static class ProgramExtensions
         services.AddTransient<IRestoreService, RestoreService>();
     }
 
-    public static void AddApplicationConfigurations(this IServiceCollection services, IConfiguration configuration, IHostEnvironment environment)
+    public static void AddApplicationConfigurations(
+        this IServiceCollection services,
+        IConfiguration configuration,
+        IHostEnvironment environment,
+        bool allowInteractiveAuthentication = false)
     {
         // BackupTargets emptiness is intentionally NOT validated here: BackupClientOptions is resolved
         // for unrelated purposes too (e.g. HttpClient timeout in HostBuilderExtensions.AddBackupApi),
@@ -73,7 +77,10 @@ public static class ProgramExtensions
                 return new NoOpTokenCredential();
             }
 
-            logger.LogInformation("Using MsalTokenCredential for {ApiUrl} (interactive authentication)", apiConfig.ApiUrl);
+            logger.LogInformation(
+                "Using MsalTokenCredential for {ApiUrl} ({AuthenticationMode})",
+                apiConfig.ApiUrl,
+                allowInteractiveAuthentication ? "interactive fallback enabled" : "silent-only authentication");
             var azureAdConfig = provider.GetRequiredService<IOptions<AzureAdOptions>>().Value;
 
             // MSAL credential creation is async, but we need sync registration
@@ -82,6 +89,7 @@ public static class ProgramExtensions
                 clientId: azureAdConfig.ClientId,
                 tenantId: azureAdConfig.TenantId,
                 scopes: [apiConfig.AuthenticationScope],
+                allowInteractiveAuthentication: allowInteractiveAuthentication,
                 authority: azureAdConfig.Instance
             ).GetAwaiter().GetResult();
 

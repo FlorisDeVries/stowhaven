@@ -13,6 +13,11 @@ var logFilePath = Path.Combine(
     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
     "backup-client", "logs", "backup-client-.log");
 
+var command = args.FirstOrDefault();
+var allowInteractiveAuthentication =
+    command?.Equals("configure", StringComparison.OrdinalIgnoreCase) == true ||
+    command?.Equals("login", StringComparison.OrdinalIgnoreCase) == true;
+
 var host = Host.CreateDefaultBuilder(args)
     // Resolve appsettings.json/appsettings.local.json next to the executable, regardless of the
     // caller's current directory (matters for the PATH-linked binary and for install.sh, which
@@ -37,7 +42,10 @@ var host = Host.CreateDefaultBuilder(args)
     .ConfigureServices((context, services) =>
     {
         services.AddApplicationServices();
-        services.AddApplicationConfigurations(context.Configuration, context.HostingEnvironment);
+        services.AddApplicationConfigurations(
+            context.Configuration,
+            context.HostingEnvironment,
+            allowInteractiveAuthentication);
         services.AddBackupApi(context.Configuration);
     })
     .AddOpenTelemetry(

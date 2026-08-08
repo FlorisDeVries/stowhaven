@@ -7,31 +7,42 @@ namespace FlorisDeV.BackupClient.Authentication;
 
 /// <summary>
 /// TokenCredential implementation using MSAL for interactive user authentication.
-/// Supports distributed Windows clients with token caching and automatic refresh.
+/// Supports distributed desktop clients with token caching and automatic refresh.
 /// </summary>
 public sealed class MsalTokenCredential : TokenCredential
 {
-    private readonly IPublicClientApplication _app;
-    private readonly string[] _scopes;
+    private const string ReauthenticationRequiredMessage =
+        "Authentication requires user interaction, but this operation runs in silent-only mode. " +
+        "Run 'backup-client login' interactively, then retry the operation.";
 
-    private MsalTokenCredential(IPublicClientApplication app, string[] scopes)
+    private readonly IMsalTokenClient _client;
+    private readonly string[] _scopes;
+    private readonly bool _allowInteractiveAuthentication;
+
+    internal MsalTokenCredential(
+        IMsalTokenClient client,
+        string[] scopes,
+        bool allowInteractiveAuthentication)
     {
-        _app = app;
+        _client = client;
         _scopes = scopes;
+        _allowInteractiveAuthentication = allowInteractiveAuthentication;
     }
 
     /// <summary>
-    /// Creates an MSAL-based TokenCredential for distributed Windows clients.
+    /// Creates an MSAL-based TokenCredential for distributed desktop clients.
     /// </summary>
     /// <param name="clientId">Client application ID (registered as Public Client in Entra ID)</param>
     /// <param name="tenantId">Azure AD tenant ID</param>
     /// <param name="scopes">Scopes to request (e.g., "api://xxx/backup.admin")</param>
+    /// <param name="allowInteractiveAuthentication">Whether MSAL may open an interactive sign-in when silent acquisition fails</param>
     /// <param name="authority">Authority URL (default: login.microsoftonline.com)</param>
     /// <returns>Configured TokenCredential</returns>
     public static async Task<MsalTokenCredential> CreateAsync(
         string clientId,
         string tenantId,
         string[] scopes,
+        bool allowInteractiveAuthentication,
         string authority = "https://login.microsoftonline.com")
     {
         var authorityUri = $"{authority.TrimEnd('/')}/{tenantId}";
@@ -60,7 +71,10 @@ public sealed class MsalTokenCredential : TokenCredential
         var cacheHelper = await MsalCacheHelper.CreateAsync(storageProperties);
         cacheHelper.RegisterCache(app.UserTokenCache);
 
-        return new MsalTokenCredential(app, scopes);
+        return new MsalTokenCredential(
+            new MsalTokenClient(app),
+            scopes,
+            allowInteractiveAuthentication);
     }
 
     public override async ValueTask<AccessToken> GetTokenAsync(
@@ -75,32 +89,32 @@ public sealed class MsalTokenCredential : TokenCredential
         try
         {
             // 1. Try silent authentication first (from cache)
-            var accounts = await _app.GetAccountsAsync();
+            var accounts = await _client.GetAccountsAsync();
             var firstAccount = accounts.FirstOrDefault();
 
             if (firstAccount != null)
             {
                 try
                 {
-                    var result = await _app
-                        .AcquireTokenSilent(scopes, firstAccount)
-                        .ExecuteAsync(cancellationToken);
-
-                    return new AccessToken(result.AccessToken, result.ExpiresOn);
+                    return await _client.AcquireTokenSilentAsync(scopes, firstAccount, cancellationToken);
+                }
+                catch (MsalUiRequiredException ex) when (!_allowInteractiveAuthentication)
+                {
+                    throw CreateReauthenticationRequiredException(ex);
                 }
                 catch (MsalUiRequiredException)
                 {
-                    // Silent acquisition failed, fall through to interactive
+                    // Explicit setup/login commands may fall through to interactive authentication.
                 }
             }
 
-            // 2. Interactive authentication required
-            var interactiveResult = await _app
-                .AcquireTokenInteractive(scopes)
-                .WithPrompt(Prompt.SelectAccount)
-                .ExecuteAsync(cancellationToken);
+            if (!_allowInteractiveAuthentication)
+            {
+                throw CreateReauthenticationRequiredException();
+            }
 
-            return new AccessToken(interactiveResult.AccessToken, interactiveResult.ExpiresOn);
+            // 2. Interactive authentication required
+            return await _client.AcquireTokenInteractiveAsync(scopes, cancellationToken);
         }
         catch (MsalException ex)
         {
@@ -119,5 +133,54 @@ public sealed class MsalTokenCredential : TokenCredential
             .AsTask()
             .GetAwaiter()
             .GetResult();
+    }
+
+    private static AuthenticationFailedException CreateReauthenticationRequiredException(Exception? innerException = null)
+        => innerException is null
+            ? new AuthenticationFailedException(ReauthenticationRequiredMessage)
+            : new AuthenticationFailedException(ReauthenticationRequiredMessage, innerException);
+}
+
+internal interface IMsalTokenClient
+{
+    Task<IReadOnlyList<IAccount>> GetAccountsAsync();
+
+    Task<AccessToken> AcquireTokenSilentAsync(
+        string[] scopes,
+        IAccount account,
+        CancellationToken cancellationToken);
+
+    Task<AccessToken> AcquireTokenInteractiveAsync(
+        string[] scopes,
+        CancellationToken cancellationToken);
+}
+
+internal sealed class MsalTokenClient(IPublicClientApplication app) : IMsalTokenClient
+{
+    public async Task<IReadOnlyList<IAccount>> GetAccountsAsync()
+        => (await app.GetAccountsAsync()).ToArray();
+
+    public async Task<AccessToken> AcquireTokenSilentAsync(
+        string[] scopes,
+        IAccount account,
+        CancellationToken cancellationToken)
+    {
+        var result = await app
+            .AcquireTokenSilent(scopes, account)
+            .ExecuteAsync(cancellationToken);
+
+        return new AccessToken(result.AccessToken, result.ExpiresOn);
+    }
+
+    public async Task<AccessToken> AcquireTokenInteractiveAsync(
+        string[] scopes,
+        CancellationToken cancellationToken)
+    {
+        var result = await app
+            .AcquireTokenInteractive(scopes)
+            .WithPrompt(Prompt.SelectAccount)
+            .ExecuteAsync(cancellationToken);
+
+        return new AccessToken(result.AccessToken, result.ExpiresOn);
     }
 }
