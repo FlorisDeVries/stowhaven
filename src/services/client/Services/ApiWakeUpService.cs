@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net;
 using FlorisDeV.BackupClient.Clients.BackupApi.Config;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -73,7 +74,16 @@ public sealed partial class ApiWakeUpService(
                         request,
                         HttpCompletionOption.ResponseHeadersRead,
                         probeCts.Token);
-                    response.EnsureSuccessStatusCode();
+
+                    // The wake-up client is deliberately anonymous. In production, Easy Auth can
+                    // therefore return 401/403 for the protected health endpoint even though the
+                    // gateway is fully awake. Let the real request continue through the authenticated
+                    // client pipeline so authorization failures are reported by the auth handler.
+                    if (!response.IsSuccessStatusCode &&
+                        response.StatusCode is not HttpStatusCode.Unauthorized and not HttpStatusCode.Forbidden)
+                    {
+                        response.EnsureSuccessStatusCode();
+                    }
 
                     var freshUntil = DateTimeOffset.UtcNow
                         .AddSeconds(_options.RecheckIntervalSeconds)

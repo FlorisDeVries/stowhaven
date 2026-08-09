@@ -29,6 +29,27 @@ public sealed class ApiWakeUpServiceTests
         probeCount.Should().Be(1);
     }
 
+    [Theory]
+    [Trait("Category", "Unit")]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    [InlineData(HttpStatusCode.Forbidden)]
+    public async Task EnsureApiAwakeAsync_AnonymousAuthResponse_ConfirmsGatewayIsReachable(
+        HttpStatusCode statusCode)
+    {
+        var probeCount = 0;
+        using var client = CreateClient((_, _) =>
+        {
+            Interlocked.Increment(ref probeCount);
+            return Task.FromResult(new HttpResponseMessage(statusCode));
+        });
+        var sut = CreateService(client);
+
+        await sut.EnsureApiAwakeAsync(CancellationToken.None);
+        await sut.EnsureApiAwakeAsync(CancellationToken.None);
+
+        probeCount.Should().Be(1);
+    }
+
     [Fact]
     [Trait("Category", "Unit")]
     public async Task EnsureApiAwakeAsync_ConcurrentCallsShareOneProbe()
