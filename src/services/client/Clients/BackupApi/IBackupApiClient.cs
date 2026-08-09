@@ -7,7 +7,7 @@ namespace FlorisDeV.BackupClient.Clients.BackupApi;
 public interface IBackupApiClient
 {
     /// <summary>
-    /// Anonymous liveness endpoint used to wake up a scaled-to-zero API/gateway before real traffic is sent.
+    /// Authenticated liveness endpoint used to wake up a scaled-to-zero API/gateway before real traffic is sent.
     /// </summary>
     [Get("/api/health/alive")]
     Task<HttpResponseMessage> Ping(CancellationToken cancellationToken = default);

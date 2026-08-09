@@ -35,7 +35,9 @@ public partial class BackupService(
     IFileUploader uploader,
     IOptions<BackupClientOptions> backupOptions) : IBackupService
 {
+    private const int InitialScanProgressFileCount = 1000;
     private static readonly TimeSpan PendingRunSasSafetyWindow = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan ScanProgressInterval = TimeSpan.FromMinutes(1);
     private readonly BackupClientOptions _options = backupOptions.Value;
 
     public async Task<bool> Backup(CancellationToken cancellationToken)
@@ -219,6 +221,8 @@ public partial class BackupService(
         var stats = new BackupStats();
         var currentBatch = new List<TaggedFile>();
         var scannedPaths = new List<string>(scannedPathFlushSize);
+        var scanStopwatch = Stopwatch.StartNew();
+        var lastProgressElapsed = TimeSpan.Zero;
         long currentBatchBytes = 0;
 
         var backupType = deviceState.LastSuccessfulBackup == null ? BackupType.Full : BackupType.Incremental;
@@ -271,15 +275,25 @@ public partial class BackupService(
                     break;
                 case FileChangeType.Skipped:
                     stats.SkippedCount++;
-                    continue; // Skip this file entirely
+                    break;
             }
 
-            if (stats.TotalScanned % 1000 == 0)
+            var scanElapsed = scanStopwatch.Elapsed;
+            if (ShouldLogScanProgress(stats.TotalScanned, scanElapsed, lastProgressElapsed))
             {
                 LogScanProgress(stats.TotalScanned,
                     stats.NewFilesCount + stats.ModifiedFilesCount,
                     stats.UnchangedCount,
-                    stats.SkippedCount);
+                    stats.SkippedCount,
+                    taggedFile.TargetName,
+                    scanElapsed.TotalMinutes,
+                    stats.TotalScanned / Math.Max(scanElapsed.TotalSeconds, 0.001));
+                lastProgressElapsed = scanElapsed;
+            }
+
+            if (changeType == FileChangeType.Skipped)
+            {
+                continue; // Skip this file entirely
             }
 
             if (needsBackup)
@@ -371,6 +385,13 @@ public partial class BackupService(
             manifestSasUrlInfo,
             startedAt);
     }
+
+    internal static bool ShouldLogScanProgress(
+        int totalScanned,
+        TimeSpan elapsed,
+        TimeSpan lastProgressElapsed)
+        => totalScanned == InitialScanProgressFileCount ||
+           elapsed - lastProgressElapsed >= ScanProgressInterval;
 
     private async Task<BatchProcessingResult> ProcessBatchAsync(
         bool hasStartedBackupRun,

@@ -119,9 +119,16 @@ public partial class BackupService
 
     [LoggerMessage(
         EventId = 31,
-        Level = LogLevel.Debug,
-        Message = "Scan progress: {Scanned} files processed ({NeedsBackup} to upload, {Unchanged} unchanged, {Skipped} skipped)")]
-    partial void LogScanProgress(int scanned, int needsBackup, int unchanged, int skipped);
+        Level = LogLevel.Information,
+        Message = "Scan progress: {Scanned:N0} files processed in {ElapsedMinutes:F1} min ({FilesPerSecond:N1} files/s), current target '{TargetName}' ({NeedsBackup:N0} to upload, {Unchanged:N0} unchanged, {Skipped:N0} skipped)")]
+    partial void LogScanProgress(
+        int scanned,
+        int needsBackup,
+        int unchanged,
+        int skipped,
+        string targetName,
+        double elapsedMinutes,
+        double filesPerSecond);
 
     [LoggerMessage(
         EventId = 32,

@@ -1,4 +1,5 @@
 using System.Net;
+using Azure.Identity;
 using FlorisDeV.BackupClient.Clients.BackupApi.Config;
 using FlorisDeV.BackupClient.Services;
 using FluentAssertions;
@@ -33,7 +34,7 @@ public sealed class ApiWakeUpServiceTests
     [Trait("Category", "Unit")]
     [InlineData(HttpStatusCode.Unauthorized)]
     [InlineData(HttpStatusCode.Forbidden)]
-    public async Task EnsureApiAwakeAsync_AnonymousAuthResponse_ConfirmsGatewayIsReachable(
+    public async Task EnsureApiAwakeAsync_AuthenticatedAuthFailure_IsTerminalAndSuggestsLogin(
         HttpStatusCode statusCode)
     {
         var probeCount = 0;
@@ -44,9 +45,31 @@ public sealed class ApiWakeUpServiceTests
         });
         var sut = CreateService(client);
 
-        await sut.EnsureApiAwakeAsync(CancellationToken.None);
-        await sut.EnsureApiAwakeAsync(CancellationToken.None);
+        var act = () => sut.EnsureApiAwakeAsync(CancellationToken.None);
 
+        var exception = await act.Should().ThrowAsync<HttpRequestException>()
+            .WithMessage("*backup-client login*");
+        exception.Which.StatusCode.Should().Be(statusCode);
+        probeCount.Should().Be(1);
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task EnsureApiAwakeAsync_TokenAcquisitionFailure_IsNotRetried()
+    {
+        var probeCount = 0;
+        using var client = CreateClient((_, _) =>
+        {
+            Interlocked.Increment(ref probeCount);
+            return Task.FromException<HttpResponseMessage>(
+                new AuthenticationFailedException("Run 'backup-client login' interactively."));
+        });
+        var sut = CreateService(client);
+
+        var act = () => sut.EnsureApiAwakeAsync(CancellationToken.None);
+
+        await act.Should().ThrowAsync<AuthenticationFailedException>()
+            .WithMessage("*backup-client login*");
         probeCount.Should().Be(1);
     }
 

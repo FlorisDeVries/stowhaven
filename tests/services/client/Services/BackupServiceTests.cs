@@ -102,6 +102,28 @@ public class BackupServiceTests : IDisposable
         }
     }
 
+    [Theory]
+    [Trait("Category", "Unit")]
+    [InlineData(999, 10, 0, false)]
+    [InlineData(1000, 10, 0, true)]
+    [InlineData(1001, 59, 0, false)]
+    [InlineData(1001, 60, 0, true)]
+    [InlineData(50000, 119, 60, false)]
+    [InlineData(50000, 120, 60, true)]
+    public void ShouldLogScanProgress_UsesInitialMilestoneAndMinuteHeartbeat(
+        int totalScanned,
+        int elapsedSeconds,
+        int lastProgressSeconds,
+        bool expected)
+    {
+        var result = BackupService.ShouldLogScanProgress(
+            totalScanned,
+            TimeSpan.FromSeconds(elapsedSeconds),
+            TimeSpan.FromSeconds(lastProgressSeconds));
+
+        result.Should().Be(expected);
+    }
+
     [Fact]
     [Trait("Category", "Unit")]
     public async Task Backup_WhenNoFiles_ShouldSucceedWithoutStartingRun()

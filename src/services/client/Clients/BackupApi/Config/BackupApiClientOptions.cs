@@ -45,7 +45,7 @@ public sealed class ApiWakeUpOptions
     public int MaxWaitSeconds { get; init; } = 180;
 
     /// <summary>
-    /// Maximum duration of one anonymous health probe. Default is 10 seconds.
+    /// Maximum duration of one authenticated health probe. Default is 10 seconds.
     /// </summary>
     public int ProbeTimeoutSeconds { get; init; } = 10;
 

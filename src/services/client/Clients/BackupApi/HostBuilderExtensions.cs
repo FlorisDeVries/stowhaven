@@ -67,15 +67,17 @@ public static class HostBuilderExtensions
         services.TryAddTransient<BackupApiWakeUpHandler>();
         services.TryAddTransient<BackupApiAuthHandler>();
 
-        // The wake-up probe deliberately bypasses the Refit pipeline. Running it through the same
-        // handler would recurse, and running it through standard retries would multiply two separate
-        // retry loops. This anonymous client is used only for /api/health/alive.
+        // The wake-up probe deliberately bypasses the Refit pipeline and its wake-up/retry handlers,
+        // but it must still authenticate. Otherwise Gateway Easy Auth returns 401 before the Gateway
+        // can proxy /api/health/alive to the scaled-to-zero API that the probe is meant to wake.
         services.AddHttpClient(ApiWakeUpService.HttpClientName, (provider, client) =>
         {
             var options = provider.GetRequiredService<IOptions<BackupApiClientOptions>>();
             client.BaseAddress = new Uri(options.Value.ApiUrl.TrimEnd('/'));
             client.Timeout = Timeout.InfiniteTimeSpan;
-        });
+        })
+        .AddHttpMessageHandler<BackupApiAuthHandler>()
+        .RedactLoggedHeaders([ HeaderNames.Authorization ]);
 
         // Add client(s) with resilience. By default, the following outcomes are handled:
         //

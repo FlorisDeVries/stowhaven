@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net;
+using Azure.Identity;
 using FlorisDeV.BackupClient.Clients.BackupApi.Config;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -75,15 +76,12 @@ public sealed partial class ApiWakeUpService(
                         HttpCompletionOption.ResponseHeadersRead,
                         probeCts.Token);
 
-                    // The wake-up client is deliberately anonymous. In production, Easy Auth can
-                    // therefore return 401/403 for the protected health endpoint even though the
-                    // gateway is fully awake. Let the real request continue through the authenticated
-                    // client pipeline so authorization failures are reported by the auth handler.
-                    if (!response.IsSuccessStatusCode &&
-                        response.StatusCode is not HttpStatusCode.Unauthorized and not HttpStatusCode.Forbidden)
+                    if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
                     {
-                        response.EnsureSuccessStatusCode();
+                        throw CreateAuthenticationException(response.StatusCode);
                     }
+
+                    response.EnsureSuccessStatusCode();
 
                     var freshUntil = DateTimeOffset.UtcNow
                         .AddSeconds(_options.RecheckIntervalSeconds)
@@ -101,6 +99,18 @@ public sealed partial class ApiWakeUpService(
                 {
                     lastException = new TimeoutException(
                         $"Backup API wake-up probe exceeded {probeTimeout.TotalSeconds:N0}s.", ex);
+                }
+                catch (HttpRequestException ex)
+                    when (ex.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+                {
+                    // Authentication failures do not improve while waiting for a cold start.
+                    throw;
+                }
+                catch (AuthenticationFailedException)
+                {
+                    // A missing, expired, or revoked cached credential requires an explicit login;
+                    // retrying the wake-up probe would only delay that actionable error.
+                    throw;
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
@@ -130,6 +140,13 @@ public sealed partial class ApiWakeUpService(
         => new(
             $"Backup API did not respond within {maxWait.TotalSeconds:N0}s while waking up.",
             innerException);
+
+    private static HttpRequestException CreateAuthenticationException(HttpStatusCode statusCode)
+        => new(
+            $"The authenticated backup API wake-up probe was rejected with {(int)statusCode} ({statusCode}). " +
+            "Run 'backup-client login' interactively, then retry the operation.",
+            inner: null,
+            statusCode);
 
     public void Dispose() => _wakeLock.Dispose();
 
