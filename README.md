@@ -1,23 +1,26 @@
-# Azure Backup API
+# Stowhaven
 
-[![Deploy Backup API](https://github.com/FlorisDeVries/backup-api/actions/workflows/deploy.yml/badge.svg)](https://github.com/FlorisDeVries/backup-api/actions/workflows/deploy.yml)
+[![Deploy Stowhaven](https://github.com/FlorisDeVries/stowhaven/actions/workflows/deploy.yml/badge.svg)](https://github.com/FlorisDeVries/stowhaven/actions/workflows/deploy.yml)
 ![.NET 10](https://img.shields.io/badge/.NET-10.0-512BD4?logo=dotnet)
 ![Azure Container Apps](https://img.shields.io/badge/Azure-Container%20Apps-0078D4?logo=microsoftazure)
 ![Dapr](https://img.shields.io/badge/Dapr-enabled-0D2192?logo=dapr)
 ![Bicep](https://img.shields.io/badge/IaC-Bicep-0078D4?logo=azurepipelines)
 ![Cosmos DB](https://img.shields.io/badge/State-Cosmos%20DB-0078D4?logo=microsoftazure)
 
-Azure Backup API is a low-cost, cloud-native backup service built with **.NET 10**, **Azure Container Apps**, **Dapr**, **Azure Blob Storage**, and **Azure Cosmos DB for NoSQL**.
+> Private backups, safely tucked away.
+
+Stowhaven is a low-cost, cloud-native backup platform built with **.NET 10**, **Azure Container Apps**, **Dapr**, **Azure Blob Storage**, and **Azure Cosmos DB for NoSQL**.
 
 The API issues short-lived, least-privilege SAS URLs so backup clients can upload encrypted or plaintext backup data directly to Azure Blob Storage. The service keeps the control plane small and cheap while the bulk data path goes straight from client to storage.
 
 ## What this repository contains
 
-- **Backup API**: public HTTP API for device registration, backup run orchestration, SAS issuance, commit status, restore metadata, health checks, and operational endpoints.
-- **Backup Worker**: background Container App that consumes Dapr pub/sub commit events and finalizes staged backup runs.
-- **Backup Client**: .NET console/Windows-service-friendly client that scans configured targets, applies `.backupignore` rules, uploads changed files, and commits runs.
+- **Stowhaven Gateway**: public Container App that authenticates client traffic, performs the Entra ID on-behalf-of exchange, and proxies API and Swagger requests to internal services.
+- **Stowhaven API**: internal HTTP API for device registration, backup run orchestration, SAS issuance, commit status, restore metadata, health checks, and operational endpoints.
+- **Stowhaven Worker**: internal background Container App that consumes Azure Storage Queue messages through a Dapr input binding and finalizes staged backup runs.
+- **Stowhaven Client**: .NET console/Windows-service-friendly client that scans configured targets, applies `.backupignore` rules, uploads changed files, and commits runs.
 - **Shared libraries**: contracts, core services, health checks, logging, feature flags, and security helpers.
-- **Infrastructure-as-Code**: Bicep deployment for Storage, Cosmos DB containers, Service Bus, Key Vault, Container Apps, ACR, monitoring, Dapr components, and managed-identity RBAC.
+- **Infrastructure-as-Code**: Bicep deployment for Blob and Queue Storage, Cosmos DB containers, Key Vault, Container Apps, monitoring, Dapr components, and managed-identity RBAC.
 - **CI/CD**: GitHub Actions workflow using Azure OIDC and a multi-phase deployment.
 
 ## Key features
@@ -25,31 +28,32 @@ The API issues short-lived, least-privilege SAS URLs so backup clients can uploa
 - **Direct-to-Blob uploads** using directory-scoped User Delegation SAS.
 - **No storage account keys** in clients or application settings.
 - **Incremental backup flow**: upload only new or changed files.
-- **Asynchronous commit pipeline** via Dapr pub/sub and a dedicated worker.
-- **Cosmos DB-backed Dapr state stores** for manifest state and device registry state.
+- **Asynchronous commit pipeline** via Dapr Azure Storage Queue bindings and a dedicated worker.
+- **Provider-backed state repository** using SQLite locally and Azure Cosmos DB for NoSQL in production.
 - **Optional zero-knowledge client-side encryption** through the backup client.
 - **Blob lifecycle management** for low-cost long-term retention.
-- **Managed identity-first Azure access** for Storage, Cosmos DB, Service Bus, Key Vault, and ACR pull.
+- **Managed identity-first Azure access** for Blob/Queue Storage, Cosmos DB, and Key Vault.
 - **Production observability** through Application Insights and Log Analytics.
-- **Local development stack** with Docker Compose, Dapr sidecars, Azurite, Redis, Zipkin, and the Aspire dashboard.
+- **Local development stack** with Docker Compose, Dapr sidecars, Azurite, SQLite, and the Aspire dashboard.
 
 ## Architecture at a glance
 
 ```mermaid
 flowchart LR
-    Client[Backup Client] -->|Entra ID token| API[Backup API\nAzure Container App]
+    Client[Stowhaven Client] -->|Gateway-scoped token| Gateway[Public Stowhaven Gateway\nEasy Auth + OBO]
+    Gateway -->|API-scoped token| API[Internal Stowhaven API\nAzure Container App]
     API -->|User Delegation SAS| Client
     Client -->|Upload files + manifest| Blob[Azure Blob Storage\nbackups container]
-    API -->|Dapr state| Cosmos[Azure Cosmos DB\nbackup-state]
-    API -->|Dapr pub/sub| Bus[Azure Service Bus]
-    Bus --> Worker[Backup Worker\nAzure Container App]
+    API -->|Cosmos SDK| Cosmos[Azure Cosmos DB\nbackup-state]
+    API -->|Dapr output binding| Queue[Azure Storage Queue\nbackup-events]
+    Queue -->|Dapr input binding| Worker[Internal Stowhaven Worker\nAzure Container App]
     Worker -->|Validate + move blobs| Blob
-    Worker -->|Update state| Cosmos
+    Worker -->|Cosmos SDK| Cosmos
     API --> AppInsights[Application Insights]
     Worker --> AppInsights
 ```
 
-The API is responsible for authentication, authorization, SAS issuance, and queuing commit work. The worker performs the heavier commit processing: validating staged blobs, moving active versions into place, retiring older versions, and updating Dapr state.
+The gateway authenticates public traffic and forwards it to the internal API with an API-scoped token. The API handles authorization, SAS issuance, and queuing commit work. The worker performs the heavier commit processing: validating staged blobs, moving active versions into place, retiring older versions, and updating authoritative state in Cosmos DB.
 
 ## Backup flow
 
@@ -60,7 +64,7 @@ The API is responsible for authentication, authorization, SAS issuance, and queu
 5. The client scans configured targets and uploads only changed/new files directly to Blob Storage.
 6. The client uploads `run-manifest.json` under `runs/{deviceId}/{runId}/`.
 7. The client calls the commit endpoint.
-8. The API publishes a commit event through Dapr pub/sub.
+8. The API publishes a commit event to Azure Storage Queue through a Dapr output binding.
 9. The worker validates the run, moves files into `devices/{deviceId}/files/`, retires old versions, and updates Cosmos DB state.
 10. The client polls commit status until the run succeeds or fails.
 
@@ -71,14 +75,18 @@ The API is responsible for authentication, authorization, SAS issuance, and queu
 | Device registration | `POST /api/devices` |
 | Device lookup | `GET /api/devices/{deviceId}` |
 | Start backup run | `POST /api/devices/{deviceId}/backup/start-run` |
+| Refresh a run's SAS URLs | `POST /api/devices/{deviceId}/backup/runs/{runId}/refresh-sas` |
 | Commit backup run | `POST /api/devices/{deviceId}/backup/commit-run` |
 | Commit status | `GET /api/devices/{deviceId}/backup/commit-status/{commitId}` |
+| Failed commit files | `GET /api/devices/{deviceId}/backup/commit-status/{commitId}/failed-files` |
 | Restore file listing | `GET /api/devices/{deviceId}/restore/files` |
 | Start restore | `POST /api/devices/{deviceId}/restore/start` |
 | Health | `GET /api/health`, `GET /api/health/alive`, `GET /api/health/ready` |
 | Operations | `GET /api/ops/*`, `POST /api/ops/*` |
 
-The worker exposes an internal Dapr subscription endpoint at `POST /api/BackupEvents/backup-run-committed`.
+The worker exposes an internal Dapr input-binding endpoint at `POST /api/backupevents/backup-run-committed`.
+
+The current token gate does not yet enforce `backup.admin` separately on `/api/ops/*`; see [Authentication](doc/AUTHENTICATION.md) before exposing those routes to non-operators.
 
 ## Storage and state model
 
@@ -94,10 +102,10 @@ backups/
     {uniqueFileId}            # temporary upload area
 
   runs/{deviceId}/{runId}/
-    run-manifest.json         # submitted run manifest
+    run-manifest.json         # temporary submitted run manifest
 ```
 
-Authoritative state is stored through Dapr in Azure Cosmos DB for NoSQL:
+Authoritative state is stored through the in-process `IStateDocumentStore` abstraction. Production uses Azure Cosmos DB for NoSQL:
 
 - database: `backup-state`
 - manifest container: `manifest-state`
@@ -109,7 +117,7 @@ Bicep creates the database and containers in the existing Cosmos DB account conf
 
 The production storage account is configured for long-term, low-cost backup retention:
 
-- Uploads may initially land in the account default **Cool** tier.
+- The client explicitly uploads staging blobs to **Hot** by default. `BackupClient:StagingAccessTier` can select `Hot`, `Cool`, or `Cold`.
 - Lifecycle rules move committed backup files under `backups/devices/` to **Cold** as soon as the policy runs.
 - Committed files move to **Archive** after 30 days.
 - Active backup files are **not deleted** by lifecycle policy.
@@ -122,9 +130,10 @@ The production storage account is configured for long-term, low-cost backup rete
 .
 ├── src/
 │   ├── services/
-│   │   ├── api/                 # Backup API Container App
+│   │   ├── api/                 # Stowhaven API Container App
 │   │   ├── worker/              # Commit worker Container App
-│   │   └── client/              # Backup client executable
+│   │   ├── gateway/             # Public auth/proxy Container App
+│   │   └── client/              # Stowhaven client executable
 │   └── common/
 │       ├── contracts/           # Shared API/application/state contracts
 │       ├── core/                # Shared backup services and domain logic
@@ -135,7 +144,6 @@ The production storage account is configured for long-term, low-cost backup rete
 ├── tests/                       # Unit and integration-style tests
 ├── deploy/bicep/                # Azure infrastructure modules and parameters
 ├── run/                         # Local Dapr components and configuration
-├── dapr/                        # Additional Dapr component definitions
 ├── doc/                         # Project documentation
 ├── .github/workflows/deploy.yml # GitHub Actions deployment workflow
 ├── docker-compose.yml           # Local development environment
@@ -170,19 +178,19 @@ Useful local URLs:
 
 | Service | URL |
 | --- | --- |
-| Backup Gateway | `http://localhost:8200` |
-| Backup API | `http://localhost:8210` |
-| Backup Worker | `http://localhost:8220` |
-| Zipkin | `http://localhost:9411` |
+| Stowhaven Gateway | `http://localhost:8200` |
+| Stowhaven API | `http://localhost:8210` |
+| Stowhaven Worker | `http://localhost:8220` |
+| Zipkin container | `http://localhost:9411` |
 | Aspire dashboard | `http://localhost:18888` |
 | RedisInsight | `http://localhost:5540` |
 
-Use the Backup Gateway for combined Swagger/runtime access to API and worker endpoints. The direct API and worker URLs remain exposed locally for debugging. The Docker Compose environment runs with `ASPNETCORE_ENVIRONMENT=Development`. Development appsettings intentionally point OpenTelemetry to local Zipkin and the Aspire dashboard. Production appsettings leave those exporter endpoints empty and use Application Insights through the Azure deployment configuration.
+Use the Stowhaven Gateway for combined Swagger/runtime access to API and worker endpoints. The direct API and worker URLs remain exposed locally for debugging. The Docker Compose environment runs with `ASPNETCORE_ENVIRONMENT=Development`; API and worker state is stored in a shared SQLite database. OpenTelemetry is exported over OTLP to the Aspire dashboard. Compose still starts a Zipkin container, but the current logging setup does not register a Zipkin exporter.
 
 Run the test suite:
 
 ```bash
-dotnet test FlorisDeV.BackupApi.sln --no-restore --verbosity minimal
+dotnet test FlorisDeV.BackupApi.sln --verbosity minimal
 ```
 
 Run the client directly during development:
@@ -194,7 +202,7 @@ dotnet run
 
 See [Client Configuration Guide](doc/CLIENT_CONFIGURATION.md) for target configuration, scheduling, encryption, and `.backupignore` behavior.
 
-## Installing the Backup Client
+## Installing the Stowhaven Client
 
 Once the API/Gateway are deployed, install the client on each machine you want backed up.
 
@@ -226,7 +234,7 @@ Re-running `install.sh` later (e.g. after publishing an updated build) updates t
 .\FlorisDeV.BackupClient.exe configure
 ```
 
-**What `configure` does**, on either platform: collects backup target folders (validated the same way a real backup run would validate them, with suggestions for common folders like Documents/Pictures/Desktop/Downloads that already exist on the machine), signs in (opens a browser once — MSAL caches the token afterward using DPAPI on Windows or libsecret on Linux), and verifies the signed-in account can actually reach the backup API end-to-end.
+**What `configure` does**, on either platform: collects backup target folders (validated the same way a real backup run would validate them, with suggestions for common folders like Documents/Pictures/Desktop/Downloads that already exist on the machine), signs in (opens a browser once — MSAL caches the token afterward using DPAPI on Windows or libsecret on Linux), and verifies the signed-in account can reach Stowhaven end-to-end.
 
 Re-run with flags to repeat only part of the flow, e.g. `configure --skip-targets` to just re-check login/access, or `configure --skip-login --skip-access-check` to only add/edit targets. Use `login` alone to refresh the token or sign in again when required. Backup and restore runs are deliberately silent-only: they never open a browser and instead fail with a hint to run `backup-client login` if Entra requires user interaction.
 
@@ -245,7 +253,7 @@ Use "Run whether user is logged on or not" — DPAPI only needs the same Windows
 ```ini
 # ~/.config/systemd/user/backup-client.service
 [Unit]
-Description=FlorisDeV Backup Client
+Description=Stowhaven Client
 
 [Service]
 Type=oneshot
@@ -255,7 +263,7 @@ ExecStart=%h/.local/share/backup-client/FlorisDeV.BackupClient
 ```ini
 # ~/.config/systemd/user/backup-client.timer
 [Unit]
-Description=Run Backup Client daily
+Description=Run Stowhaven Client daily
 
 [Timer]
 OnCalendar=*-*-* 02:00:00
@@ -275,12 +283,13 @@ loginctl enable-linger $USER   # lets the timer fire even when logged out
 
 Infrastructure lives in `deploy/bicep/` and is orchestrated by `deploy/bicep/main.bicep` with defaults in `deploy/bicep/main.bicepparam`.
 
-The GitHub Actions workflow uses four phases:
+The GitHub Actions workflow uses five phases:
 
-1. Validate Bicep.
-2. Deploy foundation resources with `deployContainerApps=false`.
-3. Build and push the API and worker images to ACR.
-4. Deploy or update Container Apps with `deployContainerApps=true`.
+1. Build and test the solution, plus a separate Gateway build.
+2. Validate Bicep.
+3. Deploy foundation resources with `deployContainerApps=false`.
+4. Build and push the API, worker, and Gateway images to GitHub Container Registry (GHCR).
+5. Deploy or update Container Apps with `deployContainerApps=true`.
 
 This avoids first-deployment issues where Container Apps need images and registry pull permissions before app revisions can start.
 
@@ -292,11 +301,12 @@ The Bicep deployment provisions or references:
 
 - Azure Storage account with the `backups` container and lifecycle policy.
 - Azure Cosmos DB for NoSQL database and state containers.
-- Azure Service Bus namespace, topic, and subscription for commit events.
+- Azure Storage Queue for commit events.
 - Azure Key Vault for Dapr secret references.
-- Azure Container Registry with admin user disabled.
 - Azure Container Apps environment.
-- Backup API and Backup Worker Container Apps with Dapr enabled.
+- Internal Stowhaven API and Worker Container Apps with Dapr enabled.
+- Public Gateway Container App with Easy Auth/OBO configuration.
+- Container images hosted in GHCR.
 - Log Analytics workspace and Application Insights resource.
 - Managed identities and least-privilege role assignments.
 
@@ -312,13 +322,14 @@ The Bicep deployment provisions or references:
 
 - [Technical Design](doc/TECHNICAL_DESIGN.md) - full architecture, flows, storage layout, state model, and security design.
 - [Authentication](doc/AUTHENTICATION.md) - Entra ID authentication and authorization model.
+- [App Registrations](doc/APP_REGISTRATIONS.md) - Entra application roles, scopes, credentials, and current deployment IDs.
 - [Monitoring](doc/MONITORING.md) - logs, metrics, health checks, and diagnostics.
 - [Advanced Configuration](doc/ADVANCED_CONFIGURATION.md) - performance tuning, resilience, encryption, and advanced client scenarios.
 - [Testing Guide](doc/TESTING.md) - test strategy and client testing instructions.
 
 ### Cost reference
 
-- [Cost Analysis](doc/costs/) - storage tiering and cost optimization notes.
+- [Cost estimate artifacts](doc/costs/) - a historical calculator export and screenshot; reprice before making budget decisions.
 
 ## Current project status
 

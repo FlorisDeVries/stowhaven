@@ -98,7 +98,7 @@ public sealed partial class ApiWakeUpService(
                 catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
                 {
                     lastException = new TimeoutException(
-                        $"Backup API wake-up probe exceeded {probeTimeout.TotalSeconds:N0}s.", ex);
+                        $"Stowhaven wake-up probe exceeded {probeTimeout.TotalSeconds:N0}s.", ex);
                 }
                 catch (HttpRequestException ex)
                     when (ex.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
@@ -138,21 +138,21 @@ public sealed partial class ApiWakeUpService(
 
     private static TimeoutException CreateTimeoutException(TimeSpan maxWait, Exception? innerException)
         => new(
-            $"Backup API did not respond within {maxWait.TotalSeconds:N0}s while waking up.",
+            $"Stowhaven did not respond within {maxWait.TotalSeconds:N0}s while waking up.",
             innerException);
 
     private static HttpRequestException CreateAuthenticationException(HttpStatusCode statusCode)
         => new(
-            $"The authenticated backup API wake-up probe was rejected with {(int)statusCode} ({statusCode}). " +
+            $"The authenticated Stowhaven wake-up probe was rejected with {(int)statusCode} ({statusCode}). " +
             "Run 'backup-client login' interactively, then retry the operation.",
             inner: null,
             statusCode);
 
     public void Dispose() => _wakeLock.Dispose();
 
-    [LoggerMessage(LogLevel.Information, "Backup API is awake and reachable after {Attempts} attempt(s), {ElapsedSeconds:N0}s")]
+    [LoggerMessage(LogLevel.Information, "Stowhaven is awake and reachable after {Attempts} attempt(s), {ElapsedSeconds:N0}s")]
     partial void LogApiAwake(int attempts, double elapsedSeconds);
 
-    [LoggerMessage(LogLevel.Warning, "Backup API not ready yet (attempt {Attempt}); it may be waking up from a scale-to-zero state. Retrying in {DelaySeconds:N0}s...")]
+    [LoggerMessage(LogLevel.Warning, "Stowhaven is not ready yet (attempt {Attempt}); it may be waking up from a scale-to-zero state. Retrying in {DelaySeconds:N0}s...")]
     partial void LogApiNotReady(Exception exception, int attempt, double delaySeconds);
 }

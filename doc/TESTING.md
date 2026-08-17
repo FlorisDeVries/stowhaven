@@ -1,68 +1,72 @@
-# Testing Guide
+# Testing guide
 
-This document describes the test organization and how to run tests in the Backup API project.
+Run commands from the repository root.
 
-## Test Categories
+## Test projects
 
-Tests are categorized using xUnit traits to enable selective test execution:
+The solution currently contains four xUnit test projects:
 
-### Unit Tests
-- Use mocked dependencies
-- No external system interaction (network, file system, databases)
-- Fast execution
-- Examples: `GlobalExceptionFilterTests`, `ManifestManagerConcurrencyTests`
+| Project | Coverage |
+| --- | --- |
+| `tests/services/api/FlorisDeV.BackupApi.Tests.csproj` | API controllers, services, storage/state, event publishing, and security behavior |
+| `tests/services/client/FlorisDeV.BackupClient.Tests.csproj` | client scanning, state, upload, encryption, restore, authentication, and integration flows |
+| `tests/common/healthchecks/FlorisDeV.HealthChecks.Tests.csproj` | shared health checks |
+| `tests/common/logging/FlorisDeV.Logging.Tests.csproj` | shared logging and telemetry helpers |
 
-**Attribute:**
-```csharp
-[Fact]
-[Trait("Category", "Unit")]
-public void MyUnitTest() { }
-```
+The worker is built by the solution but does not have a separate test project. The Gateway is not included in `FlorisDeV.BackupApi.sln` and currently has no automated test project, so build it explicitly.
 
-### Integration Tests
-- Interact with real dependencies
-- Use actual file system, network, or external services
-- Slower execution but verify end-to-end behavior
-- Examples: `FileSystemServiceTests`
+## Standard verification
 
-**Attribute:**
-```csharp
-[Fact]
-[Trait("Category", "Integration")]
-public async Task MyIntegrationTest() { }
-```
-
-## Running Tests
-
-### Run All Tests
 ```bash
-dotnet test FlorisDeV.BackupApi.sln
+dotnet restore FlorisDeV.BackupApi.sln
+dotnet test FlorisDeV.BackupApi.sln --no-restore
+dotnet build src/services/gateway/Gateway.csproj
 ```
 
-### Run Only Unit Tests
+The deploy workflow uses Release configuration:
+
+```bash
+dotnet test FlorisDeV.BackupApi.sln --configuration Release
+dotnet build src/services/gateway/Gateway.csproj --configuration Release
+```
+
+## Run one project
+
+```bash
+dotnet test tests/services/client/FlorisDeV.BackupClient.Tests.csproj
+dotnet test tests/services/api/FlorisDeV.BackupApi.Tests.csproj
+dotnet test tests/common/healthchecks/FlorisDeV.HealthChecks.Tests.csproj
+dotnet test tests/common/logging/FlorisDeV.Logging.Tests.csproj
+```
+
+## Trait and name filters
+
+Tests use xUnit `Category` traits where a unit/integration distinction is useful:
+
 ```bash
 dotnet test FlorisDeV.BackupApi.sln --filter "Category=Unit"
-```
-
-### Run Only Integration Tests
-```bash
 dotnet test FlorisDeV.BackupApi.sln --filter "Category=Integration"
-```
-
-### Run Tests in Specific Project
-```bash
-# Client tests
-dotnet test FlorisDeV.BackupApi.sln tests/services/client
-
-# API tests
-dotnet test FlorisDeV.BackupApi.sln tests/services/api
-```
-
-### Run Tests with Additional Filters
-```bash
-# Run specific test class
 dotnet test FlorisDeV.BackupApi.sln --filter "FullyQualifiedName~FileSystemServiceTests"
-
-# Combine filters
-dotnet test FlorisDeV.BackupApi.sln --filter "Category=Unit&FullyQualifiedName~ManifestManager"
+dotnet test FlorisDeV.BackupApi.sln --filter "Category=Unit&FullyQualifiedName~BackupService"
 ```
+
+Not every test necessarily carries a category, so the unfiltered solution run is the authoritative full suite.
+
+Several tests labelled Integration use temporary local files or SQLite. They do not require the Docker Compose stack or production Azure resources.
+
+## Docker Compose smoke test
+
+For a runtime check after tests pass:
+
+```bash
+docker compose up --build -d
+curl --fail http://localhost:8200/healthz
+curl --fail http://localhost:8210/health/liveness
+curl --fail http://localhost:8220/health/liveness
+```
+
+Then open the combined Swagger UI at `http://localhost:8200/swagger`. Local API and worker services use Development authentication and local infrastructure; this smoke test is not a substitute for validating Entra/OBO and Azure role assignments in a deployed environment.
+
+## CI
+
+`.github/workflows/deploy.yml` runs the solution tests, publishes API and worker artifacts, and builds the Gateway before the deployment and container-image phases. A local check should therefore include both the solution tests and the explicit Gateway build.

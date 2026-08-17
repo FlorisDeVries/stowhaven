@@ -32,7 +32,7 @@ public sealed class BackupApiAuthHandler(
         if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
         {
             logger.LogWarning(
-                "Backup API request returned 401 Unauthorized for {Method} {Uri}. WWW-Authenticate: {AuthenticateHeader}",
+                "Stowhaven request returned 401 Unauthorized for {Method} {Uri}. WWW-Authenticate: {AuthenticateHeader}",
                 request.Method,
                 request.RequestUri,
                 string.Join(" | ", response.Headers.WwwAuthenticate.Select(h => h.ToString())));

@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "12022232544970115751"
+      "templateHash": "17687038214368102253"
     }
   },
   "parameters": {
@@ -62,7 +62,7 @@
     },
     "containerImageRegistry": {
       "type": "string",
-      "defaultValue": "ghcr.io/florisdevries/backup-api",
+      "defaultValue": "ghcr.io/florisdevries/stowhaven",
       "metadata": {
         "description": "Container image registry path that service image names are appended to. GHCR requires a lowercase repository path."
       }
@@ -183,14 +183,14 @@
       "type": "string",
       "defaultValue": "",
       "metadata": {
-        "description": "Name of the existing, manually created Cosmos DB account used by the production Dapr state-store components. Leave empty to derive from the deployment name suffix."
+        "description": "Name of the existing, manually created Cosmos DB account used by the production application state repositories. Leave empty to derive from the deployment name suffix."
       }
     },
     "cosmosDatabaseName": {
       "type": "string",
       "defaultValue": "backup-state",
       "metadata": {
-        "description": "Cosmos DB SQL database name for Dapr state."
+        "description": "Cosmos DB SQL database name for application state."
       }
     },
     "cosmosDatabaseAutoscaleMaxThroughput": {
@@ -205,14 +205,14 @@
       "type": "string",
       "defaultValue": "manifest-state",
       "metadata": {
-        "description": "Cosmos DB SQL container name for manifest-state-store."
+        "description": "Cosmos DB SQL container name for manifests and commit jobs."
       }
     },
     "cosmosDeviceRegistryContainerName": {
       "type": "string",
       "defaultValue": "device-registry",
       "metadata": {
-        "description": "Cosmos DB SQL container name for device-registry-state-store."
+        "description": "Cosmos DB SQL container name for the device registry."
       }
     },
     "daprAzureClientId": {
@@ -237,28 +237,28 @@
       "type": "string",
       "defaultValue": "[tenant().tenantId]",
       "metadata": {
-        "description": "Microsoft Entra tenant ID used by the Backup API for JWT validation."
+        "description": "Microsoft Entra tenant ID used by the Stowhaven API for JWT validation."
       }
     },
     "apiAuthClientId": {
       "type": "string",
       "defaultValue": "906eb0e3-e351-47c0-a68a-690207f4cccb",
       "metadata": {
-        "description": "Microsoft Entra application/client ID of the Backup API app registration."
+        "description": "Microsoft Entra application/client ID of the Stowhaven API app registration."
       }
     },
     "apiAuthAudience": {
       "type": "string",
       "defaultValue": "[format('api://{0}', parameters('apiAuthClientId'))]",
       "metadata": {
-        "description": "JWT audience accepted by the Backup API. Defaults to api://{apiAuthClientId}."
+        "description": "JWT audience accepted by the Stowhaven API. Defaults to api://{apiAuthClientId}."
       }
     }
   },
   "variables": {
     "commonTags": {
       "Environment": "Production",
-      "Project": "BackupAPI"
+      "Project": "Stowhaven"
     },
     "keyVaultName": "[format('kv-{0}', parameters('nameSuffix'))]",
     "cosmosAccountNameEffective": "[if(empty(parameters('cosmosAccountName')), format('cosmos-{0}', parameters('nameSuffix')), parameters('cosmosAccountName'))]",
@@ -1067,7 +1067,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.44.1.10279",
-              "templateHash": "3037138149604359324"
+              "templateHash": "10949819132835713979"
             }
           },
           "parameters": {
@@ -1247,28 +1247,28 @@
             "cosmosAccountEndpoint": {
               "type": "string",
               "metadata": {
-                "description": "Cosmos DB account endpoint for the Dapr manifest-state-store component."
+                "description": "Cosmos DB account endpoint for the application state repositories."
               }
             },
             "cosmosDatabaseName": {
               "type": "string",
               "defaultValue": "backup-state",
               "metadata": {
-                "description": "Cosmos DB SQL database name for Dapr state."
+                "description": "Cosmos DB SQL database name for application state."
               }
             },
             "cosmosManifestContainerName": {
               "type": "string",
               "defaultValue": "manifest-state",
               "metadata": {
-                "description": "Cosmos DB SQL container name for manifest-state-store."
+                "description": "Cosmos DB SQL container name for manifests and commit jobs."
               }
             },
             "cosmosDeviceRegistryContainerName": {
               "type": "string",
               "defaultValue": "device-registry",
               "metadata": {
-                "description": "Cosmos DB SQL container name for device-registry-state-store."
+                "description": "Cosmos DB SQL container name for the device registry."
               }
             },
             "daprAzureClientId": {
@@ -1288,21 +1288,21 @@
               "type": "string",
               "defaultValue": "[tenant().tenantId]",
               "metadata": {
-                "description": "Microsoft Entra tenant ID used by the Backup API for JWT validation."
+                "description": "Microsoft Entra tenant ID used by the Stowhaven API for JWT validation."
               }
             },
             "apiAuthClientId": {
               "type": "string",
               "defaultValue": "906eb0e3-e351-47c0-a68a-690207f4cccb",
               "metadata": {
-                "description": "Microsoft Entra application/client ID of the Backup API app registration."
+                "description": "Microsoft Entra application/client ID of the Stowhaven API app registration."
               }
             },
             "apiAuthAudience": {
               "type": "string",
               "defaultValue": "[format('api://{0}', parameters('apiAuthClientId'))]",
               "metadata": {
-                "description": "JWT audience accepted by the Backup API. Defaults to api://{apiAuthClientId}."
+                "description": "JWT audience accepted by the Stowhaven API. Defaults to api://{apiAuthClientId}."
               }
             }
           },
@@ -1437,10 +1437,6 @@
                         },
                         {
                           "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                          "value": ""
-                        },
-                        {
-                          "name": "OTEL_EXPORTER_ZIPKIN_ENDPOINT",
                           "value": ""
                         },
                         {
@@ -1592,10 +1588,6 @@
                         },
                         {
                           "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
-                          "value": ""
-                        },
-                        {
-                          "name": "OTEL_EXPORTER_ZIPKIN_ENDPOINT",
                           "value": ""
                         },
                         {

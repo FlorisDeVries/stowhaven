@@ -1,11 +1,11 @@
-# Backup Ignore File
+# Stowhaven Ignore File
 # Patterns use glob syntax (similar to .gitignore)
 # Lines starting with # are comments
 # Use ** to match any number of directories
 #
 # NOTE: This is a sensible default for developer workstations.
 # For servers/production systems:
-#   - Consider keeping log files (comment out **/*.log and /var/log/**)
+#   - Consider keeping log files (comment out **/*.log and var/log/**)
 #   - Remove Windows/Program Files exclusions if needed
 #   - Customize based on your specific backup requirements
 
@@ -125,14 +125,14 @@
 
 # ===== Unix/Linux/macOS Specific =====
 # System directories (if backing up from root)
-/proc/**
-/sys/**
-/dev/**
-/run/**
-/tmp/**
-/var/tmp/**
-/var/cache/**
-/var/log/**
+proc/**
+sys/**
+dev/**
+run/**
+tmp/**
+var/tmp/**
+var/cache/**
+var/log/**
 
 # Unix user caches
 **/.local/share/Trash/**
@@ -165,11 +165,15 @@
 **/.dropbox.cache/**
 **/OneDrive - */.849C9593-D756-4E56-8D6E-42412F2A707B/**
 
-# ===== Backup Tool Self-Exclusion =====
+# ===== Stowhaven Self-Exclusion =====
 # Don't backup the backup client itself to avoid recursion
 **/FlorisDeV.BackupApi/**
+**/FlorisDeV.BackupClient/**
+**/backup-client/**
 **/backup-api/bin/**
 **/backup-api/obj/**
+**/stowhaven/bin/**
+**/stowhaven/obj/**
 
 # ===== Gaming =====
 # Steam
@@ -228,4 +232,3 @@
 **/.IdentityService/**
 
 # ===== Add Your Custom Patterns Below =====
-

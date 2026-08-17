@@ -1,55 +1,86 @@
-# App registrations
+# Microsoft Entra app registrations
 
-This project uses several Microsoft Entra ID app registrations. They have different trust levels and should not be reused interchangeably.
+The hosted user flow uses three runtime app registrations. Keep their identities and credentials separate.
 
-## Backup API
+The IDs below are the values currently committed for this deployment. Replace them in configuration when creating another tenant or environment.
 
-- **Display name:** `Backup API`
-- **Application/client ID:** `906eb0e3-e351-47c0-a68a-690207f4cccb`
-- **Application ID URI / audience:** `api://906eb0e3-e351-47c0-a68a-690207f4cccb`
-- **Purpose:** Represents the protected Backup API resource.
-- **Used by:** The deployed API for JWT audience validation, and client app registrations for delegated API permissions.
-- **Exposed delegated scopes:**
-  - `backup.client` — normal backup/restore clients.
-  - `backup.admin` — trusted administrative/operator clients.
+The Stowhaven rename does not change these IDs. Existing Entra objects may still have legacy display names such as `Backup Client` or `Backup API`; display names can be updated in the portal without changing identity or token behavior.
 
-## Backup Client
+## Runtime applications
 
-- **Display name:** `Backup Client`
-- **Application/client ID:** `a862c3a8-8dfa-46b6-9a5a-5cea65652416`
-- **Purpose:** Public/native app registration for regular desktop backup clients.
-- **Granted API scope:** `backup.client`
-- **Redirect URI:** `http://localhost`
+| Application | Current client ID | Type | Purpose |
+| --- | --- | --- | --- |
+| Stowhaven Client | `a862c3a8-8dfa-46b6-9a5a-5cea65652416` | Public/native | Signs a user in and requests the Gateway's `backup.access` scope |
+| Stowhaven Gateway | `5506a872-9273-48f8-8145-43181d406355` | Confidential web/API | Protects the public Container App with Easy Auth and exchanges user tokens through OBO |
+| Stowhaven API | `906eb0e3-e351-47c0-a68a-690207f4cccb` | Protected API | Validates internal API tokens and defines delegated scopes/application roles |
 
-## Backup Admin Client
+### Stowhaven Client
 
-- **Display name:** `Backup Admin Client`
-- **Application/client ID:** `c6db3454-74c8-48ee-aa09-31101699b487`
-- **Purpose:** Public/native app registration for trusted operator/admin desktop usage.
-- **Granted API scopes:** `backup.client`, `backup.admin`
-- **Redirect URI:** `http://localhost`
+Required configuration:
 
-## Backup API Gateway
+- public client flow enabled;
+- native redirect URI `http://localhost`;
+- delegated permission to `api://<gateway-client-id>/backup.access`;
+- no client secret.
 
-- **Display name:** `backup-api-gateway`
-- **Application/client ID:** `5506a872-9273-48f8-8145-43181d406355`
-- **Purpose:** Protects the deployed Swagger Gateway with Container Apps built-in authentication.
-- **Used by:** The Gateway Container App auth configuration.
-- **Redirect URI:** `https://ca-fdev-weu-prd-gateway.kinddesert-f7d01f23.westeurope.azurecontainerapps.io/.auth/login/aad/callback`
+The published client configuration points `BackupApiClient:ApiUrl` at the Gateway and `AuthenticationScope` at the Gateway—not directly at the API.
 
-## GitHub deployment app
+### Stowhaven Gateway
 
-- **Display name:** `github-backup-api-deploy`
-- **Application/client ID:** `ac236e14-a213-48a6-9872-e10ad32c339a`
-- **Purpose:** GitHub Actions workload identity for deploying Azure infrastructure and Container Apps.
-- **Used by:** `.github/workflows/deploy.yml` through OIDC-based Azure login.
+Required configuration:
 
-## Assignment guidance
+- Application ID URI `api://<gateway-client-id>`;
+- exposed delegated scope `backup.access`;
+- client application authorized for that scope or consent granted through the tenant's normal policy;
+- delegated permission to `api://<api-client-id>/backup.client`, with consent;
+- a client secret for the OBO exchange;
+- Container Apps redirect URI `https://<gateway-host>/.auth/login/aad/callback` for browser/Easy Auth flows;
+- v2 access tokens (`requestedAccessTokenVersion: 2`).
 
-For user access control, use the **Enterprise Applications** blade:
+The client secret is stored as the GitHub `GATEWAY_AUTH_CLIENT_SECRET` secret and becomes a Container App secret. Do not put it in appsettings or documentation.
 
-1. Open the matching Enterprise Application.
-2. Set **Properties > Assignment required?** to **Yes**.
-3. Assign users or groups under **Users and groups**.
+The Gateway also has a system-assigned managed identity. For app-only fallback calls, assign that identity the API's `backup.gateway` application role with:
 
-Use `Backup Client` for normal users and `Backup Admin Client` only for operators/admins.
+```powershell
+./scripts/Grant-GatewayApiAppRole.ps1 -GatewayPrincipalId "<gateway-managed-identity-object-id>"
+```
+
+That role assignment is not created by the current Bicep template.
+
+### Stowhaven API
+
+Required configuration:
+
+- Application ID URI/audience `api://<api-client-id>`;
+- delegated scopes `backup.client` and `backup.admin`;
+- application role `backup.gateway`, allowed for applications;
+- v2 access tokens (`requestedAccessTokenVersion: 2`).
+
+The API's token gate currently accepts either delegated scope, or the `backup.gateway` application role. Device and restore services then isolate user data by the token's `tid` and `oid`/`sub` claims.
+
+`backup.admin` is defined, but no endpoint-specific authorization policy currently distinguishes it from `backup.client`. In particular, `/api/ops/*` routes are protected only by the global authentication/scope gate today. Treat `backup.admin` as reserved until an explicit admin policy is implemented.
+
+## Optional direct API clients
+
+`scripts/New-BackupClientAppRegistration.ps1` creates a public client with delegated permissions directly on the Stowhaven API. This is useful for direct/API testing, but it does not create the production Gateway-facing registration described above. Its default API URL is also a deployment-specific placeholder; override it when using the script.
+
+`scripts/New-BackupApiAppRegistration.ps1` creates the API scopes and `backup.gateway` application role.
+
+## Deployment identity
+
+The GitHub Actions workload identity (`github-backup-api-deploy` in the current tenant) is separate from all runtime app registrations. Its legacy display name does not need to change. `.github/workflows/deploy.yml` uses it through OIDC; it should not have delegated backup scopes or be used by desktop clients. Its federated credential subjects must, however, use the current `FlorisDeVries/stowhaven` repository name.
+
+Required repository values are documented in [GitHub Actions deployment](GITHUB_ACTIONS_DEPLOYMENT.md).
+
+## User assignment
+
+If access should be restricted to selected users or groups, enable **Assignment required** on the Gateway enterprise application and assign those users/groups there. The Gateway is the public resource requested by the desktop client.
+
+Also review tenant consent for the Gateway's delegated `backup.client` permission on the API: the OBO exchange cannot request a downstream scope that has not been consented for the user/tenant.
+
+## Related documentation
+
+- [Authentication flow](AUTHENTICATION.md)
+- [GitHub Actions deployment](GITHUB_ACTIONS_DEPLOYMENT.md)
+- [`New-BackupApiAppRegistration.ps1`](../scripts/New-BackupApiAppRegistration.ps1)
+- [`Grant-GatewayApiAppRole.ps1`](../scripts/Grant-GatewayApiAppRole.ps1)

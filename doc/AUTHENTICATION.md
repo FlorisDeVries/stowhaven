@@ -1,188 +1,121 @@
-# Authentication Setup for Distributed Clients
+# Authentication and authorization
 
-This document explains how authentication works in the Backup API stack and how to set up a new distributed client installation.
-
-## Architecture Overview
-
-Clients never talk directly to the API. All traffic goes through a **Gateway** (Azure Container App) that handles authentication and forwards requests to the internal API.
-
-```
-Client  ──(gateway scope token)──▶  Gateway (Easy Auth)
-                                        │
-                                        │  OBO exchange
-                                        ▼
-                                    Entra ID
-                                        │
-                                        │  API scope token (user identity preserved)
-                                        ▼
-                                    Backup API  ──▶  Azure Blob
-```
-
-### Authentication Flow
+Hosted Stowhaven clients call the public Gateway. The Stowhaven API and worker have internal Container Apps ingress.
 
 ```mermaid
 sequenceDiagram
-    autonumber
     actor User
-    participant Client as Backup Client
-    participant MSAL as MSAL Library
-    participant Browser
-    participant Entra as Entra ID
-    participant GW as Gateway (Easy Auth)
-    participant API as Backup API
+    participant Client as Stowhaven Client
+    participant Entra as Microsoft Entra ID
+    participant Gateway as Gateway + Easy Auth
+    participant API as Internal Stowhaven API
 
-    User->>Client: Start backup
-
-    alt First run or token expired
-        Client->>MSAL: Request gateway token
-        MSAL->>Browser: Open sign-in page
-        User->>Browser: Sign in
-        Browser->>Entra: Authenticate
-        Entra-->>Browser: Auth code
-        Browser-->>MSAL: Auth code (localhost redirect)
-        MSAL->>Entra: Exchange for token (gateway scope)
-        Entra-->>MSAL: Gateway-scoped JWT + refresh token
-        MSAL->>MSAL: Cache securely (DPAPI / Keychain / libsecret)
-    else Token in cache
-        MSAL->>MSAL: Load & silently refresh if needed
-    end
-
-    MSAL-->>Client: Gateway-scoped access token
-    Client->>GW: POST /api/devices (Authorization: Bearer <gateway token>)
-    GW->>GW: Easy Auth validates gateway token
-    GW->>Entra: OBO exchange (gateway token → API token)
-    Entra-->>GW: API-scoped token (scp: backup.client, oid/tid preserved)
-    GW->>API: POST /api/devices (Authorization: Bearer <API token>)
-    API->>API: Validate JWT (audience, issuer, scope, user identity)
-    API-->>GW: 200 OK
-    GW-->>Client: 200 OK
+    User->>Client: configure or login
+    Client->>Entra: request Gateway backup.access scope
+    Entra-->>Client: Gateway-scoped user token
+    Client->>Gateway: /api/* with bearer token
+    Gateway->>Gateway: Easy Auth validates audience/issuer
+    Gateway->>Entra: OBO exchange for API backup.client
+    Entra-->>Gateway: API token preserving tid + oid
+    Gateway->>API: proxied request with API token
+    API->>API: validate token and device ownership
 ```
 
-### Why OBO (On-Behalf-Of)?
+## Why the Gateway uses OBO
 
-The Gateway exchanges the user's gateway-scoped token for an API-scoped token via the OAuth2 On-Behalf-Of flow. This serves two purposes:
+The user's token targets the Gateway audience. Passing it unchanged to the API would fail the API's audience validation. The OAuth 2.0 On-Behalf-Of exchange produces a token for the API while preserving the user's tenant and object identifiers, which the API uses for data isolation.
 
-1. **Audience isolation** — the client token targets the gateway (`api://5506a872...`); the API only accepts tokens for its own audience (`api://906eb0e3...`).
-2. **User identity preservation** — the OBO token carries the user's `oid` and `tid` claims, which the API uses to scope stored data per user.
+For bearer-token clients, Easy Auth validates the incoming Gateway token and the Gateway reads the bearer token as the OBO user assertion. Browser/cookie flows can instead supply Easy Auth's `X-MS-TOKEN-AAD-ACCESS-TOKEN` header.
 
-The Gateway requests only the scopes covered by tenant-wide consent (`backup.client`). Azure AD rejects the OBO exchange with `AADSTS65001` (consent_required) if any requested scope has no consent for that user — it does not silently drop unconsented scopes — so user-level access control is enforced at the Entra layer.
+Swagger document requests do not use OBO. The Gateway adds a deployment-specific internal header to reach the otherwise hidden API/worker Swagger documents.
 
----
+## App and token boundaries
 
-## App Registrations
+| Hop | Audience | Required permission |
+| --- | --- | --- |
+| Client → Gateway | `api://<gateway-client-id>` | delegated `backup.access` |
+| Gateway → API, user request | `api://<api-client-id>` | delegated `backup.client` by default |
+| Gateway → API, app-only fallback | API client ID or URI | application role `backup.gateway` |
 
-Three app registrations are involved:
+The API accepts delegated `backup.client` or `backup.admin`, and the `backup.gateway` application role. Both API and Gateway app registrations should issue v2 access tokens.
 
-| App | ID | Purpose |
-|-----|----|---------|
-| Backup Client (public) | `a862c3a8-8dfa-46b6-9a5a-5cea65652416` | MSAL public client — no secret |
-| Gateway | `5506a872-9273-48f8-8145-43181d406355` | Easy Auth + OBO credential |
-| Backup API | `906eb0e3-e351-47c0-a68a-690207f4cccb` | JWT audience, defines scopes |
+The normal hosted client does not request `backup.admin`. Although that scope exists in the API registration, the application currently has no endpoint-level admin policy; `/api/ops/*` is reachable by any authenticated token that passes the global API gate. Do not treat the presence of `backup.admin` as an enforced administrative boundary yet.
 
-> **Important** — both the Gateway and API app registrations must have `requestedAccessTokenVersion: 2` in their manifest (`api` section). With the v1 default (`null`), client tokens carry the `sts.windows.net` issuer, which conflicts with Easy Auth's v2 issuer configuration and breaks `/.default` scope expansion in the OBO flow.
+## Client configuration
 
----
-
-## Setting Up a New Client Installation
-
-### 1. The MSAL public client app is already registered
-
-`a862c3a8-8dfa-46b6-9a5a-5cea65652416` — this is the shared public client used by all installations. No secrets are needed because it is a public client (desktop app flow).
-
-### 2. Grant the client permission on the Gateway
-
-The client must be authorised to request a gateway-scoped token:
-
-1. **Entra ID** → **App registrations** → `5506a872` (Gateway)
-2. **Expose an API** → **Authorized client applications**
-3. Add `a862c3a8-8dfa-46b6-9a5a-5cea65652416` with the `backup.access` scope
-
-### 3. Regular user access (backup.client)
-
-All users in the tenant are pre-consented for `backup.client` rights via an `AllPrincipals` admin consent grant on the Gateway → API permission. No per-user action is needed for standard backup clients.
-
-### 4. Admin user access (backup.admin)
-
-`backup.admin` is **not** granted to all users. It must be granted individually:
-
-1. **Entra ID** → **Enterprise applications** → `906eb0e3` (Backup API)
-2. **Permissions** → **Grant admin consent** → select the user
-3. Grant the `backup.admin` delegated scope for that specific user
-
-Or grant it to a security group and assign users to that group.
-
----
-
-## Client Configuration
-
-### Production (pointing at the hosted gateway)
-
-Store sensitive values in user secrets (`dotnet user-secrets`), not in committed config files:
+Production configuration targets the Gateway:
 
 ```json
 {
+  "AzureAd": {
+    "Instance": "https://login.microsoftonline.com/",
+    "TenantId": "<tenant-id>",
+    "ClientId": "<public-client-id>"
+  },
   "BackupApiClient": {
-    "ApiUrl": "https://<gateway-url>.azurecontainerapps.io",
-    "AuthenticationScope": "api://5506a872-9273-48f8-8145-43181d406355/backup.access",
-    "AuthenticationTenant": "cf8adfe1-bb3b-4ef0-8ba9-44dcddb8ecb9"
+    "ApiUrl": "https://<gateway-host>.azurecontainerapps.io",
+    "AuthenticationScope": "api://<gateway-client-id>/backup.access",
+    "AuthenticationTenant": "<tenant-id>"
   }
 }
 ```
 
-> **Note** — `AuthenticationScope` targets the **Gateway** app (`5506a872`), not the API. The Gateway exchanges this token for an API-scoped token internally.
+These IDs, URL, and scope are identifiers rather than secrets. The public client has no client secret. Machine-specific backup targets belong in `appsettings.local.json`; see [Client configuration](CLIENT_CONFIGURATION.md).
 
-### Development (local API, no auth)
+In Development, when `ApiUrl` is a loopback URL, the client uses a no-op credential and the API's Development anonymous handler. A deployed URL still uses MSAL even if the client process itself runs with the Development environment.
 
-`appsettings.Development.json` points `ApiUrl` at `localhost`. The client detects a local URL and skips MSAL, using `NoOpTokenCredential` instead. No Entra setup is needed for local development.
+## Interactive and unattended behavior
 
----
+Only `backup-client configure` and `backup-client login` allow interactive authentication. They can open the system browser and populate the persistent MSAL cache.
 
-## How Access Control Works End-to-End
+Normal backup, restore, scheduled, and service runs are silent-only. If MSAL cannot refresh a cached token, the run stops and asks the operator to run `backup-client login`; an unattended process will not unexpectedly open a browser.
 
-1. **User authenticates** → MSAL acquires a JWT with `aud: api://5506a872...` and `scp: backup.access`
-2. **Gateway validates** via Easy Auth → confirms the token is a valid Entra token for this tenant
-3. **OBO exchange** → Gateway trades the user's gateway token for an API token:
-   - Requests only `backup.client` (the scope covered by the `AllPrincipals` admin consent)
-   - Resulting token has `aud: api://906eb0e3...`, `oid`/`tid` (user identity), and `scp: backup.client`
-   - Note: Azure AD returns `AADSTS65001` if a requested scope has *no* consent for that user — it does not silently clip absent scopes
-4. **API validates** → checks audience, issuer, expiry, and that `scp` contains `backup.client` or `backup.admin`
-5. **Service layer** → uses `oid`+`tid` from the token to scope all data to that user
+MSAL cache storage:
 
-All users routed through the gateway get `scp: "backup.client"`. The API's scope gate accepts either `backup.client` or `backup.admin`. To request `backup.admin` in the OBO token (for a deployment where all users have that consent), set `Gateway__OboApiScopes` explicitly in the container app environment.
+| Platform | Protection | Default path |
+| --- | --- | --- |
+| Windows | DPAPI | `%LOCALAPPDATA%\backup-client\backup-client.cache` |
+| macOS | Keychain | application-data directory |
+| Linux | libsecret/keyring | `~/.local/share/backup-client/backup-client.cache` |
 
----
+## API authorization
 
-## Token Caching
+Production controllers require authentication globally. After JWT validation:
 
-MSAL caches tokens per platform:
+- delegated tokens must include `backup.client` or `backup.admin`;
+- app-only tokens must include `backup.gateway`;
+- device registration records the authenticated tenant/user identity;
+- device-scoped backup and restore operations authorize that identity against the device registration.
 
-| Platform | Storage |
-|----------|---------|
-| Windows | DPAPI (current-user encrypted) |
-| macOS | Keychain |
-| Linux | libsecret |
+The app-role fallback is intended for headless/internal Gateway calls. A user-facing request should use OBO so that `tid` and `oid` reach the API. An app-only token does not represent a user and cannot safely substitute for that identity on user-owned device operations.
 
-Cache location: `%LOCALAPPDATA%\backup-client\backup-client.cache` (Windows) or `~/.local/share/backup-client/backup-client.cache` (Linux/macOS) — the same folder used for the local state DB and, on Linux, the installed app itself.
+## Deployment requirements
 
-On subsequent runs MSAL silently refreshes from cache. Operational backup and restore runs never open a browser; if the refresh token has expired, been revoked, or otherwise requires user interaction, they fail immediately with a hint to run `backup-client login`. Only the explicit `configure` and `login` commands are allowed to fall back to interactive authentication.
+Set these GitHub repository values for the hosted flow:
 
----
+- variable `GATEWAY_AUTH_CLIENT_ID`
+- secret `GATEWAY_AUTH_CLIENT_SECRET`
+- variable `API_AUTH_CLIENT_ID`
+- variable `API_AUTH_AUDIENCE`
 
-## Security Properties
+If either Gateway auth value is empty, Bicep omits Easy Auth and OBO configuration. That can be useful in a deliberately isolated non-production environment, but it is not the secure hosted setup.
 
-- **No client secrets** — public client flow is appropriate for unmanaged desktop installs
-- **Gateway isolation** — the internal API is not publicly reachable; all access goes through the gateway
-- **User identity in every request** — OBO preserves `oid`/`tid` so the API always knows which user is acting
-- **Least-privilege by default** — all users get `backup.client`; `backup.admin` requires an explicit per-user grant
-- **Short-lived tokens** — access tokens expire after ~1 hour; refresh tokens are revocable by an admin
-- **Audience separation** — client tokens and API tokens have different audiences; a stolen client token cannot be replayed directly against the API
+The Gateway managed identity's `backup.gateway` assignment is a manual post-deployment step today; use `scripts/Grant-GatewayApiAppRole.ps1` if the fallback path is required.
 
----
+For the complete registration shapes and current IDs, see [App registrations](APP_REGISTRATIONS.md).
+
+## Security notes
+
+- Do not log bearer tokens, MSAL cache contents, Gateway client secrets, SAS URLs, or encryption recovery phrases.
+- Restrict user assignment on the Gateway enterprise application when the product is not tenant-wide.
+- Rotate the Gateway OBO client secret before expiry and update the GitHub secret.
+- Keep the API and worker ingress internal; only the Gateway should be public.
+- Add an explicit `backup.admin` authorization policy before exposing operational endpoints to users who should not administer the service.
 
 ## References
 
-- [JwtBearerAuthenticationHandler.cs](../src/common/security/Authentication/JwtBearerAuthenticationHandler.cs)
-- [Gateway Program.cs](../src/services/gateway/Program.cs) — OBO exchange implementation
-- [Microsoft identity platform — OBO flow](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-on-behalf-of-flow)
-- [MSAL.NET public client apps](https://learn.microsoft.com/en-us/entra/msal/dotnet/acquiring-tokens/desktop-mobile/acquiring-tokens-interactively)
-- [Container Apps Easy Auth](https://learn.microsoft.com/en-us/azure/container-apps/authentication)
+- [Microsoft identity platform OBO flow](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-on-behalf-of-flow)
+- [MSAL.NET desktop authentication](https://learn.microsoft.com/en-us/entra/msal/dotnet/acquiring-tokens/desktop-mobile/acquiring-tokens-interactively)
+- [Azure Container Apps authentication](https://learn.microsoft.com/en-us/azure/container-apps/authentication)
+- [Gateway implementation](../src/services/gateway/Program.cs)
+- [API JWT validation](../src/common/security/Authentication/JwtBearerAuthenticationHandler.cs)

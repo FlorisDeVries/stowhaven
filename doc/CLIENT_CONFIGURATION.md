@@ -1,167 +1,152 @@
-# Backup Client Configuration Guide
+# Stowhaven Client Configuration Guide
 
-Quick start guide and essential configuration for the Azure Backup Client.
+This guide covers first-time setup, backup targets, scheduling, resume behavior, and restore configuration for the .NET Stowhaven client.
 
----
+## Quick start
 
-## 📚 Documentation Index
+### Installed client
 
-- **This guide**: Quick start + essential configuration
-- **[.backupignore Reference](BACKUPIGNORE.md)**: File exclusion patterns and customization
-- **[Advanced Configuration](ADVANCED_CONFIGURATION.md)**: Performance tuning, resilience, and complex scenarios
-- **[Testing Guide](TESTING.md)**: How to test the backup client
-- **[Monitoring Guide](MONITORING.md)**: Observability and diagnostics
-
----
-
-## Quick Start
-
-### 1. Edit Configuration
-
-Edit `appsettings.json` in your backup client directory:
-
-**Windows:**
-```json
-{
-  "BackupClient": {
-    "BackupTargets": {
-      "my-files": "C:\\Users\\YourName"
-    }
-  }
-}
-```
-
-**Linux/macOS:**
-```json
-{
-  "BackupClient": {
-    "BackupTargets": {
-      "my-files": "/home/yourname"
-    }
-  }
-}
-```
-
-### 2. Run First Backup
+Run the interactive setup once from the published/installed client directory:
 
 ```bash
-cd src/services/client
-dotnet run
+backup-client configure
 ```
 
-### 3. Verify
+On Windows, where the executable may not be linked as `backup-client`:
 
-Check the logs for:
-- ✅ "Scanning directories: 1 targets"
-- ✅ "Backup completed successfully"
-- ⚠️ Any warnings about excluded files or system directories
-
-### 4. Check Azure Storage
-
-Verify files were uploaded:
-```
-Azure Blob Storage > backups container > staging/{deviceId}/{runId}/
-Azure Blob Storage > backups container > runs/{deviceId}/{runId}/run-manifest.json
+```powershell
+.\FlorisDeV.BackupClient.exe configure
 ```
 
-After the server-side commit worker finishes, committed files are moved under `devices/{deviceId}/files/` and the authoritative logical path mapping is stored in Cosmos DB through Dapr.
+The command:
 
-**That's it!** The backup client uses smart defaults that work for most users.
+1. Suggests common folders that exist on the machine.
+2. Validates the targets you select or enter.
+3. Writes machine-specific target overrides to `appsettings.local.json` beside the executable.
+4. Opens the browser for Entra ID sign-in when necessary.
+5. Registers the local device and verifies end-to-end API access.
 
----
+Normal backup and restore runs never open a browser. If silent authentication can no longer refresh a token, run `backup-client login` explicitly.
 
-## What Gets Backed Up?
+Useful setup variants:
 
-### ✅ Included (Default)
+```bash
+backup-client configure --skip-targets
+backup-client configure --skip-login --skip-access-check
+backup-client login
+```
 
-- Documents, Pictures, Downloads, Desktop
-- Source code and projects
-- Configuration files
-- Personal data
+### Source checkout
 
-### ❌ Excluded (Default)
+With the local Docker Compose stack running:
 
-The client automatically excludes:
-- **Build outputs**: `bin/`, `obj/`, `target/`, `dist/`
-- **Dependencies**: `node_modules/`, `venv/`, `__pycache__/`
-- **Caches**: `.cache/`, `.npm/`, `.gradle/`
-- **Logs**: `*.log`, `logs/`
-- **Temp files**: `*.tmp`, `.tmp/`
-- **Version control**: `.git/`, `.svn/`
-- **System files**: `Thumbs.db`, `.DS_Store`
+```bash
+dotnet run --project src/services/client -- configure --skip-login
+dotnet run --project src/services/client
+```
 
-📄 [See full list of exclusions](BACKUPIGNORE.md#default-exclusions)
+The Development configuration points at the loopback API and uses the development no-op credential, so Entra sign-in is skipped for local API calls.
 
----
+## Configuration files and precedence
 
-## Common Configurations
+The client resolves configuration relative to the executable directory, not the shell's current directory. Standard .NET configuration precedence applies, with `appsettings.local.json` loaded after the normal appsettings files.
 
-### Backup Multiple Folders
+| File | Purpose |
+| --- | --- |
+| `appsettings.json` | Shipped defaults, hosted Gateway URL, authentication identifiers, default ignore file, and baseline client options. |
+| `appsettings.{Environment}.json` | Environment-specific overrides. |
+| `appsettings.local.json` | Per-machine backup targets written by `configure`; intentionally excluded from publish output. |
+
+You can edit `appsettings.local.json` manually, but the `configure` command is preferred because it validates target paths and preserves them across client upgrades.
+
+Example machine-specific file:
 
 ```json
 {
   "BackupClient": {
     "BackupTargets": {
       "documents": "C:\\Users\\YourName\\Documents",
-      "projects": "D:\\Projects",
-      "photos": "E:\\Photos"
+      "projects": "D:\\Projects"
     }
   }
 }
 ```
 
-Each target is backed up separately and can have its own `.backupignore` file.
+Linux example:
 
----
-
-### Customize File Exclusions
-
-Create `.backupignore` in your backup target directory:
-
-```plaintext
-# Add your custom exclusions
-**/my-large-dataset/**
-**/videos/raw-footage/**
-*.iso
-*.vmdk
-```
-
-📖 [Complete .backupignore guide](BACKUPIGNORE.md)
-
----
-
-### Adjust Upload Speed
-
-**Fast internet (100+ Mbps):**
 ```json
 {
   "BackupClient": {
-    "MaxParallelUploads": 8
+    "BackupTargets": {
+      "home": "/home/yourname",
+      "photos": "/mnt/photos"
+    }
   }
 }
 ```
 
-**Slow internet (< 10 Mbps):**
-```json
-{
-  "BackupClient": {
-    "MaxParallelUploads": 2
-  }
-}
+## What gets backed up
+
+Only directories listed in `BackupClient:BackupTargets` are scanned. The shipped target list is empty; common folders are suggestions offered by `configure`, not automatic inclusions.
+
+Each target name becomes the first segment of its logical path. For example, target `documents` and relative file `tax/2025.pdf` become `documents/tax/2025.pdf`. Target names cannot contain `/` or `\`.
+
+The shipped `.backupignore` excludes common build outputs, dependencies, caches, logs, temporary files, version-control metadata, and operating-system files. Review those defaults before using the client for server or disaster-recovery data. See the [.backupignore reference](BACKUPIGNORE.md).
+
+## Ignore-file selection
+
+`BackupClient:IgnoreFilePath` selects the global ignore file. The shipped default is `.backupignore`, resolved beside the executable.
+
+For each target:
+
+1. If `{target-root}/.backupignore` exists, that file is used for the target.
+2. Otherwise, the configured global ignore file is used.
+
+The target file replaces the global patterns; the two files are not merged. Nested `.backupignore` files are not discovered.
+
+## Running a backup
+
+Run the executable without a command:
+
+```bash
+backup-client
 ```
 
-🔧 [Performance tuning guide](ADVANCED_CONFIGURATION.md#performance-tuning)
+The client registers its device if needed, scans all targets, uploads changed/new files directly to Blob Storage, submits deletions in `run-manifest.json`, commits the run, and polls the asynchronous worker.
 
----
+Committed blobs live under `devices/{deviceId}/files/`. Staged blobs under `staging/{deviceId}/{runId}/` and the temporary run manifest may be removed after a successful commit, so they should not be used as the final verification location.
 
-### Run in Production
+## Scheduling
 
-The client can be run in two production-friendly modes:
+### Linux
 
-1. **Windows Task Scheduler**: keep `BackupClient:Schedule:Enabled` set to `false` and create a daily task that runs the client executable once.
-2. **Windows Service**: set `BackupClient:Schedule:Enabled` to `true`. The executable uses Windows service hosting when installed as a service and runs backups on the configured interval.
+The bundled `install.sh` creates and enables a systemd user timer. By default it runs daily; override the time while installing:
 
-Example daily service schedule:
+```bash
+BACKUP_CLIENT_SCHEDULE_TIME=03:30:00 ./install.sh
+```
+
+The installer keeps everything user-owned under `~/.local/share/backup-client`, links the executable through `~/.local/bin`, and preserves `appsettings.local.json` during upgrades. It also explains how to enable the timer manually when a systemd user session is unavailable.
+
+Because the Linux MSAL cache uses libsecret and a D-Bus session, prefer the systemd user timer over cron. Enabling linger lets the user timer run while logged out:
+
+```bash
+loginctl enable-linger "$USER"
+```
+
+### Windows Task Scheduler
+
+Leave `BackupClient:Schedule:Enabled` as `false` and schedule the executable as a one-shot task:
+
+```powershell
+schtasks /Create /TN "BackupClient Daily" /TR "C:\Tools\BackupClient\FlorisDeV.BackupClient.exe" /SC DAILY /ST 02:00 /RU "%USERNAME%" /RL LIMITED
+```
+
+Use the same Windows account that ran `configure`, because the token cache is protected for that user.
+
+### Long-running Windows service mode
+
+The executable also supports Windows service hosting:
 
 ```json
 {
@@ -175,26 +160,23 @@ Example daily service schedule:
 }
 ```
 
-The one-shot CLI mode remains the default because it works well with Windows Task Scheduler and avoids a long-running process.
+When scheduling externally, keep `Schedule:Enabled` set to `false` so one invocation performs one backup and exits.
 
----
+## Interrupted-run resume
 
-### Interrupted Upload and Commit Resume
+The client stores a pending-run journal in its local SQLite database.
 
-The client stores a local pending-run journal in the SQLite state database. If the process stops after a run starts, the next invocation resumes the same run while its SAS URLs are still usable:
+- Files already staged with the same logical path, hash, and size are reused.
+- SAS URLs are refreshed for an existing run when they may expire before the next batch completes.
+- Manifest upload and `commit-run` are idempotent.
+- A client-side commit polling timeout leaves the durable server-side commit in progress and preserves the journal for the next invocation.
+- Local successful-backup state is updated only after the server reports `Succeeded` or `CompletedWithErrors`.
 
-- already uploaded blobs are reused instead of uploaded again;
-- `run-manifest.json` upload is idempotent;
-- `commit-run` can be replayed and the client resumes polling commit status;
-- local file state is updated only after the server-side commit succeeds.
+If an old run can no longer be resumed safely, its uncommitted blobs remain isolated under its run ID and are eligible for scheduled staging cleanup.
 
-If the pending run's SAS URLs expire before the next invocation, the journal is cleared and a new run starts. Any old staged blobs become harmless server-side cleanup candidates.
+## Locked files
 
----
-
-### Locked Files and VSS Policy
-
-The client does not create VSS/shadow-copy snapshots yet. The default policy is explicit and safe: locked or inaccessible files are skipped and logged.
+The client does not take VSS/shadow-copy snapshots.
 
 ```json
 {
@@ -204,7 +186,7 @@ The client does not create VSS/shadow-copy snapshots yet. The default policy is 
 }
 ```
 
-For applications that allow shared reads while writing, you can opt into best-effort reads:
+`SkipLocked` is the default. It opens files with read sharing and skips files that cannot be read consistently.
 
 ```json
 {
@@ -214,309 +196,92 @@ For applications that allow shared reads while writing, you can opt into best-ef
 }
 ```
 
-Use `ReadThroughSharedWrites` only when application-level consistency is acceptable; it is not equivalent to VSS.
+`ReadThroughSharedWrites` permits read/write/delete sharing. It can capture a file while another application modifies it and is not equivalent to a snapshot.
 
----
+## Restore
 
-### Encrypted Restore
+Configure a destination and optional source device/logical paths:
 
-When `BackupClient:Encryption:Mode` is `ClientAndServer`, restore mode downloads ciphertext, verifies the uploaded hash, unwraps the file key with the local recovery phrase file, verifies the HMAC, decrypts locally, and verifies the plaintext SHA-256 before writing the destination file.
+```json
+{
+  "BackupClient": {
+    "Restore": {
+      "DeviceId": null,
+      "DestinationPath": "C:\\Restore",
+      "LogicalPaths": [],
+      "ListPageSize": 500,
+      "OverwriteExisting": false
+    }
+  }
+}
+```
+
+Then run:
 
 ```bash
-dotnet run --project src/services/client -- restore
+backup-client restore
 ```
 
-Configure `BackupClient:Restore:DestinationPath` before running restore mode. Encrypted backups cannot be restored if the recovery phrase file and written-down phrase are both lost.
+- A null `DeviceId` uses the local device ID.
+- An empty `LogicalPaths` array restores all active files returned by the API.
+- Existing destination files are rejected unless `OverwriteExisting` is `true`.
+- `ClientAndServer` backups require the local recovery phrase file. The client verifies ciphertext, HMAC, and plaintext integrity before writing the restored file.
+- Archive-tier blobs must be rehydrated to an online tier before restore; the client does not automate rehydration.
 
----
-
-## Configuration Reference
-
-### Essential Properties
+## Essential configuration
 
 | Property | Default | Description |
-|----------|---------|-------------|
-| `BackupTargets` | **(Required)** | Directories to backup. Key = name, Value = path |
-| `MaxParallelUploads` | `4` | Number of concurrent file uploads (1-20) |
-| `IgnoreFilePath` | `null` | Path to global `.backupignore` file |
-| `LockedFilePolicy` | `SkipLocked` | Locked-file behavior: `SkipLocked` or `ReadThroughSharedWrites` |
-| `Schedule:Enabled` | `false` | Enables long-running scheduled service mode |
-| `Schedule:IntervalMinutes` | `1440` | Interval between scheduled service backups |
+| --- | --- | --- |
+| `BackupTargets` | empty | Named directories to scan; at least one is required for a backup run. |
+| `IgnoreFilePath` | `.backupignore` in shipped config | Global ignore file, resolved relative to the executable when the path is relative. |
+| `MaxParallelUploads` | `4` | Maximum concurrent uploads. |
+| `StagingAccessTier` | `Hot` | Explicit tier for new staging blobs: `Hot`, `Cool`, or `Cold`. |
+| `LargeFileThresholdBytes` | `10485760` | Size at which progress logging is enabled. |
+| `BlobUploadTimeoutSeconds` | `600` | Timeout for one upload attempt. |
+| `MaxFailurePercentage` | `5` | Maximum tolerated percentage of client upload failures. |
+| `CommitStatusPollIntervalSeconds` | `2` | Delay between commit-status requests. |
+| `CommitStatusTimeoutSeconds` | `600` | Time to poll before deferring completion to a later run. |
+| `LockedFilePolicy` | `SkipLocked` | Locked-file read behavior. |
+| `Schedule:Enabled` | `false` | Enables the client's long-running scheduler. |
+| `Encryption:Mode` | `ServerSideOnly` | Selects server-only or additional client-side encryption. |
 
-### Complete Example
+See [Advanced Configuration](ADVANCED_CONFIGURATION.md) for the complete reference.
 
-```json
-{
-  "BackupClient": {
-    "BackupTargets": {
-      "user-profile": "C:\\Users\\YourName",
-      "projects": "D:\\Projects"
-    },
-    "MaxParallelUploads": 4,
-    "IgnoreFilePath": null
-  }
-}
-```
+## Local files
 
-📋 [All configuration options](ADVANCED_CONFIGURATION.md#configuration-reference)
+Unless explicitly overridden, client state is stored below the platform's local application-data directory:
 
----
+| Data | Windows | Linux |
+| --- | --- | --- |
+| SQLite state | `%LOCALAPPDATA%\backup-client\backup-state.db` | `~/.local/share/backup-client/backup-state.db` |
+| MSAL token cache | `%LOCALAPPDATA%\backup-client\backup-client.cache` | `~/.local/share/backup-client/backup-client.cache` |
+| Recovery phrase | `%LOCALAPPDATA%\backup-client\recovery-phrase.json` | `~/.local/share/backup-client/recovery-phrase.json` |
+| Logs | `%LOCALAPPDATA%\backup-client\logs\` | `~/.local/share/backup-client/logs/` |
 
-## Recommendations
-
-### ✅ DO Backup
-
-**User directories:**
-- Windows: `C:\Users\YourName`
-- Linux: `/home/yourusername`
-- macOS: `/Users/yourusername`
-
-**Why?** Contains your documents, projects, and personal files.
-
-### ⚠️ DON'T Backup
-
-**System directories:**
-- `C:\Windows`, `/usr`, `/bin`
-- `C:\Program Files`
-- Entire drives (`C:\`, `/`)
-
-**Why?** 
-- 100-500GB of OS files better reinstalled
-- Locked files that can't be read
-- Non-portable data
-
----
-
-## Common Scenarios
-
-### Home Directory Backup
-
-Most common and recommended:
-
-```json
-{
-  "BackupClient": {
-    "BackupTargets": {
-      "home": "C:\\Users\\YourName"
-    }
-  }
-}
-```
-
-**Result**: Backs up your entire user profile with smart exclusions.
-
----
-
-### Project Folder Backup
-
-For developers backing up specific projects:
-
-```json
-{
-  "BackupClient": {
-    "BackupTargets": {
-      "projects": "D:\\MyProjects"
-    }
-  }
-}
-```
-
-Add `D:\MyProjects\.backupignore`:
-```plaintext
-**/node_modules/**
-**/venv/**
-**/bin/**
-**/obj/**
-**/target/**
-```
-
----
-
-### Server Backup
-
-**⚠️ Important**: Server backups need different exclusions!
-
-```json
-{
-  "BackupClient": {
-    "BackupTargets": {
-      "app-data": "/var/www/myapp"
-    }
-  }
-}
-```
-
-Create `/var/www/myapp/.backupignore`:
-```plaintext
-# Keep logs for servers!
-# **/*.log        # Comment this out
-
-# Keep application binaries
-# **/bin/**       # Comment this out
-
-# Still exclude temp/cache
-**/*.tmp
-**/cache/**
-```
-
-📖 [Server backup guide](BACKUPIGNORE.md#customization-by-use-case)
-
----
+Custom `Database:FilePath` and `Encryption:RecoveryPhraseFilePath` values override the corresponding defaults.
 
 ## Troubleshooting
 
+### No backup targets configured
+
+Run `backup-client configure` or add at least one entry to `BackupClient:BackupTargets` in `appsettings.local.json`.
+
+### Authentication requires interaction
+
+Operational runs are intentionally silent-only. Run `backup-client login` interactively, then retry the scheduled backup.
+
+### Files are missing
+
+Check the target-root `.backupignore` first. If it does not exist, check the global file beside the executable. Also review warnings for inaccessible, locked, deleted-during-scan, or broken-symlink files.
+
+### Database is locked
+
+Do not run multiple client instances against the same SQLite database. Ensure an external scheduler cannot overlap runs.
+
 ### Backup is slow
 
-**Check**:
-1. Network speed: `MaxParallelUploads` too high?
-2. Too many files: Review `.backupignore` patterns
-3. File size: Large files take longer
+Review ignore rules before increasing concurrency. For many small files, a higher `MaxParallelUploads` may help; for slow links or large files, lower concurrency and a longer `BlobUploadTimeoutSeconds` are usually safer.
 
-**Solution**:
-```json
-{
-  "BackupClient": {
-    "MaxParallelUploads": 2  // Reduce for slow networks
-  }
-}
-```
+### Restore cannot read an archived blob
 
----
-
-### Files not being backed up
-
-**Causes**:
-1. Excluded by `.backupignore`
-2. Permission denied
-3. File locked by another program
-
-**Check**:
-```bash
-# Look for exclusion patterns in default ignore file
-cat src/services/client/.backupignore
-
-# Look for access denied errors in logs
-grep "access denied" backup.log
-```
-
----
-
-### "Backup validation warning" in logs
-
-```
-[Warning] Backing up entire system drive (C:\) is not recommended
-```
-
-**This is a warning, not an error.** Backup will still proceed.
-
-**Options**:
-1. Change target to user directory: `C:\Users\YourName`
-2. Add comprehensive exclusions to `.backupignore`
-3. Accept warning if you understand implications
-
----
-
-### Database lock errors
-
-```
-[Error] Database is locked
-```
-
-**Cause**: Multiple backup instances running simultaneously
-
-**Solution**: Ensure only one backup client runs at a time
-
----
-
-## Validation Checks
-
-The client validates configuration before starting:
-
-### ❌ Error: Directory doesn't exist
-
-```
-Backup target directory does not exist: D:\NonExistent
-```
-
-**Fix**: Create directory or correct path
-
-### ❌ Error: Insufficient permissions
-
-```
-Insufficient permissions to read: C:\Windows\System32
-```
-
-**Fix**: Choose directory you have read access to
-
-### ⚠️ Warning: System drive
-
-```
-Backing up entire system drive is not recommended
-```
-
-**Fix**: Change to user directory or add exclusions
-
----
-
-## Best Practices
-
-### ✅ Do
-
-- **Backup user directories** first
-- **Test restore** periodically
-- **Review exclusions** after first backup
-- **Monitor first backup** carefully
-- **Use `.backupignore`** for project-specific exclusions
-
-### ❌ Don't
-
-- Backup system drives without careful planning
-- Include easily re-downloadable files (Steam games, etc.)
-- Backup without testing restore
-- Run multiple instances simultaneously
-
----
-
-## Next Steps
-
-### For Most Users
-
-The defaults work great! Just:
-1. Configure `BackupTargets` with your user directory
-2. Run the backup
-3. Verify files in Azure Storage
-
-### For Advanced Users
-
-- **Customize exclusions**: [.backupignore guide](BACKUPIGNORE.md)
-- **Tune performance**: [Performance guide](ADVANCED_CONFIGURATION.md#performance-tuning)
-- **Configure resilience**: [Error handling guide](ADVANCED_CONFIGURATION.md#resilience--error-handling)
-- **Set up monitoring**: [Monitoring guide](MONITORING.md)
-
----
-
-## Getting Help
-
-**Documentation**:
-- [.backupignore Reference](BACKUPIGNORE.md)
-- [Advanced Configuration](ADVANCED_CONFIGURATION.md)
-- [Technical Design](TECHNICAL_DESIGN.md)
-
-**Logs**: Check the console output and log files for detailed error messages
-
-**Issues**: Look for patterns in the logs:
-- `[Error]` - Failures that stopped backup
-- `[Warning]` - Issues that didn't stop backup
-- `[Info]` - Normal operation details
-
-**Common patterns**:
-```bash
-# Find errors
-grep "\[Error\]" backup.log
-
-# Find excluded files
-grep "excluded" backup.log
-
-# Check upload stats
-grep "Backup completed" backup.log
-```
+Rehydrate the blob to Hot or Cool in Azure Storage and retry after rehydration completes.

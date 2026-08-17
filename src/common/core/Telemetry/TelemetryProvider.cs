@@ -5,7 +5,7 @@ using System.Reflection;
 namespace FlorisDeV.BackupApi.Telemetry;
 
 /// <summary>
-/// Provides OpenTelemetry tracing and metrics instrumentation for the Backup API.
+/// Provides OpenTelemetry tracing and metrics instrumentation for Stowhaven services.
 /// </summary>
 public class TelemetryProvider : IDisposable
 {

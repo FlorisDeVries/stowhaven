@@ -1,923 +1,241 @@
-## 1) Goals & Non-Goals
+# Stowhaven Technical Design
 
-**Goals**
+This document describes the architecture implemented in this repository. It is intended to explain the current system, not a future design.
 
-* Ultra-low cost cloud backup (~€2/TB/month when data is rarely read) by pushing bulk data straight to Azure Blob with minimal control-plane calls.
-* Zero exposure of account keys; clients get **time-boxed, least-privilege** write access only via SAS URLs.
-* **Incremental multi-file sync** (upload only new/changed files).
-* Leverage existing .NET Azure Container Apps infrastructure with Bicep IaC and GitHub Actions CI/CD.
-* Centralize **backup manifest/state in a cloud state store** (Azure Cosmos DB for NoSQL via Dapr) for consistency, restore, and observability.
+## Naming and compatibility
 
-**Non-Goals**
+**Stowhaven** is the product and repository brand. Several older implementation identifiers deliberately remain unchanged because they are configuration contracts or deployment identities: the `FlorisDeV.Backup*` solution, assemblies, and namespaces; the `BackupApiClient` configuration section; the Dapr app ID and image suffix `backup-api`; and the `backup-client` executable link, data directory, and systemd unit names. Existing Azure resource names and Entra application IDs also remain valid.
 
-* Full enterprise backup feature set (PST/VHD consistent snapshots via VSS, cross-platform Linux/macOS, etc.).
-* Rich restore UX; a minimal "download latest" flow is sufficient for v1.
-* Complex orchestration; keep the API surface minimal and hide storage/state complexity behind Dapr building blocks.
+Changing those identifiers is a separate migration, not a branding change. Keeping them stable avoids breaking upgrades, orphaning client state or token caches, and disconnecting existing cloud resources.
 
-**Assumptions**
+## 1. Goals and boundaries
 
-* All clients are Windows.
-* Azure Subscription available with: Azure Container Apps, Azure Blob Storage (GPv2 with HNS ON), Microsoft Entra ID, and Azure Cosmos DB for NoSQL.
-* Encryption mode is explicit: `ServerSideOnly` uploads plaintext bytes and relies on Azure Storage encryption at rest; `ClientAndServer` adds zero-knowledge client-side encryption before upload.
-* Existing Bicep infrastructure can be extended for backup-specific resources.
-* Dapr sidecars are enabled for all Container Apps to abstract state and messaging.
+### Goals
 
----
+- Keep bulk backup traffic off the application services by uploading and restoring directly through Azure Blob Storage SAS URLs.
+- Avoid storage account keys on client machines.
+- Upload only new or changed files and report deletions through a run manifest.
+- Keep backup commits asynchronous, retryable, and observable.
+- Support optional client-side encryption whose recovery material never leaves the client.
+- Keep the Azure deployment inexpensive at personal or small-team scale through scale-to-zero Container Apps and storage lifecycle policies.
 
-## 2) Architecture Overview
+### Current boundaries
+
+- The client does not create VSS or other filesystem snapshots. Locked files are skipped by default; best-effort shared reads are optional.
+- There is no graphical restore interface. Restore is a client command driven by configuration.
+- The bundled installation paths target Windows and Linux. The client code uses cross-platform .NET APIs, but macOS does not have a bundled installer in this repository.
+- The system keeps the latest active version per logical path. Retired blobs are retained temporarily for lifecycle cleanup, not exposed as a rich snapshot-history feature.
+
+## 2. Runtime topology
 
 ```mermaid
-flowchart TD
-    Client[Windows Client]
-    EntraID[Entra ID]
+flowchart LR
+    Client[Stowhaven Client]
+    Entra[Microsoft Entra ID]
+    Gateway[Public Stowhaven Gateway\nEasy Auth + OBO]
+    API[Internal Stowhaven API\nACA + Dapr]
+    Queue[Azure Storage Queue\nbackup-events]
+    Worker[Internal Stowhaven Worker\nACA + Dapr]
+    Blob[Azure Blob Storage\nHNS-enabled]
+    Cosmos[Azure Cosmos DB for NoSQL]
 
-    API[Backup API\nACA + Dapr]
-    State[State Store\nAzure Cosmos DB]
-    Queue[Commit Queue\nPubSub]
-    Worker[Commit Worker\nACA]
-
-    Blob[Azure Blob Storage\nADLS Gen2]
-
-    %% Auth
-    Client -->|1 Auth via MSAL| EntraID
-    EntraID -->|2 JWT Token| Client
-
-    %% Start-Run
-    Client -->|3 Start Run| API
-    API -->|4 State ops via Dapr| State
-
-    %% Upload Path
-    API -->|5 Dir SAS for staging| Client
-    Client -->|6 File uploads to staging| Blob
-    Client -->|7 Upload run-manifest.json| Blob
-
-    %% Commit
-    Client -->|8 Commit-Run| API
-    API -->|9 Publish commit job| Queue
-
-    %% Worker
-    Worker -->|10 Load manifest.json| Blob
-    Worker -->|11 Verify and move blobs| Blob
-    Worker -->|12 Update manifest state| State
-
-    style Client fill:#1a365d,color:#fff
-    style EntraID fill:#553c9a,color:#fff
-    style API fill:#1a5f3f,color:#fff
-    style Worker fill:#22543d,color:#fff
-    style Blob fill:#c53030,color:#fff
-    style State fill:#744210,color:#fff
-    style Queue fill:#2d3748,color:#fff
-
+    Client -->|interactive login/configure| Entra
+    Client -->|gateway-scoped JWT| Gateway
+    Gateway -->|OBO API-scoped JWT| API
+    API -->|short-lived upload/read SAS| Client
+    Client -->|file, manifest, and restore traffic| Blob
+    API -->|Dapr output binding| Queue
+    Queue -->|Dapr input binding| Worker
+    API -->|Cosmos SDK| Cosmos
+    Worker -->|Cosmos SDK| Cosmos
+    Worker -->|validate and rename blobs| Blob
 ```
 
-Key ideas:
+Production exposes only the Gateway publicly. API and worker ingress are internal to the Container Apps environment. In local Docker Compose, all three services also have loopback-only host ports for debugging.
 
-* The **Windows client** authenticates to the Backup API (Azure Container App) via Entra ID (MSAL).
-* The Backup API uses its **Managed Identity** + **Storage Blob Delegator** role to mint **User Delegation SAS** (UD-SAS) for a **staging directory** per backup run.
-* The client uploads **directly to Blob** using a short-lived directory-scoped SAS (write/create only), minimizing Container App traffic and costs.
-* The API and commit worker use **Dapr state stores** (backed by Azure Cosmos DB for NoSQL) as the **authoritative manifest/device state**.
-* A background **commit worker** runs as a separate scale-to-zero Container App from a dedicated worker project/image. The API project exposes public backup/device endpoints; the worker project exposes only the Dapr commit-event endpoint. The worker processes commit jobs asynchronously: verifies staged blobs, moves them to `files/`, retires old versions, and updates manifest state.
+### Responsibilities
 
----
+| Component | Responsibility |
+| --- | --- |
+| Stowhaven Client | Scan targets, apply ignore rules, calculate deltas, optionally encrypt, upload blobs and manifests, poll commits, and restore files. |
+| Stowhaven Gateway | Validate the client-facing token through Container Apps Easy Auth, exchange it through the OAuth on-behalf-of flow, and proxy API/Swagger traffic. |
+| Stowhaven API | Authorize device ownership, manage runs and commit jobs, issue SAS URLs, dispatch queue messages, expose restore metadata, and provide operational endpoints. |
+| Stowhaven Worker | Claim commit jobs, stream manifests, validate staged blobs, update the file catalog, retire replaced files, and publish final status. |
+| Blob Storage | Store staged uploads, temporary run manifests, active file versions, and retired versions. |
+| Cosmos DB / SQLite | Store device registrations, runs, commit jobs, per-file progress, manifests, and the active file catalog. |
 
-## 3) Storage Layout & Naming
+## 3. Public request path and authentication
 
-Single storage account + container (example: `backups`) with the following layout:
+The production client requests the Gateway's delegated `backup.access` scope. The Gateway validates that token with Easy Auth and exchanges it for the API's `backup.client` scope while preserving the user's tenant and object identifiers. The API accepts delegated `backup.client`/`backup.admin` tokens and the `backup.gateway` application role.
+
+The two delegated scopes currently pass the same global token gate. No endpoint-level policy restricts `/api/ops/*` to `backup.admin`, so that scope is reserved rather than an enforced administrative boundary in the current implementation.
+
+The API binds every registered device to the authenticated `(tenantId, userId)` pair. Device-scoped backup and restore operations authorize that ownership before reading state or issuing storage access.
+
+Local development uses `ASPNETCORE_ENVIRONMENT=Development` and the explicit `ALLOW_DEVELOPMENT_ANONYMOUS_AUTHENTICATION=true` Compose setting. The client skips MSAL only when it is running in Development and the configured API URL is local.
+
+See [Authentication](AUTHENTICATION.md) and [App registrations](APP_REGISTRATIONS.md) for setup details.
+
+## 4. Storage layout
+
+Production uses one HNS-enabled StorageV2 account and the `backups` container:
 
 ```text
-/backups/
-  devices/{deviceId}/
-    files/{uniqueFileId}           # immutable active file versions; ciphertext when recovery-phrase encryption is enabled
-    retired/{uniqueFileId}         # retired versions pending lifecycle cleanup
+backups/
+  staging/{deviceId:N}/{runId:N}/
+    {uniqueFileId}
 
-  staging/{deviceId}/{runId}/
-    {uniqueFileId}                 # temporary upload locations
+  runs/{deviceId:N}/{runId:N}/
+    run-manifest.json
 
-  runs/{deviceId}/{runId}/
-    run-manifest.json              # list of new/changed/deleted files for this run
+  devices/{deviceId:N}/
+    files/{uniqueFileId}
+    retired/{uniqueFileId}
 ```
 
-**IDs**
-
-* `deviceId`: deterministic (e.g., stable GUID per PC).
-* `runId`: unique per backup run (`yyyyMMddTHHmmssZ` + random or GUID).
-* `targetName`: client-configured logical namespace for a backup target (e.g. `documents`, `photos`, `drive-d`). It is never used as the staged blob name.
-* `relativePath`: path relative to the configured backup target.
-* `logicalPath`: `{targetName}/{relativePath}`; this is the logical identity stored in manifest/state.
-* `uniqueFileId`: SHA-256 hash + timestamp + random suffix; e.g.
-  `abc123def...789_2025-09-16T14-30-15Z_k8p3m`.
+- `deviceId` and `runId` are GUIDs. Blob paths use their 32-digit `N` representation.
+- `logicalPath` is `{targetName}/{relativePath}` and is the stable identity used by the client and file catalog.
+- `uniqueFileId` is `{plaintextSha256}_{UTC timestamp}_{random suffix}`. It is an opaque physical blob name and does not expose a local path.
+- Uploaded blob metadata includes the hash and size of the exact uploaded bytes. In client-encrypted mode those values describe ciphertext.
 
-### Purpose of `/runs/`:
+The worker attempts to persist the submitted run manifest as state for operational inspection. Once that succeeds, its temporary blob is removed. If a very large manifest cannot be persisted as one Cosmos document, the blob copy is retained so operations can still inspect it.
 
-* Allows arbitrarily large lists of file changes
-* Avoids oversized HTTP payloads
-* Enables streaming & partial commit processing
-* Persistent record for debugging & audit
+## 5. State model
 
-**File Versioning**
+Application state is accessed through `IStateDocumentStore`, not through Dapr state-store APIs.
 
-* Each file version gets a **unique blob name** under `/devices/{deviceId}/files/{uniqueFileId}`.
-* In recovery-phrase encryption mode, each blob contains encrypted bytes. The server stores encryption metadata but never receives the recovery phrase or plaintext file key.
-* Backup target names are logical metadata only. Physical blob names use `uniqueFileId`; they do not include customer/local file paths.
-* The **authoritative mapping** from `logicalPath` → `uniqueFileId` lives in the **state store** (Azure Cosmos DB for NoSQL via Dapr), not in a blob `manifest.json`.
-* Updated files get new `uniqueFileId`; previous versions are marked `Retired` and their blobs moved to `/devices/{deviceId}/retired/{uniqueFileId}`.
-* v1 keeps only the latest active version per path; older ones are retained only as retired blobs for retention (no rich snapshot history).
+- Development defaults to a shared SQLite database used by the separate API and worker processes.
+- Production uses `CosmosStateDocumentStore` with `DefaultAzureCredential`.
+- The Bicep deployment references an existing Cosmos DB account and creates the shared-throughput `backup-state` database plus `manifest-state` and `device-registry` containers.
+- Optimistic concurrency uses ETags in both providers.
+- Cosmos continuation tokens are returned unchanged; SQLite uses opaque base64-encoded offsets.
 
-**Tiering**
+The main logical document types are:
 
-* Uploads may start in the storage account default **Cool** tier; lifecycle management promotes committed files under `devices/` to **Cold** as soon as the policy runs.
-* After 30 days, lifecycle policies promote committed files to **Archive** for long-term storage (180-day minimum).
-* Tiering and deletion are driven by **Blob lifecycle management** based on prefixes and/or tags (e.g., `state=retired`).
+- `DeviceRegistration`: ownership, display name, status, and timestamps.
+- `BackupRun`: run identity, lifecycle status, completion time, and backed-up file count.
+- `CommitJob`: queue/processing state, progress counts, retry metadata, and terminal error details.
+- `CommitFileProgress`: deterministic per-file progress through `Pending`, `Moved`, `StateUpdated`, `Succeeded`, or `Failed`.
+- `FileEntry`: latest logical-path-to-version mapping.
+- `FileVersion`: immutable metadata for an active or retired physical version.
+- `RunManifest`: the submitted list of changed files and deleted logical paths when it can be persisted within provider limits.
 
----
+Run and commit states are `Queued`, `Processing`, `Succeeded`, `CompletedWithErrors`, or `Failed`.
 
-## 4) Data Flows (Sequence)
+## 6. Messaging and Dapr
 
-### 4.1 Single backup run with directory-scoped SAS and async commit
+Dapr is used for infrastructure integrations that remain outside the state repository:
 
-```mermaid
-sequenceDiagram
-    autonumber
-    actor C as Windows Client
-    participant E as Entra ID
-    participant A as Backup API
-    participant S as State Store
-    participant Q as Commit Queue
-    participant W as Commit Worker
-    participant B as Azure Blob
+- `backup-events-output`: Azure Storage Queue output binding scoped to the API.
+- `backup-events-input`: Azure Storage Queue input binding scoped to the worker and routed to `POST /api/backupevents/backup-run-committed`.
+- `cleanup-staging-cron`: scheduled input binding scoped to the API.
+- `secret-store`: local environment secret store in development and Azure Key Vault in production.
 
-    C->>C: Local delta scan
-    C->>E: Acquire JWT (MSAL)
-    E-->>C: JWT
+The API calls `DaprClient.InvokeBindingAsync(..., "create", event)` to enqueue a commit. The worker processes the queue delivery synchronously so Dapr acknowledges it only after the handler succeeds.
 
-    Note over C,A: Self-service device registration
+The worker Container App also has an Azure Queue KEDA scale rule with `minReplicas=0`. The Dapr bindings use managed identity in production; the KEDA scaler uses a connection string stored as a Container App secret because that scaler configuration requires one.
 
-    C->>A: POST /api/devices (deviceId, displayName)
-    A->>S: Create/read DeviceRegistration(owner=tid/oid)
-    A-->>C: DeviceRegistration
+## 7. Backup flow
 
-    Note over C,A: Start backup run
+1. The explicit `configure` or `login` command performs interactive MSAL authentication when needed. Normal backup and restore runs use the token cache silently.
+2. The client obtains or generates a local device ID and registers it with `POST /api/devices`.
+3. The client scans all configured targets. A target-root `.backupignore` replaces the configured global ignore file for that target.
+4. The local SQLite catalog uses size and modification time to shortlist changes and computes SHA-256 when content needs analysis.
+5. On the first batch that needs upload, the client calls `POST /api/devices/{deviceId}/backup/start-run`.
+6. The API creates run state and returns separate 60-minute directory-scoped User Delegation SAS grants for the staging and manifest paths. Local Azurite uses broader container SAS grants because it does not support HNS directory SAS.
+7. The client optionally encrypts each changed file, uploads it under its `uniqueFileId`, and records it in a durable pending-run journal.
+8. The client refreshes the run's SAS URLs when they may expire before a batch can finish by calling `POST /api/devices/{deviceId}/backup/runs/{runId}/refresh-sas`.
+9. The client streams `run-manifest.json` to the run path. The manifest contains changed files and logical paths that disappeared since the previous successful run.
+10. The client calls `POST /api/devices/{deviceId}/backup/commit-run`. The API creates or reuses a deterministic commit job, invokes the queue output binding, and returns `202 Accepted`.
+11. The worker atomically claims the queued job, streams the manifest, validates each staged blob's length and hash metadata, renames valid blobs into `devices/.../files/`, and retires replaced/deleted versions.
+12. The client polls the commit-status endpoint. It updates local file state only after a successful or `CompletedWithErrors` server-side commit.
 
-    C->>A: POST /api/devices/{deviceId}/backup/start-run
-    A->>S: Authorize device owner
-    A->>S: Store BackupRun(started)
-    A->>B: Get User Delegation Key
-    A-->>C: Directory SAS for staging/deviceId/runId/
+If polling times out while a durable commit remains queued or processing, the client keeps the pending-run journal. A later invocation resumes status polling instead of starting over. Already staged files in an unfinished run are reused when their path, hash, and size still match.
 
-    loop foreach changed/new file
-      C->>C: Compute sha256, generate uniqueFileId
-      C->>C: Optional recovery-phrase encryption
-      C->>B: Upload blob to staging/deviceId/runId/uniqueFileId
-    end
+## 8. Client-side encryption
 
-    C->>B: Upload run-manifest.json to runs/deviceId/runId/
+`BackupClient:Encryption:Mode` supports:
 
-    C->>A: POST /api/devices/{deviceId}/backup/commit-run\n(runId only)
-    A->>S: Authorize device owner
-    A->>A: Derive manifest path from deviceId/runId
-    A->>S: Save CommitJob(status=Queued)
-    A->>Q: Publish commit message
-    A-->>C: 202 Accepted
+| Mode | Uploaded bytes | Recovery material |
+| --- | --- | --- |
+| `ServerSideOnly` | Original bytes; Azure Storage still encrypts at rest. | None beyond normal account access. |
+| `ClientAndServer` | Client-generated ciphertext. | Recovery phrase file stored only on the client. |
 
-    Note over W: Commit worker asynchronously
+In `ClientAndServer` mode:
 
-    W->>Q: Consume commit message
-    W->>B: Download or stream run-manifest.json
-    W->>S: Load existing file mappings
-    W->>B: Validate & HEAD staging blobs
-    W->>B: Move old versions to retired/
-    W->>B: Move new versions to files/
-    W->>S: Update manifest state
-    W->>S: Mark CommitJob Succeeded
+- PBKDF2-SHA256 derives a wrapping key from the normalized recovery phrase. The default is 600,000 iterations.
+- Each file gets a random encryption key.
+- File content uses AES-256-CBC with HMAC-SHA256 over IV and ciphertext.
+- The file key is wrapped with AES-256-GCM.
+- The manifest contains ciphertext integrity fields and the metadata needed for client-side decryption, including the plaintext SHA-256 and size.
 
-    C->>A: GET /api/devices/{deviceId}/backup/commit-status/{commitId}
-    A->>S: Authorize device owner
-    A->>S: Query commit status
-    A-->>C: Status {Queued|Processing|Succeeded|Failed}
-```
+The phrase and unwrapped keys never go to the Gateway, API, worker, or storage account. Losing both the recovery phrase file and the written-down phrase makes encrypted backups unrecoverable.
 
-> The commit endpoint is **asynchronous**: it enqueues a commit job and returns `202 Accepted` quickly to avoid long-running HTTP timeouts. Heavy work happens in the commit worker.
+## 9. Restore flow
 
-> **HNS ON** enables directory-scoped SAS (`sr=d`) for `staging/{deviceId}/{runId}/`. This avoids per-file SAS overhead and keeps control-plane calls minimal.
+1. The client resolves the source device from `BackupClient:Restore:DeviceId` or local device state.
+2. If no logical paths are configured, it pages through `GET /api/devices/{deviceId}/restore/files`.
+3. It calls `POST /api/devices/{deviceId}/restore/start` with the selected logical paths.
+4. The API authorizes ownership and returns a 60-minute read-only directory SAS plus stored metadata for the selected active versions.
+5. The client downloads each blob to a temporary file and verifies uploaded size and SHA-256.
+6. Encrypted files are authenticated, decrypted with the local recovery phrase, and verified against their plaintext SHA-256 before being moved to the destination.
+7. Existing destination files are rejected unless `BackupClient:Restore:OverwriteExisting` is enabled.
 
----
+Archive-tier blobs must be rehydrated before the read SAS can be used to download them; automatic rehydration is not implemented.
 
-### 4.1.1 Optional zero-knowledge client-side encryption
+## 10. SAS and storage security
 
-The client supports two backup encryption modes:
+- Production upload and restore tokens are HNS directory-scoped User Delegation SAS grants.
+- Upload grants have create/write permissions and no read/list/delete permission.
+- Restore grants are read-only.
+- Production SAS URLs require HTTPS.
+- IP restriction is disabled by default because client public IPs and proxy forwarding can change. It can be enabled with `Backup:Sas:EnableIpRestriction` after trusted proxy settings have been validated.
+- Public blob access is disabled.
+- API and worker use system-assigned managed identities for Blob/Queue Storage, Cosmos DB, and Key Vault access.
+- Storage account keys are not distributed to clients. A Storage connection string is held only as a Container App secret for the worker's KEDA queue scaler.
+- Copy/delete fallback for blob moves is disabled by default; production expects HNS rename semantics.
 
-| Mode | Blob contents | Recovery material | Server visibility |
-| --- | --- | --- | --- |
-| `ServerSideOnly` | Original file bytes | None beyond normal Azure Storage encryption at rest | Server can read staged/committed bytes if it has storage access |
-| `ClientAndServer` | Client-encrypted ciphertext | A generated local recovery phrase file | Server sees only ciphertext and per-file decryption metadata |
+## 11. Reliability and failure handling
 
-`ServerSideOnly` is the default compatibility mode. It is useful during development and for customers who choose server-side/Azure-managed encryption only.
+- Commit IDs are deterministic for `(deviceId, runId)`, so replaying `commit-run` reuses the same job.
+- ETag-based claiming prevents concurrent workers from processing the same queued job.
+- Per-file commit progress makes blob moves and state updates resumable after partial failures.
+- Staged-content mismatches are recorded as failed files. A run may finish as `CompletedWithErrors` when the percentage remains within the configured worker threshold.
+- Client upload retries use Polly v8 exponential backoff with jitter.
+- The client has separate upload and commit-status timeouts. A commit-status timeout does not cancel the durable server-side job.
+- The API exposes operational endpoints for paged manifests/commits, failed files, commit retry, and staging cleanup.
+- Staging cleanup runs both through a Dapr cron binding and through a seven-day Blob lifecycle fallback.
 
-`ClientAndServer` is the zero-knowledge mode. On first use, the client generates a 12-token recovery phrase and writes it to a local JSON file. The configured path is `BackupClient:Encryption:RecoveryPhraseFilePath`; if omitted, the client uses the local application-data folder under `backup-client/recovery-phrase.json` (the same folder as the state DB and MSAL token cache).
+## 12. Lifecycle and cost behavior
 
-Important recovery rule:
+The client explicitly assigns the configured staging access tier; the default is `Hot`. Storage lifecycle rules then apply to committed blobs under `backups/devices/`:
 
-> If the recovery phrase file and written-down phrase are both lost, encrypted backups are unrecoverable. The API, worker, storage account, and operator cannot decrypt the data.
+- Move to Cold when the lifecycle policy first evaluates the blob (`daysAfterCreationGreaterThan: 0`).
+- Move to Archive after `lifecycleArchiveAfterDays`, which defaults to 30.
+- Delete blobs tagged `state=retired` after 210 days from creation.
+- Delete uncommitted staging blobs after seven days from creation.
 
-Current implementation details:
+Cold and Archive have minimum recommended retention periods and early-deletion charges. Pricing depends on region, redundancy, operations, retrieval, and the customer's offer; do not treat a single per-terabyte figure as a durable system guarantee. Use the [Azure Blob Storage pricing page](https://azure.microsoft.com/pricing/details/storage/blobs/) for current estimates.
 
-* The recovery phrase is generated locally by the client and never sent to the API.
-* A master wrapping key is derived from the normalized phrase with PBKDF2-SHA256. The default iteration count is 600,000 and is configurable through `BackupClient:Encryption:KdfIterations`.
-* Each uploaded file receives a random per-file key.
-* File bytes are encrypted locally before upload with AES-256-CBC plus HMAC-SHA256 over IV + ciphertext.
-* The per-file key is wrapped with the phrase-derived master key using AES-256-GCM.
-* The manifest stores the ciphertext SHA-256 and ciphertext size so server-side staged-blob validation continues to validate the exact uploaded bytes.
-* The manifest/state also stores plaintext hash/size and decryption metadata needed for a future restore/decrypt flow.
+## 13. Observability and health
 
-Restore/decryption is implemented in the client service layer but is intentionally not a UI feature yet. The restore path requires the locally stored recovery phrase file, unwraps each file key, verifies HMAC, decrypts, and verifies the plaintext SHA-256 before writing restored files. Manual recovery phrase entry is future UI/CLI work.
+- API, worker, Gateway, and client use structured console/file logging as appropriate.
+- API and worker emit OpenTelemetry traces, metrics, and logs to OTLP and/or Azure Monitor when those exporters are configured.
+- The client emits the `florisdev.backup.client` activity source and meter.
+- Core service instruments use the `florisdev.backup.*` namespace for runs, events, SAS generation, state operations, failures, and duration.
+- Correlation middleware enriches server requests and propagates trace context over HTTP.
+- Application Insights and Log Analytics are provisioned for production.
 
----
+The API exposes `GET /api/health`, `/api/health/alive`, `/api/health/ready`, `/health/liveness`, `/health/readiness`, and `/healthz`. The worker exposes `/health/liveness`, `/health/readiness`, and `/healthz`. The Gateway exposes `/healthz`.
 
-### 4.1.2 Restore/download flow
+## 14. Deployment model
 
-Restore uses the same installed client application as backup, but with a separate restore command/service path.
+The GitHub Actions workflow:
 
-1. The client resolves the source `deviceId` from `BackupClient:Restore:DeviceId` or the local device state.
-2. If no logical paths are configured, the client calls `GET /api/devices/{deviceId}/restore/files` to list active files page-by-page.
-3. The client calls `POST /api/devices/{deviceId}/restore/start` with selected logical paths.
-4. The API authorizes device ownership, resolves each logical path to its active `FileEntry`/`FileVersion`, and returns a short-lived read-only SAS for `devices/{deviceId}/files` plus per-file metadata.
-5. The client downloads each selected blob directly from Blob Storage into a temporary file.
-6. The client verifies downloaded ciphertext/plaintext bytes against the restore metadata SHA-256 and size.
-7. If the file has `ClientAndServer` encryption metadata, the client decrypts locally with the recovery phrase file, verifies HMAC and plaintext SHA-256, and writes the plaintext to the restore destination.
-8. If the file has no encryption metadata, the verified downloaded bytes are moved directly to the restore destination.
+1. Builds and tests the solution and builds the Gateway separately.
+2. Validates both Bicep deployment phases.
+3. Deploys foundation resources with `deployContainerApps=false`.
+4. Publishes API, worker, and Gateway images to GHCR.
+5. Deploys the three Container Apps with the commit SHA image tag.
 
-The API never receives recovery phrases, plaintext file keys, or decrypted file bytes. It only returns authorized read access and stored restore metadata.
-
-Current restore endpoints:
-
-* `GET /api/devices/{deviceId}/restore/files?pageSize={pageSize}&continuationToken={token}`
-* `POST /api/devices/{deviceId}/restore/start`
-
-Restore file listing is paginated with an opaque `nextContinuationToken` in the response. The default page size is 100, the server clamps page size to 1000, and the client uses `BackupClient:Restore:ListPageSize` when it needs to enumerate all files before restore.
-
-Current client restore configuration:
-
-* `BackupClient:Restore:DeviceId` — optional source device; defaults to local device state.
-* `BackupClient:Restore:DestinationPath` — required restore root.
-* `BackupClient:Restore:LogicalPaths` — optional selected paths; empty means restore all currently listed files.
-* `BackupClient:Restore:ListPageSize` — page size used when enumerating all restore files; defaults to 500.
-* `BackupClient:Restore:OverwriteExisting` — defaults to `false`.
-
----
-
-### 4.2 File Operation Scenarios (client-side delta logic)
-
-The client-side delta logic remains largely the same; what changes is **how** changes are reported (via device-scoped start/commit endpoints) and how the server commits them (via manifest state + async worker).
-
-```mermaid
-flowchart TD
-    Start([Start Delta Scan]) --> Walk[Walk filesystem]
-    Walk --> FileFound{File found?}
-
-    FileFound -->|Yes| InLocalDB{Exists in local DB?}
-    FileFound -->|No| CheckMissing[Check deleted files]
-
-    InLocalDB -->|No| NewFile[New file]
-    InLocalDB -->|Yes| CompareMetadata{Size or mtime changed?}
-
-    CompareMetadata -->|No| NoChange[No change]
-    CompareMetadata -->|Yes| ChangedFile[File changed]
-
-    NewFile --> ComputeHash1[Compute sha256]
-    ComputeHash1 --> GenerateID1[Generate uniqueFileId]
-    GenerateID1 --> AddToQueue1[Add to upload queue]
-    AddToQueue1 --> UpdateLocalDB1[Update local DB]
-
-    ChangedFile --> ComputeHash2[Compute new sha256]
-    ComputeHash2 --> GenerateID2[Generate new uniqueFileId]
-    GenerateID2 --> AddToQueue2[Add to upload queue]
-    AddToQueue2 --> MarkOldRetired[Mark old version retired]
-    MarkOldRetired --> UpdateLocalDB2[Update local DB]
-
-    CheckMissing --> CompareDB{Missing in scan?}
-    CompareDB -->|Yes| VerifyDeleted{Verify deleted}
-    CompareDB -->|No| Complete[Scan complete]
-
-    VerifyDeleted -->|Yes| DeletedFile[File deleted]
-    VerifyDeleted -->|No| AccessError[Access error - skip]
-
-    DeletedFile --> MarkForRemoval[Mark for removal]
-    MarkForRemoval --> RemoveFromDB[Update local DB]
-
-    NoChange --> Continue[Continue scan]
-    UpdateLocalDB1 --> Continue
-    UpdateLocalDB2 --> Continue
-    AccessError --> Continue
-    Continue --> Walk
-
-    Complete --> BuildCommit[Build commit payload]
-    BuildCommit --> SubmitCommit[Submit commit run]
-
-    style NewFile fill:#1a365d,stroke:#63b3ed,stroke-width:2px,color:#ffffff
-    style ChangedFile fill:#744210,stroke:#f6ad55,stroke-width:2px,color:#ffffff
-    style DeletedFile fill:#742a2a,stroke:#fc8181,stroke-width:2px,color:#ffffff
-    style SubmitCommit fill:#2d3748,stroke:#a0aec0,stroke-width:2px,color:#ffffff
-```
-
-#### 4.2.1 File Created
-
-**Detection:**
-
-* **Local state DB** comparison: new file appears in filesystem walk that wasn’t present in the previous scan.
-
-**Process:**
-
-1. File discovered during delta scan with ignore rules applied.
-
-2. Compute `sha256` hash and collect metadata (`length`, `lastWriteUtc`, optional NTFS File ID).
-
-3. Generate `uniqueFileId`: `{sha256}_{timestamp}_{random}`.
-
-4. Add to **upload queue** and **local mapping**: `logicalPath → uniqueFileId`, where `logicalPath = {targetName}/{relativePath}`.
-
-5. Upload to staging area during this run:
-   `staging/{deviceId}/{runId}/{uniqueFileId}` (using directory SAS).
-
-6. Include in `runs/{deviceId}/{runId}/run-manifest.json` as:
-
-   ```json
-   {
-     "targetName": "documents",
-     "relativePath": "file.txt",
-     "logicalPath": "documents/file.txt",
-     "uniqueFileId": "abc123...k8p3m",
-     "size": 1024,
-     "mtime": "2025-09-17T10:30:00Z",
-     "sha256": "..."
-   }
-   ```
-
-7. Server (commit worker) moves blob to `/devices/{deviceId}/files/{uniqueFileId}` and updates manifest state in Cosmos DB via Dapr.
-
-#### 4.2.2 File Changed
-
-**Detection:**
-
-* **Size + mtime check**: file exists in local state DB but `(length, lastWriteUtc)` differs.
-* Optional **hash verification** for paranoid mode.
-* Optional **NTFS File ID** change indicating replacement.
-
-**Process:**
-
-1. Detected changed file is added to upload queue.
-2. Compute new `sha256` hash and metadata.
-3. Generate new `uniqueFileId`.
-4. Upload new version to staging: `staging/{deviceId}/{runId}/{newUniqueFileId}`.
-5. Mark old version in local state as “retired candidate”.
-6. Include in `run-manifest.json` as a file entry; server:
-
-   * Moves staged blob → `/devices/{deviceId}/files/{newUniqueFileId}`.
-  * Marks old version as retired in Cosmos DB via Dapr.
-   * Moves old blob → `/devices/{deviceId}/retired/{oldUniqueFileId}`.
-7. Lifecycle management eventually deletes retired blobs per retention policy.
-
-#### 4.2.3 File Deleted
-
-**Detection:**
-
-* File exists in local state DB but is not found in current filesystem walk.
-* After verification attempts (permissions, transient errors), marked as deleted.
-
-**Process:**
-
-1. Track all files seen this run; previous entries not seen become deletion candidates.
-2. Verify deletion with `File.Exists()` and directory checks.
-3. Add the file's `logicalPath` to `deleted[]` in `run-manifest.json`.
-4. Update local state DB to remove the file.
-5. Commit worker:
-
-    * Removes mapping from the `Files` state records (or marks it as deleted).
-   * Marks corresponding FileVersion as retired.
-   * Moves blob `/devices/{deviceId}/files/{uniqueFileId}` → `/devices/{deviceId}/retired/{uniqueFileId}`.
-6. Lifecycle management handles eventual deletion of retired blobs from Archive/Cold tier.
-
-> Note: actual blob deletion is deferred to lifecycle policies to avoid early deletion fees and to provide recovery opportunities.
-
----
-
-## 5) Security Model
-
-* **No account keys** on clients.
-* Clients receive **short-lived UD-SAS** for:
-
-  * Scope: `staging/{deviceId}/{runId}/` (directory-scoped, HNS ON).
-  * Permissions: `sp=c` (create-only) or `sp=wc` (write+create) as needed, **no read/list/delete**.
-  * `spr=https` only; optional `sip` restriction to client IP / CIDR.
-  * Expiry: typically 15–60 minutes per run.
-* Backup API authenticates via Entra ID and uses its **Managed Identity** to:
-
-  * Get User Delegation Keys from Blob storage.
-  * Perform blob rename/move operations (`staging` → `files`, `files` → `retired`).
-  * Fail the move if ADLS Gen2 rename fails, unless `ALLOW_COPY_DELETE_FALLBACK=true` is explicitly configured for a deployment that accepts early deletion cost and partial-failure risk.
-* **Blob Storage public access disabled**; all access via SAS or Managed Identity from trusted services.
-* **State stores (Azure Cosmos DB for NoSQL)** are accessed only from Container Apps via:
-
-  * Separate Dapr state-store component configuration for manifest/run state and device registry state.
-  * Managed Identity in production; local development may use an Azurite connection string from local configuration/secrets.
-  * System-assigned Container App identities are the default. If a deployment switches Dapr components to a user-assigned managed identity, `daprAzureClientId` is set and emitted as `azureClientId` metadata on the Key Vault, Cosmos DB, and Service Bus Dapr components.
-* Storage resource names such as `DATA_STORAGE_ACCOUNT` and `DATA_CONTAINER` are non-secret configuration values and may be supplied as Container App environment variables. Actual secrets remain in Dapr secret store / Key Vault.
-* Key Vault uses RBAC authorization. Its network ACL default action is configurable through `keyVaultNetworkDefaultAction`; it remains `Allow` until Container Apps/Dapr access through private networking is available, then should be changed to `Deny`.
-* Redis is intentionally not provisioned for production v1. Dapr state is backed by Azure Cosmos DB for NoSQL; Service Bus is used for pub/sub.
-* Multi-tenant / multi-device isolation:
-
-  * `deviceId` is bound to the authenticated user/tenant in a server-side `DeviceRegistration` record.
-  * Device registration is self-service: any authenticated user with the client backup scope may register a new device ID.
-  * First registration wins. If a `deviceId` already belongs to another `(tenantId, userId)`, registration and backup operations return a conflict/forbidden response.
-  * A single user can own multiple devices. Device sharing is intentionally out of scope for v1.
-  * Backup clients use a narrow delegated scope such as `backup.client`; `backup.admin` is reserved for future operator/admin APIs.
-  * SAS scope includes `deviceId` + `runId`, ensuring a client cannot write outside its staging area.
-  * SAS IP restriction is disabled by default for SaaS clients. It can be enabled per deployment with `Backup:Sas:EnableIpRestriction` / `Backup__Sas__EnableIpRestriction` only after ACA/proxy and customer network behavior is validated.
-  * Backup routes include `deviceId`; the route value is authoritative and every start/commit/status operation authorizes ownership before touching storage, runs, commits, or SAS.
-  * Forwarded headers are accepted only from configured trusted proxies/networks. Unknown forwarded headers are ignored to avoid spoofing client IP, host, or scheme.
-  * Development anonymous authentication requires `ALLOW_DEVELOPMENT_ANONYMOUS_AUTHENTICATION=true`; production deployments use JWT authentication and do not set this override.
-* Optional: **Blob index tags** (e.g., `state=retired`, `deviceId={deviceId}`) to refine lifecycle policies.
-
----
-
-## 6) State & Device Registry Model (Azure Cosmos DB for NoSQL via Dapr)
-
-The manifest/state is no longer kept in a blob `manifest.json`; instead it resides in Azure Cosmos DB for NoSQL behind Dapr state-store components. Manifest/run state and device registry state are intentionally separated into different Dapr components and containers so they can evolve into different physical stores, retention policies, RBAC boundaries, or UI/query models without mixing concerns.
-
-### Physical state components
-
-* `manifest-state-store`
-
-  * Backing database/container: `backup-state` / `manifest-state`.
-  * Contains file mappings, file versions, backup runs, and commit jobs.
-
-* `device-registry-state-store`
-
-  * Backing database/container: `backup-state` / `device-registry`.
-  * Contains device ownership/registration records and future device-management indexes.
-  * Uses the same Cosmos DB account and shared-throughput database for v1, so both Dapr state stores fit within the free-tier-friendly 400 RU/s baseline for low-volume deployments.
-
-### Logical entities
-
-> The production Bicep creates the Cosmos DB SQL database and containers in the existing manually created Cosmos account. Dapr consumes those containers; it should not be relied on to provision databases/containers on first run.
-
-**Files (latest mapping per path)**
-
-* Key: `(deviceId, logicalPath)` (or hashed path).
-* Fields:
-
-  * `deviceId`
-  * `logicalPath` (`{targetName}/{relativePath}`)
-  * `targetName`
-  * `relativePath`
-  * `currentVersionId` (uniqueFileId)
-  * `size`
-  * `lastWriteUtc`
-  * `lastBackupRunId`
-  * `isDeleted` (bool)
-
-**DeviceRegistrations**
-
-Stored in `device-registry-state-store`.
-
-* Key: `deviceId`
-* Fields:
-
-  * `deviceId`
-  * `tenantId` (`tid` claim)
-  * `userId` (`oid` claim)
-  * `displayName`
-  * `status` = Active | Revoked
-  * `createdAt`
-  * `lastSeenAt`
-  * `revokedAt` (nullable)
-
-**FileVersions (all versions per device/path)**
-
-* Key: `(deviceId, uniqueFileId)`
-* Fields:
-
-  * `deviceId`
-  * `uniqueFileId`
-  * `logicalPath`
-  * `targetName`
-  * `relativePath`
-  * `sha256`
-  * `size`
-  * `createdAt`
-  * `retiredAt` (nullable)
-  * `state` = Active | Retired
-
-**BackupRuns**
-
-* Key: `(deviceId, runId)`
-* Fields:
-
-  * `deviceId`
-  * `runId`
-  * `startedAt`
-  * `completedAt`
-  * `status` = Queued | Processing | Succeeded | Failed
-  * `stats` (files scanned, changed, deleted, bytes uploaded)
-
-**CommitJobs**
-
-* Key: `commitId`
-* Fields:
-
-  * `commitId`
-  * `deviceId`
-  * `runId`
-  * `status` = Queued | Processing | Succeeded | Failed
-  * `error` (nullable)
-  * `createdAt`, `updatedAt`
-
-All CRUD against these entities goes through **Dapr state store APIs** from API and worker. Backup commit processing should use `manifest-state-store`; device registration and ownership checks should use `device-registry-state-store`.
-
----
-
-## 7) Async Commit & Background Processing
-
-To avoid long-running HTTP calls and timeouts:
-
-* `/api/devices/{deviceId}/backup/commit-run` is **async**:
-
-  * Authorizes that the authenticated `(tenantId, userId)` owns `deviceId`.
-  * Validates payload shape quickly.
-  * Derives `runs/{deviceId:N}/{runId:N}/run-manifest.json` server-side.
-  * Saves or reuses a deterministic `CommitJob` keyed by `{deviceId, runId}` with `status=Queued`.
-  * Publishes a commit message via Dapr Pub/Sub / Queue.
-  * Responds `202 Accepted { commitId }`.
-
-* A **Commit Worker** subscribes to commit messages as a separate Container App:
-
-  * Uses a dedicated `backup-worker` image built from `src/services/worker`.
-  * Reuses backup processing services and state/storage abstractions through project references.
-  * Has no external ingress.
-  * Scales from zero on the `backup-events` Service Bus topic subscription.
-  * Uses a least-privilege Service Bus Listen connection string only for the Container Apps/KEDA scaler; Dapr pub/sub continues to use managed identity.
-  * Uses namespace-scoped Service Bus RBAC: the API managed identity has Data Sender for publishing, and the worker managed identity has Data Receiver for subscription processing.
-
-  * Atomically claims the `CommitJob` with an ETag compare-and-save transition from `Queued` to `Processing`.
-  * Derives the manifest path from `deviceId` and `runId` instead of trusting any path carried in the event body.
-  * Loads `BackupRun` and file lists from the state store.
-  * Verifies staged blobs with HEAD requests (size/hash).
-  * Records per-file commit progress in the state store using deterministic transitions: `Pending` → `Moved` → `StateUpdated` → `Succeeded`.
-  * Renames blobs:
-
-    * `staging/{deviceId}/{runId}/{uniqueFileId}` → `/devices/{deviceId}/files/{uniqueFileId}`
-    * Previous active versions → `/devices/{deviceId}/retired/{oldUniqueFileId}`
-  * Updates `Files` and `FileVersions` state idempotently and can continue a retry when a prior attempt already moved the blob.
-  * Updates `CommitJob.status` and `BackupRun.status` to `Succeeded` or `Failed`.
-
-* Client polls `GET /api/devices/{deviceId}/backup/commit-status/{commitId}`:
-
-  * API authorizes device ownership, reads `CommitJob` via Dapr, verifies `CommitJob.deviceId == deviceId`, and returns current status.
-
-This model:
-
-* Prevents HTTP timeouts.
-* Allows retries and robust error handling inside the commit worker.
-* Keeps the API stateless and fast.
-
----
-
-## 8) Dapr Integration
-
-Dapr is used to abstract infrastructure concerns:
-
-* **State Store (`manifest-state-store`)**:
-
-  * Backed by Azure Cosmos DB for NoSQL for production v1.
-  * Stores backup manifest/run/commit state.
-
-* **State Store (`device-registry-state-store`)**:
-
-  * Backed by Azure Cosmos DB for NoSQL for production v1, using a separate container from manifest state.
-  * Stores device registration and ownership state.
-  * Keeps the future device-management UI/query model separate from backup commit state.
-
-* Both state components:
-
-  * Use Dapr state-store APIs so the backing component can still be changed later with limited app-code impact.
-
-* **Pub/Sub / Queue**:
-
-  * Used for commit job dispatch from API to worker.
-  * Backed by Azure Service Bus Topics in production.
-
-* **Output bindings (optional)**:
-
-  * For writing logs or manifest snapshots to Blob if needed.
-
-Application code:
-
-* Talks to `daprClient.SaveStateAsync()` / `GetStateAsync()` / `QueryStateAsync()`.
-* Talks to `daprClient.PublishEventAsync()` for commit jobs.
-
-Backend changes (state store component, queue type, etc.) are handled by **Dapr component YAML/Bicep**, keeping the design future-proof.
-
----
-
-## 9) Windows Client Design
-
-### 9.1 Delta Scanner (drive-level)
-
-* Maintain a **local state DB** (JSON or SQLite) with:
-  `relativePath`, `length`, `lastWriteUtc`, optional `sha256`, optional NTFS **File ID** (FRN).
-* One pass per run:
-
-  * Compile ignore rules; walk with `EnumerationOptions` (ignore inaccessible; skip reparse points).
-  * Shortlist changes via `(size, mtime)`; compute `sha256` only for candidates.
-  * Deletions = previous entries not seen this run.
-* **Blacklist rules** via a `.backupignore` file (gitignore-style) per device/drive.
-
-Example `.backupignore`:
-
-```text
-# system dirs
-$RECYCLE.BIN/
-System Volume Information/
-Windows/
-Program Files*/
-
-# patterns
-**/*.tmp
-**/*.log
-**/*.bak
-**/~$*.doc*
-**/node_modules/
-**/.git/
-```
-
-### 9.2 Uploader
-
-* Large **Block Blob** uploads with parallel `Put Block` + `Put Block List`.
-
-* Block size 128–256 MiB typical; tune threads by CPU/IOPS.
-
-* **Unique File Naming**: generate `uniqueFileId` as `{sha256}_{timestamp}_{random}` before upload.
-
-* Register the local `deviceId` with `POST /api/devices` before starting a backup. Registration is idempotent for the same authenticated owner and rejected for a different owner.
-
-* Obtain **directory-scoped SAS** grants for both `staging/{deviceId}/{runId}/` and `runs/{deviceId}/{runId}/` via `/api/devices/{deviceId}/backup/start-run`.
-
-* Upload each changed/new file as:
-
-  `staging/{deviceId}/{runId}/{uniqueFileId}`
-
-* Headers:
-
-  * `x-ms-blob-type: BlockBlob`
-  * `x-ms-access-tier: Cold|Cool|Archive` (optional; current production can omit this and let lifecycle rules move committed files from Cool to Cold/Archive).
-  * `If-None-Match: *` (create-only).
-
-* Integrity:
-
-  * Rolling **MD5/CRC64** and/or **SHA-256** per file; include in `run-manifest.json` for server-side verification.
-
-* Resume:
-
-  * Re-stage missing blocks and re-commit if interrupted (idempotent on `uniqueFileId + block IDs`).
-  * If entire run is interrupted, client can either:
-
-    * Retry that run (reuse `runId` if safe), or
-    * Start a new run and let server clean up stale `Pending` items.
-
-* **File Mapping**:
-
-  * Maintain a mapping `logicalPath → uniqueFileId` for this run.
-  * This mapping is uploaded as `run-manifest.json` and used server-side to update manifest state.
-
-### After uploading all file blobs, create and upload:
-
-```
-runs/deviceId/runId/run-manifest.json
-```
-
-### Contents:
-
-```json
-{
-  "schemaVersion": 1,
-  "deviceId": "...",
-  "runId": "...",
-  "files": [
-    {
-      "targetName": "documents",
-      "relativePath": "subfolder/file.txt",
-      "logicalPath": "documents/subfolder/file.txt",
-      "uniqueFileId": "...",
-      "sha256": "...",
-      "size": 1234,
-      "mtime": "...",
-      "encryption": {
-        "mode": "ClientAndServer",
-        "algorithm": "AES-256-CBC-HMAC-SHA256",
-        "keyWrapAlgorithm": "AES-256-GCM",
-        "kdf": "PBKDF2-SHA256",
-        "kdfIterations": 600000,
-        "kdfSalt": "...",
-        "iv": "...",
-        "wrappedKey": "...",
-        "authenticationTag": "...",
-        "plaintextSha256": "...",
-        "plaintextSize": 1234
-      }
-    }
-  ],
-  "deleted": [
-    "documents/a/b/c.txt",
-    "photos/x/y/z.jpg"
-  ]
-}
-```
-
-In `ServerSideOnly` mode, `encryption` is omitted and `sha256`/`size` describe the original file bytes. In `ClientAndServer` mode, `sha256`/`size` describe the uploaded ciphertext bytes, while `encryption.plaintextSha256` and `encryption.plaintextSize` preserve plaintext integrity data for restore.
-
----
-
-## 10) Cost Management & Retention
-
-### 10.1 Storage Tier Strategy & 30-Day Rule
-
-**Initial Upload Tier: Cool, then Cold by lifecycle**
-
-* Files are uploaded with the storage account default **Cool** tier unless the client explicitly sets an access tier.
-* Lifecycle Management moves committed backup files under `backups/devices/` to **Cold** when the policy runs.
-* This keeps upload implementation simple while still converging to the cheaper Cold tier for retained backup data.
-
-**30-Day Promotion to Archive**
-
-* Lifecycle Management automatically promotes committed files to **Archive** after 30 days.
-* Archive tier: ~€0.00099/GB/month.
-* 180-day minimum retention in Archive; files are assumed to be rarely accessed after 30 days.
-
-**Early Retention Fee Avoidance**
-
-* File moves (`staging` → `files` → `retired`) are **rename operations** with HNS ON (ADLS Gen2) – **no early deletion fees**.
-* Only actual **deletion** of blobs triggers early retention penalties.
-* Strategy:
-
-  * Always upload to **new unique names** (`uniqueFileId`).
-  * Move previous files to `/retired/` directory (no fees for moves).
-  * Use Lifecycle Management to delete retired blobs after tier minimum retention.
-
-### 10.2 Lifecycle Management Rules
-
-*(unchanged conceptually, updated to reflect manifest-in-state-store)*
-
-```bicep
-resource lifecyclePolicy 'Microsoft.Storage/storageAccounts/managementPolicies@2023-05-01' = {
-  name: 'default'
-  parent: storageAccount
-  properties: {
-    policy: {
-      rules: [
-        {
-          enabled: true
-          name: 'backup-tier-promotion'
-          type: 'Lifecycle'
-          definition: {
-            filters: {
-              blobTypes: [ 'blockBlob' ]
-              prefixMatch: [ 'backups/devices/' ]
-            }
-            actions: {
-              baseBlob: {
-                tierToArchive: { daysAfterModificationGreaterThan: 30 }
-              }
-            }
-          }
-        }
-        {
-          enabled: true
-          name: 'retired-cleanup'
-          type: 'Lifecycle'
-          definition: {
-            filters: {
-              blobTypes: [ 'blockBlob' ]
-              prefixMatch: [ 'backups/devices/' ]
-            }
-            actions: {
-              baseBlob: {
-                delete: { daysAfterModificationGreaterThan: 210 }
-              }
-            }
-          }
-        }
-      ]
-    }
-  }
-}
-```
-
-### 10.3 Cost Optimization Benefits
-
-* **Minimum retention**: Cold (90 d), Archive (180 d). Early deletion fees only on actual deletions.
-* To **avoid penalties** while rotating frequently:
-
-  * Always write new versions as new blobs (never overwrite).
-  * Retire old versions by moving to `/retired/` and letting lifecycle rules handle deletion.
-* **Container App + Dapr + worker costs** are kept low:
-
-  * API is mostly control-plane (small JSON).
-  * Data plane is direct client → Blob.
-  * Commit worker is a separate Container App with `minReplicas = 0`; it only runs when the Service Bus subscription has queued commit messages.
-  * Splitting the worker does not add a second always-on compute bill. The main extra cost is negligible Service Bus scaler polling/operations and worker vCPU/memory only while commits are processed.
-* **State stores (Azure Cosmos DB for NoSQL)** are kept low-cost by using a manually created free-tier Cosmos account and a shared-throughput `backup-state` database with separate `manifest-state` and `device-registry` containers.
-
----
-
-## 11) Reliability, Idempotency & Retries
-
-* **Idempotent runs & commits**:
-
-  * `runId` uniquely identifies a backup run.
-  * `commitId` is derived deterministically from `{deviceId, runId}` and uniquely identifies a commit job.
-  * Replays of `/api/devices/{deviceId}/backup/commit-run` with the same `runId` return the existing `CommitJob`.
-  * Commit workers use ETags to atomically claim queued jobs so duplicate queue deliveries do not run the same commit concurrently.
-  * Per-file commit progress tracks `Pending`, `Moved`, `StateUpdated`, `Succeeded`, and `Failed` to make retries deterministic.
-* **Asynchronous commit** ensures:
-
-  * No long-lived HTTP requests.
-  * Heavy blob and state operations happen off the request path.
-* **State updates**:
-
-  * Dapr state store operations are retried with backoff.
-  * Updates to Files/FileVersions are applied in consistent batches.
-* **Partial uploads**:
-
-  * Staged blobs that never get committed remain unused; background cleanup can remove stale staging blobs older than a threshold.
-  * Active manifest state is only updated after blobs are verified and moved.
-* **Retries**:
-
-  * Client-side: exponential backoff + jitter for network/storage errors.
-  * Worker: per-commit job retries on transient storage or state store failures.
-* **Container App reliability**:
-
-  * API remains stateless (externalized state & queue).
-  * Commit worker can be scaled independently based on queue length.
-
----
-
-## 12) Observability
-
-* **Client metrics**:
-
-  * Files scanned/changed/deleted.
-  * Bytes uploaded.
-  * Throughput, duration, failures.
-* **Backup API logs**:
-
-  * Request IDs.
-  * `POST /api/devices/{deviceId}/backup/start-run`, `POST /api/devices/{deviceId}/backup/commit-run`, and `GET /api/devices/{deviceId}/backup/commit-status/{commitId}` calls.
-  * SAS minting events (deviceId, runId).
-  * Commit job enqueue operations.
-* **Commit worker logs**:
-
-  * Commit job lifecycle (Queued → Processing → Succeeded/Failed).
-  * Counts of files verified/moved/retired per job.
-  * Blob and state-store failures with retry attempts.
-* **Storage metrics**:
-
-  * Egress/ingress, transactions, capacity by tier.
-* **State store metrics**:
-
-  * Request counts, latency, throttling (if any).
-* **Application Insights**:
-
-  * End-to-end tracing with correlation IDs:
-
-    * `deviceId`
-    * `runId`
-    * `commitId`
-* Correlated logs across:
-
-  * Client (runId).
-  * API (runId, commitId).
-  * Worker (commitId).
-
----
-
-## 13) Success Metrics
-
-* **Cost efficiency**:
-
-  * Stay under €3/TB/month all-in storage cost.
-  * Keep control-plane (API + state store + worker) under a few euros per month for home-scale v1.
-* **Reliability**:
-
-  * 99.9% successful backup completion rate.
-  * No data loss for committed runs.
-* **Performance**:
-
-  * Complete 100GB backup in under 2 hours on typical home broadband (upload path remains client → Blob).
-  * Commit latency acceptable (async; typically minutes or less).
-* **Security**:
-
-  * Zero account key exposures.
-  * Blob and state store accessible only via time-limited SAS or Managed Identity from trusted services.
-* **Usability**:
-
-  * One-click backup initiation, automated scheduling.
-  * Clear status for each run (In progress, Succeeded, Failed) via `GET /api/devices/{deviceId}/backup/commit-status/{commitId}`.
+See [GitHub Actions deployment setup](GITHUB_ACTIONS_DEPLOYMENT.md) for required Azure roles, repository variables, and secrets.

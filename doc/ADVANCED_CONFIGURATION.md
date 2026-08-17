@@ -1,484 +1,206 @@
-# Advanced Configuration Guide
+# Advanced client configuration
 
-Performance tuning, resilience configuration, and advanced scenarios for the Backup Client.
+This guide covers client settings that are normally left at their defaults. Start with the interactive setup in [Client configuration](CLIENT_CONFIGURATION.md); add overrides to `appsettings.local.json` only when a workload needs them.
 
-## Table of Contents
-- [Performance Tuning](#performance-tuning)
-- [Resilience & Error Handling](#resilience--error-handling)
-- [Advanced Scenarios](#advanced-scenarios)
-- [Diagnostics & Monitoring](#diagnostics--monitoring)
+## Configuration precedence
 
----
+The client loads configuration in this order, with later sources taking precedence:
 
-## Performance Tuning
+1. `appsettings.json`
+2. `appsettings.{Environment}.json`
+3. .NET user secrets in Development
+4. environment variables
+5. `appsettings.local.json`
+6. command-line configuration values
 
-### Network-Based Tuning
+`backup-client configure` writes machine-specific targets to `appsettings.local.json` next to the executable.
 
-#### Fast Internet (100+ Mbps)
-
-```json
-{
-  "BackupClient": {
-    "MaxParallelUploads": 8
-  }
-}
-```
-
-**Effect**: More concurrent uploads, faster overall backup
-**Trade-off**: Higher CPU/memory usage
-
----
-
-#### Slow Internet (< 10 Mbps)
+## Performance and staging
 
 ```json
 {
   "BackupClient": {
-    "MaxParallelUploads": 2
-  }
-}
-```
-
-**Effect**: Fewer concurrent uploads, less bandwidth saturation
-**Trade-off**: Slower overall backup time
-
----
-
-### File Type-Based Tuning
-
-#### Many Small Files
-
-```json
-{
-  "BackupClient": {
-    "MaxParallelUploads": 10,
-    "LargeFileThresholdBytes": 52428800  // 50MB
-  }
-}
-```
-
-**Use case**: Source code repositories, document collections
-**Effect**: High parallelism, less logging for small files
-**Optimal for**: < 1MB average file size
-
----
-
-#### Few Large Files
-
-```json
-{
-  "BackupClient": {
-    "MaxParallelUploads": 2,
-    "LargeFileThresholdBytes": 10485760  // 10MB
-  }
-}
-```
-
-**Use case**: Video editing, large datasets, VM images
-**Effect**: Lower parallelism, detailed progress for large files
-**Optimal for**: > 100MB average file size
-
----
-
-### Mixed Workloads
-
-```json
-{
-  "BackupClient": {
-    "MaxParallelUploads": 6,
-    "LargeFileThresholdBytes": 20971520  // 20MB
-  }
-}
-```
-
-**Use case**: General-purpose backup with mix of file sizes
-**Effect**: Balanced approach
-**Optimal for**: Varied file sizes
-
----
-
-## Resilience & Error Handling
-
-The backup client uses **Polly v8** resilience pipelines for automatic retry logic.
-
-### Default Behavior
-
-```json
-{
-  "BackupClient": {
-    "MaxRetryAttempts": 3,
-    "RetryDelayMs": 1000,
-    "MaxRetryDelayMs": 30000,
-    "HttpTimeoutSeconds": 300,
-    "BlobUploadTimeoutSeconds": 600,
-    "MaxFailurePercentage": 5
-  }
-}
-```
-
-**Retry strategy**:
-- Exponential backoff: 1s → 2s → 4s → 8s → (capped at 30s)
-- Jitter: Random variation to prevent thundering herd
-- Automatic retry for: HTTP 408, 429, 5xx, network timeouts
-
----
-
-### Unreliable Networks
-
-For spotty WiFi, mobile connections, or high-latency networks:
-
-```json
-{
-  "BackupClient": {
-    "MaxRetryAttempts": 5,
-    "RetryDelayMs": 2000,
-    "MaxRetryDelayMs": 60000,
-    "HttpTimeoutSeconds": 600,
-    "BlobUploadTimeoutSeconds": 1800,
-    "MaxFailurePercentage": 10
-  }
-}
-```
-
-**Changes**:
-- More retry attempts (5 instead of 3)
-- Longer initial delay (2s instead of 1s)
-- Higher max delay (60s instead of 30s)
-- Longer timeouts for slow connections
-- More tolerant failure threshold (10% vs 5%)
-
----
-
-### Large File Uploads
-
-For files > 1GB or slow storage:
-
-```json
-{
-  "BackupClient": {
-    "BlobUploadTimeoutSeconds": 3600,  // 1 hour per attempt
-    "MaxRetryAttempts": 5,
-    "MaxParallelUploads": 2  // Reduce contention
-  }
-}
-```
-
----
-
-### Aggressive/Fast-Fail
-
-For reliable networks where you want to fail fast:
-
-```json
-{
-  "BackupClient": {
-    "MaxRetryAttempts": 1,  // Only one retry
-    "RetryDelayMs": 500,
-    "MaxRetryDelayMs": 5000,
-    "HttpTimeoutSeconds": 60,
-    "MaxFailurePercentage": 1
-  }
-}
-```
-
-**Use case**: Schedule-based backups with tight time windows
-
----
-
-### Disable Retries (Not Recommended)
-
-```json
-{
-  "BackupClient": {
-    "MaxRetryAttempts": 0
-  }
-}
-```
-
-**⚠️ Warning**: Only use for testing. Production backups should always have retry logic.
-
----
-
-## Understanding Failure Handling
-
-### Transient Errors (Auto-Retry)
-
-These errors trigger automatic retries:
-
-- **Network timeouts**: Connection lost, request timeout
-- **HTTP 408**: Request Timeout
-- **HTTP 429**: Too Many Requests (rate limiting)
-- **HTTP 5xx**: Server errors (500, 502, 503, 504)
-- **Temporary connection issues**: DNS lookup failures, SSL handshake failures
-
-**Log example**:
-```
-[Warning] Upload failed for file.txt, attempt 1/3: Request timed out
-[Info] Retrying in 1000ms with exponential backoff...
-[Info] Upload succeeded for file.txt on attempt 2
-```
-
----
-
-### Permanent Errors (No Retry)
-
-These errors fail immediately without retries:
-
-- **UnauthorizedAccessException**: File permission denied
-- **FileNotFoundException**: File deleted during scan
-- **HTTP 401**: Authentication failure
-- **HTTP 403**: Forbidden (permission issue)
-- **HTTP 400**: Bad request (client error)
-
-**Log example**:
-```
-[Error] Permanent failure for locked-file.txt: Access denied
-[Info] Skipping file and continuing with backup...
-```
-
----
-
-### Partial Failures
-
-Backup continues even if individual files fail:
-
-```
-[Warning] Batch upload partial failure: 2/100 files failed
-[Info] Processed batch: 98 files, 150MB (200 total scanned)
-[Warning] Backup completed with partial failures
-[Info] Final stats: 198 succeeded, 2 failed (1.0% failure rate)
-```
-
-**Failure threshold**: Backup only fails completely if failure rate exceeds `MaxFailurePercentage`.
-
----
-
-## Advanced Scenarios
-
-### Scenario: Backup Entire Drive (Not Recommended)
-
-```json
-{
-  "BackupClient": {
-    "BackupTargets": {
-      "system-drive": "C:\\"
-    }
-  }
-}
-```
-
-**Expected behavior**:
-- ⚠️ Warning logged about system drive
-- Backup proceeds with exclusions applied
-- First backup will be very large (plan for several hours)
-
-**Important considerations**:
-1. Ensure `.backupignore` excludes system directories (default does this)
-2. Add exclusions for large programs/games you can reinstall
-3. Consider network bandwidth and Azure storage costs
-4. May be better for disaster recovery than incremental backup
-
----
-
-### Scenario: Multiple Machines to Single Storage
-
-Each machine needs a **unique device ID** (automatically generated on first run).
-
-**Machine 1 - Desktop**: Default configuration
-**Machine 2 - Laptop**: Default configuration
-
-Files are automatically organized by device:
-```
-Azure Storage:
-  device-{guid-1}/
-    user-profile/Documents/file.txt
-  device-{guid-2}/
-    user-profile/Documents/file.txt
-```
-
-**Device ID location** (stored in the state DB, see [State Database](#state-database)):
-- Windows: `%LOCALAPPDATA%\backup-client\backup-state.db`
-- Linux/macOS: `~/.local/share/backup-client/backup-state.db`
-
----
-
-### Scenario: Scheduled Backups
-
-Use OS-native scheduling with optimized settings:
-
-**Windows Task Scheduler**:
-```xml
-<!-- Run daily at 2 AM with fast-fail -->
-<Triggers>
-  <CalendarTrigger>
-    <StartBoundary>2024-01-01T02:00:00</StartBoundary>
-    <ScheduleByDay>
-      <DaysInterval>1</DaysInterval>
-    </ScheduleByDay>
-  </CalendarTrigger>
-</Triggers>
-```
-
-**Configuration for scheduled backups**:
-```json
-{
-  "BackupClient": {
-    "MaxParallelUploads": 8,     // Fast completion
-    "MaxRetryAttempts": 5,       // Reliable
-    "MaxFailurePercentage": 5    // Fail if too many errors
-  }
-}
-```
-
----
-
-### Scenario: Backup Over VPN
-
-```json
-{
-  "BackupClient": {
-    "MaxParallelUploads": 2,     // Reduce VPN load
-    "MaxRetryAttempts": 5,
-    "HttpTimeoutSeconds": 600,    // VPN can be slow
-    "BlobUploadTimeoutSeconds": 1800
-  }
-}
-```
-
----
-
-## Diagnostics & Monitoring
-
-### Logging Configuration
-
-Adjust log levels in `appsettings.json`:
-
-```json
-{
-  "Logging": {
-    "LogLevel": {
-      "Default": "Information",
-      "FlorisDeV.BackupClient": "Debug",  // Detailed backup logs
-      "Microsoft": "Warning"
-    }
-  }
-}
-```
-
-**Log levels**:
-- `Trace`: Everything (very verbose)
-- `Debug`: Detailed backup operations
-- `Information`: Normal operation (default)
-- `Warning`: Issues that don't stop backup
-- `Error`: Failures that stop backup
-- `Critical`: System-level failures
-
----
-
-### Telemetry & Metrics
-
-The client can export OpenTelemetry traces and metrics to the configured exporters. Local development typically uses Zipkin and/or the Aspire dashboard; production API and worker telemetry goes to Application Insights through the Azure deployment configuration.
-
-**Key metrics**:
-- `backup.operation.duration`: Total backup time
-- `backup.files.scanned`: Number of files scanned
-- `backup.files.uploaded`: Number of files uploaded
-- `backup.bytes.transferred`: Total bytes uploaded
-- `backup.failures`: Number of failed files
-
-**Activity tracing**: Each backup run creates an Activity with:
-- `device.id`: Unique device identifier
-- `backup.targets`: Number of targets
-- `backup.type`: Full or Incremental
-
----
-
-### Health Checks
-
-The public health endpoints belong to the API service:
-
-- `/api/health`: Overall health
-- `/api/health/ready`: Ready to accept requests
-- `/api/health/alive`: Service is alive
-
-**Health checks include** configured dependencies such as Azure Blob Storage and Dapr where applicable. The backup client itself is a console/Windows-service-style process and does not expose HTTP health endpoints.
-
----
-
-### State Database
-
-Located at:
-- Windows: `%LOCALAPPDATA%\backup-client\backup-state.db`
-- Linux/macOS: `~/.local/share/backup-client/backup-state.db`
-
-**Contains**:
-- File metadata (path, hash, size, modified time)
-- Last backup timestamp per file
-- Device ID
-- Last successful backup run
-
-**Maintenance**:
-- Automatically managed
-- Uses SQLite with write-ahead logging (WAL)
-- No manual cleanup needed
-
-**Reset/troubleshooting**:
-```bash
-# Stop backup client first
-rm ~/.local/share/backup-client/backup-state.db
-# Next backup will be a full backup
-```
-
----
-
-## Configuration Reference
-
-### All Available Properties
-
-```json
-{
-  "BackupClient": {
-    "BackupTargets": {
-      "target-name": "path/to/directory"
-    },
-    "IgnoreFilePath": "path/to/.backupignore",
     "MaxParallelUploads": 4,
+    "StagingAccessTier": "Hot",
     "LargeFileThresholdBytes": 10485760,
+    "BlobUploadTimeoutSeconds": 600
+  }
+}
+```
+
+- `MaxParallelUploads` limits concurrent blob uploads. Increase it gradually on fast links; reduce it when bandwidth, memory, or storage throttling is a concern.
+- `StagingAccessTier` accepts `Hot`, `Cool`, or `Cold`. `Hot` is the default and is normally the safest choice because staged content is read during commit. `Archive` is rejected.
+- `LargeFileThresholdBytes` controls when the client emits large-file progress and timeout warnings; it does not change Azure SDK block sizing.
+- `BlobUploadTimeoutSeconds` is the timeout for each upload attempt. Very large files on slow links may need a higher value.
+
+The API HTTP client currently has a fixed five-minute timeout. `HttpTimeoutSeconds` is a read-only code default and is not a bindable setting.
+
+## Upload resilience and partial failures
+
+```json
+{
+  "BackupClient": {
     "MaxRetryAttempts": 3,
     "RetryDelayMs": 1000,
     "MaxRetryDelayMs": 30000,
-    "HttpTimeoutSeconds": 300,
-    "BlobUploadTimeoutSeconds": 600,
-    "MaxFailurePercentage": 5
-  },
-  "Database": {
-    "FilePath": "custom/path/backup-state.db"
-  },
-  "Logging": {
-    "LogLevel": {
-      "Default": "Information"
+    "MaxFailurePercentage": 5,
+    "CommitStatusPollIntervalSeconds": 2,
+    "CommitStatusTimeoutSeconds": 600
+  }
+}
+```
+
+Blob uploads use exponential backoff with jitter. Retries cover transient Azure failures (`408`, `429`, `500`, `502`, `503`, and `504`) plus network, timeout, and I/O exceptions. `MaxRetryAttempts` is the number of retries after the initial attempt; set it to `0` only when deliberately disabling upload retries.
+
+`MaxFailurePercentage` is an integer percentage. A run aborts when the percentage of failed upload attempts is greater than this value. Individual server-side commit failures may instead produce `CompletedWithErrors`; those files remain pending locally and are retried later.
+
+After submitting a commit, the client polls at `CommitStatusPollIntervalSeconds`. If processing is still queued or active after `CommitStatusTimeoutSeconds`, the client retains its pending-run journal and reconciles the commit on a later run rather than treating the durable server job as failed.
+
+API calls have a separate standard .NET HTTP resilience pipeline under `BackupApiClient:RetryOptions`:
+
+```json
+{
+  "BackupApiClient": {
+    "RetryOptions": {
+      "Retry": {
+        "MaxRetryAttempts": 3,
+        "Delay": "00:00:02",
+        "BackoffType": "Exponential"
+      }
     }
   }
 }
 ```
 
-### Property Constraints
+## Scaled-to-zero wake-up
 
-| Property | Type | Min | Max | Default |
-|----------|------|-----|-----|---------|
-| `MaxParallelUploads` | int | 1 | 20 | 4 |
-| `LargeFileThresholdBytes` | long | 0 | ∞ | 10485760 (10MB) |
-| `MaxRetryAttempts` | int | 0 | 10 | 3 |
-| `RetryDelayMs` | int | 100 | 60000 | 1000 |
-| `MaxRetryDelayMs` | int | 1000 | 300000 | 30000 |
-| `HttpTimeoutSeconds` | int | 10 | 3600 | 300 |
-| `BlobUploadTimeoutSeconds` | int | 60 | 7200 | 600 |
-| `MaxFailurePercentage` | double | 0 | 100 | 5 |
+Before normal API traffic, the client can probe the hosted Gateway so a scaled-to-zero deployment has time to start:
 
----
+```json
+{
+  "BackupApiClient": {
+    "WakeUp": {
+      "Enabled": true,
+      "InitialDelaySeconds": 2,
+      "MaxDelaySeconds": 30,
+      "MaxWaitSeconds": 180,
+      "ProbeTimeoutSeconds": 10,
+      "RecheckIntervalSeconds": 60
+    }
+  }
+}
+```
 
-## Related Documentation
+The wake-up probe is authenticated for deployed endpoints. In Development, a loopback API URL uses the local anonymous-auth path.
 
-- [Quick Start Guide](CLIENT_CONFIGURATION.md#quick-start)
-- [.backupignore Reference](BACKUPIGNORE.md)
-- [Troubleshooting](CLIENT_CONFIGURATION.md#troubleshooting)
+## Locked files
+
+```json
+{
+  "BackupClient": {
+    "LockedFilePolicy": "SkipLocked"
+  }
+}
+```
+
+Available policies:
+
+- `SkipLocked` opens files with read sharing and skips files that a writer has locked.
+- `ReadThroughSharedWrites` allows read/write/delete sharing. This can read more open files, but it is not a filesystem snapshot and does not guarantee a consistent copy while a file changes.
+
+## Scheduling
+
+For a long-running service process:
+
+```json
+{
+  "BackupClient": {
+    "Schedule": {
+      "Enabled": true,
+      "RunOnStartup": true,
+      "IntervalMinutes": 1440
+    }
+  }
+}
+```
+
+`IntervalMinutes` must be greater than zero. Leave `Schedule:Enabled` false for one-shot CLI execution, Windows Task Scheduler, or a systemd timer. See [Client configuration](CLIENT_CONFIGURATION.md#scheduling) for installation examples.
+
+## Client-side encryption
+
+```json
+{
+  "BackupClient": {
+    "Encryption": {
+      "Mode": "ClientAndServer",
+      "RecoveryPhraseFilePath": null,
+      "KdfIterations": 600000
+    }
+  }
+}
+```
+
+`ServerSideOnly` uploads plaintext over TLS and relies on Azure Storage encryption at rest. `ClientAndServer` encrypts file content locally before upload. On first use it creates a recovery-phrase file at the configured path or in the client application-data directory.
+
+Keep the recovery phrase outside the backed-up machine. Losing it makes client-encrypted backups unrecoverable; anyone who obtains it can decrypt those backups.
+
+## Restore defaults
+
+```json
+{
+  "BackupClient": {
+    "Restore": {
+      "DeviceId": null,
+      "DestinationPath": "C:\\Restore",
+      "LogicalPaths": [],
+      "ListPageSize": 500,
+      "OverwriteExisting": false
+    }
+  }
+}
+```
+
+Run `backup-client restore`. An empty `LogicalPaths` array selects all available files for the chosen device. Archive-tier blobs cannot be restored until they have been rehydrated in Azure; the current product does not automate rehydration.
+
+## Local state database
+
+```json
+{
+  "Database": {
+    "FilePath": null
+  }
+}
+```
+
+With `FilePath` unset, SQLite is stored at:
+
+- Windows: `%LOCALAPPDATA%\backup-client\backup-state.db`
+- Linux/macOS: `~/.local/share/backup-client/backup-state.db`
+
+The database contains the device identifier, file fingerprints, pending-run journal, staged-upload records, and scan scratch data. Deleting it forces a new local identity/full comparison and discards resumable state, so stop the client and preserve a copy before troubleshooting this way.
+
+## Telemetry
+
+The client exports through OTLP when `OTEL_EXPORTER_OTLP_ENDPOINT` is set, and through Azure Monitor when `OTEL_EXPORTER_AZURE_MONITOR_CONNECTION` is set. There is currently no Zipkin exporter registered.
+
+Activity source and meter: `florisdev.backup.client`
+
+| Instrument | Type | Unit |
+| --- | --- | --- |
+| `florisdev.backup.files.count` | Counter | files |
+| `florisdev.backup.failures` | Counter | failures |
+| `florisdev.backup.duration` | Histogram | ms |
+| `florisdev.backup.size` | Histogram | bytes |
+
+See [Monitoring](MONITORING.md) for exporter and service health details.
+
+## Complete client example
+
+The maintained example is [`src/services/client/appsettings.example.json`](../src/services/client/appsettings.example.json). It includes the Entra, Gateway, backup, restore, retry, wake-up, database, and telemetry sections without embedding production credentials.
+
+## Related documentation
+
+- [Client configuration](CLIENT_CONFIGURATION.md)
+- [.backupignore reference](BACKUPIGNORE.md)
+- [Authentication](AUTHENTICATION.md)
+- [Monitoring](MONITORING.md)

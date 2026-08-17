@@ -83,16 +83,16 @@ param gatewayProxyHeaderName string = 'X-Backup-Gateway'
 @secure()
 param gatewayProxyHeaderValue string = ''
 
-@description('Cosmos DB account endpoint for the Dapr manifest-state-store component.')
+@description('Cosmos DB account endpoint for the application state repositories.')
 param cosmosAccountEndpoint string
 
-@description('Cosmos DB SQL database name for Dapr state.')
+@description('Cosmos DB SQL database name for application state.')
 param cosmosDatabaseName string = 'backup-state'
 
-@description('Cosmos DB SQL container name for manifest-state-store.')
+@description('Cosmos DB SQL container name for manifests and commit jobs.')
 param cosmosManifestContainerName string = 'manifest-state'
 
-@description('Cosmos DB SQL container name for device-registry-state-store.')
+@description('Cosmos DB SQL container name for the device registry.')
 param cosmosDeviceRegistryContainerName string = 'device-registry'
 
 @description('Optional Azure client ID for a user-assigned managed identity used by Dapr Azure components. Leave empty for system-assigned Container App identities.')
@@ -101,13 +101,13 @@ param daprAzureClientId string = ''
 @description('Common resource tags')
 param tags object
 
-@description('Microsoft Entra tenant ID used by the Backup API for JWT validation.')
+@description('Microsoft Entra tenant ID used by the Stowhaven API for JWT validation.')
 param apiAuthTenantId string = tenant().tenantId
 
-@description('Microsoft Entra application/client ID of the Backup API app registration.')
+@description('Microsoft Entra application/client ID of the Stowhaven API app registration.')
 param apiAuthClientId string = '906eb0e3-e351-47c0-a68a-690207f4cccb'
 
-@description('JWT audience accepted by the Backup API. Defaults to api://{apiAuthClientId}.')
+@description('JWT audience accepted by the Stowhaven API. Defaults to api://{apiAuthClientId}.')
 param apiAuthAudience string = 'api://${apiAuthClientId}'
 
 var ghcrAuthEnabled = !empty(ghcrPullToken) && !empty(ghcrPullUsername)
@@ -283,10 +283,6 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
               value: ''
             }
             {
-              name: 'OTEL_EXPORTER_ZIPKIN_ENDPOINT'
-              value: ''
-            }
-            {
               name: 'OTEL_EXPORTER_AZURE_MONITOR_CONNECTION'
               value: ''
             }
@@ -438,10 +434,6 @@ resource workerContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
             }
             {
               name: 'OTEL_EXPORTER_OTLP_ENDPOINT'
-              value: ''
-            }
-            {
-              name: 'OTEL_EXPORTER_ZIPKIN_ENDPOINT'
               value: ''
             }
             {

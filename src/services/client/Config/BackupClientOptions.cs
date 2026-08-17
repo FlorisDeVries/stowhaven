@@ -1,7 +1,7 @@
 namespace FlorisDeV.BackupClient.Config;
 
 /// <summary>
-/// Configuration options for the backup client.
+/// Configuration options for the Stowhaven client.
 /// </summary>
 public class BackupClientOptions
 {

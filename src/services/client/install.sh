@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Installs a published Backup Client build into the current user's XDG data
+# Installs a published Stowhaven Client build into the current user's XDG data
 # directory and launches first-time setup. Run this from inside the folder
 # produced by `dotnet publish` (see README.md).
 set -euo pipefail
@@ -23,7 +23,7 @@ else
     if [[ -d "$INSTALL_DIR" ]]; then
         echo "Existing install found at $INSTALL_DIR - updating in place (local config is preserved)."
     else
-        echo "Installing Backup Client to $INSTALL_DIR..."
+        echo "Installing Stowhaven Client to $INSTALL_DIR..."
     fi
 
     mkdir -p "$INSTALL_DIR"
@@ -56,7 +56,7 @@ if command -v systemctl >/dev/null 2>&1; then
 
     cat > "$SERVICE_UNIT_TMP" <<EOF
 [Unit]
-Description=FlorisDeV Backup Client
+Description=Stowhaven Client
 
 [Service]
 Type=oneshot
@@ -65,7 +65,7 @@ EOF
 
     cat > "$TIMER_UNIT_TMP" <<EOF
 [Unit]
-Description=Run Backup Client daily
+Description=Run Stowhaven Client daily
 
 [Timer]
 OnCalendar=*-*-* $SCHEDULE_TIME

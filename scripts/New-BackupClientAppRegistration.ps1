@@ -1,12 +1,12 @@
 #!/usr/bin/env pwsh
 <#
 .SYNOPSIS
-Creates an Entra ID public/native app registration for the Backup Client.
+Creates an Entra ID public/native app registration for the Stowhaven Client.
 
 .DESCRIPTION
 Creates a desktop/public client app registration, configures http://localhost as
 the native redirect URI, enables public client flows, and grants delegated
-permissions to the existing Backup API app registration.
+permissions to the existing Stowhaven API app registration.
 
 By default, only the normal backup client scope (`backup.client`) is granted.
 Use -IncludeAdminScope only for trusted operator/admin clients.
@@ -15,7 +15,7 @@ Use -IncludeAdminScope only for trusted operator/admin clients.
 ./scripts/New-BackupClientAppRegistration.ps1
 
 .EXAMPLE
-./scripts/New-BackupClientAppRegistration.ps1 -DisplayName "Backup Client - Floris Laptop" -GrantAdminConsent
+./scripts/New-BackupClientAppRegistration.ps1 -DisplayName "Stowhaven Client - Floris Laptop" -GrantAdminConsent
 
 .EXAMPLE
 ./scripts/New-BackupClientAppRegistration.ps1 -IncludeAdminScope -GrantAdminConsent
@@ -23,7 +23,7 @@ Use -IncludeAdminScope only for trusted operator/admin clients.
 
 [CmdletBinding()]
 param(
-    [string]$DisplayName = "Backup Client",
+    [string]$DisplayName = "Stowhaven Client",
 
     [Parameter(Mandatory = $true)]
     [string]$ApiAppId,
@@ -179,7 +179,7 @@ else {
 $scopeForConfig = if ($IncludeAdminScope) { "backup.admin" } else { "backup.client" }
 
 Write-Host ""
-Write-Host "Backup Client app registration created." -ForegroundColor Green
+Write-Host "Stowhaven Client app registration created." -ForegroundColor Green
 Write-Host ""
 Write-Host "Client app ID:"
 Write-Host "  $clientAppId"

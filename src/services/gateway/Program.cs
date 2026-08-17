@@ -62,9 +62,9 @@ app.MapGet("/healthz", () => Results.Ok(new { status = "Healthy" }));
 app.UseSwaggerUI(options =>
 {
     options.RoutePrefix = "swagger";
-    options.DocumentTitle = "Backup API Swagger";
-    options.SwaggerEndpoint("/api/swagger/main/swagger.json", "FlorisDeV.BackupApi");
-    options.SwaggerEndpoint("/worker/swagger/main/swagger.json", "FlorisDeV.BackupWorker");
+    options.DocumentTitle = "Stowhaven API";
+    options.SwaggerEndpoint("/api/swagger/main/swagger.json", "Stowhaven API");
+    options.SwaggerEndpoint("/worker/swagger/main/swagger.json", "Stowhaven Worker API");
 });
 
 app.Map("/api/{**path}", async context =>

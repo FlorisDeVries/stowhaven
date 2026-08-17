@@ -1,54 +1,33 @@
-# GitHub Copilot Instructions
+# GitHub Copilot instructions
 
-This project is an **Azure Backup API** in .NET with IaC (Bicep) and CI/CD via GitHub Actions.
+This repository contains **Stowhaven**, a .NET 10 backup platform deployed to Azure Container Apps.
 
-## Purpose of the codebase
-- **.NET Container App** that issues SAS URLs (upload/download) for Blob Storage.
-- **Bicep configuration** (`deploy/bicep/`) for:
-  - Storage Account (LRS, Cool tier, lifecycle → Archive) + `backups` container
-  - Log Analytics Workspace + Application Insights
-  - Azure Container Registry (Basic)
-  - Dapr infrastructure: Service Bus, Key Vault
-  - Container App Environment + Container App (system-assigned MI, Dapr enabled)
-  - RBAC role assignments (Storage Blob Data Contributor, AcrPull, Key Vault Secrets User)
-- **GitHub Actions** pipeline (`.github/workflows/deploy.yml`):
-  - Login via OIDC
-  - Deploy Bicep infra (`az deployment group create`)
-  - Build & push Docker image to ACR
-  - Update Container App with new image
+## Architecture
 
-## Bicep structure
-```
-deploy/bicep/
-├── main.bicep            # Orchestrator – calls modules, creates role assignments & KV secrets
-├── main.bicepparam       # Parameter defaults
-└── modules/
-    ├── storage.bicep     # Storage accounts, container, lifecycle policy
-    ├── monitoring.bicep  # Log Analytics, Application Insights
-    ├── registry.bicep    # Azure Container Registry
-    ├── dapr-infra.bicep  # Service Bus, Key Vault (no secrets)
-    └── compute.bicep     # Container App Environment + Container App + Dapr component
-```
+- The public Gateway authenticates Microsoft Entra ID tokens, performs OAuth on-behalf-of exchange, and proxies requests to the internal API and worker.
+- The API issues short-lived User Delegation SAS URLs, manages devices and backup runs, and publishes commit events through a Dapr Azure Storage Queue output binding.
+- The worker consumes commit events through a Dapr input binding and finalizes staged files.
+- Clients transfer file data directly to Azure Blob Storage.
+- Application state uses SQLite locally and Azure Cosmos DB for NoSQL in production through `IStateDocumentStore`; it does not use a Dapr state-store component.
+- Infrastructure is defined in `deploy/bicep/`. CI/CD is the multi-phase `.github/workflows/deploy.yml` workflow and publishes images to GHCR.
 
-## Style & guidelines
-- .NET code:
-  - Use C# 12 features and nullable reference types
-  - Follow Microsoft coding conventions
-  - Use structured logging with ILogger
-  - Prefer async/await patterns
-  - Use dependency injection where appropriate
-- Bicep code:
-  - Use `param` with `@description()` decorators; mark secrets with `@secure()`
-  - Pre-determine resource names in `main.bicep` (e.g. `var keyVaultName = 'kv-${nameSuffix}'`) to avoid circular module dependencies
-  - Use `existing` resources to reference pre-existing Azure resources
-  - Use `dependsOn` for secrets that require prior role assignments
-  - Use `guid()` for deterministic role assignment names
-  - Use system-assigned managed identity; avoid connection strings
-- Commit messages in English, short but descriptive
-- Always use `--recursive` for AzCopy directory uploads
+## Compatibility names
 
-## Copilot tips
-- For .NET Container Apps: provide examples of request payloads & responses.
-- For Bicep: use `subscriptionResourceId()` to reference built-in role definitions.
-- For GitHub Actions: keep jobs small and reuse secrets through `env`.
-- For authentication: prefer managed identity over connection strings when possible.
+Stowhaven is the public product and repository brand. Keep existing implementation contracts stable unless a migration is explicitly requested, including:
+
+- `FlorisDeV.Backup*` solution, project, assembly, and namespace names;
+- `BackupApiClient` configuration keys;
+- Dapr app IDs, container image suffixes, and telemetry service names such as `backup-api`;
+- `backup-client` local paths, executable link, and systemd unit names;
+- existing Azure resource names and Entra application IDs.
+
+## Engineering guidelines
+
+- Preserve nullable reference types and current .NET conventions.
+- Prefer structured `ILogger` messages and asynchronous APIs.
+- Keep public traffic on the Gateway; production API and worker ingress must remain internal.
+- Prefer managed identity and RBAC over storage account keys or connection strings.
+- Treat direct-to-Blob upload/restore and client-side encryption as core security boundaries.
+- Update Bicep source and regenerate `deploy/bicep/main.json` together.
+- Build the Gateway explicitly because it is not included in `FlorisDeV.BackupApi.sln`.
+- Keep documentation aligned with implemented behavior and distinguish current limitations from planned work.

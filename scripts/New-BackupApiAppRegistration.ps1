@@ -1,7 +1,7 @@
 #!/usr/bin/env pwsh
 <#
 .SYNOPSIS
-Creates the Entra ID app registration for the Backup API.
+Creates the Entra ID app registration for the Stowhaven API.
 
 .DESCRIPTION
 Creates an API app registration, sets the Application ID URI to api://{appId},
@@ -12,7 +12,7 @@ and exposes the delegated scopes used by client applications:
 
 It also exposes the application role used by the Swagger Gateway managed identity:
 
-- backup.gateway: Gateway application access to the Backup API
+- backup.gateway: Gateway application access to the Stowhaven API
 
 After creating this API app, set the GitHub repository variable API_AUTH_CLIENT_ID
 to the printed app ID and redeploy the Container Apps stack.
@@ -21,12 +21,12 @@ to the printed app ID and redeploy the Container Apps stack.
 ./scripts/New-BackupApiAppRegistration.ps1
 
 .EXAMPLE
-./scripts/New-BackupApiAppRegistration.ps1 -DisplayName "Backup API"
+./scripts/New-BackupApiAppRegistration.ps1 -DisplayName "Stowhaven API"
 #>
 
 [CmdletBinding()]
 param(
-    [string]$DisplayName = "Backup API",
+    [string]$DisplayName = "Stowhaven API",
 
     [string]$TenantId
 )
@@ -85,6 +85,20 @@ $existingApps = @(Invoke-AzCliJson -Arguments @(
     "--display-name", $DisplayName
 ))
 
+# Reuse the pre-branding registration when this script is rerun against an
+# existing deployment. Display names are not token identities, so renaming it
+# in the Entra portal remains optional.
+if ($existingApps.Count -eq 0 -and $DisplayName -eq "Stowhaven API") {
+    $existingApps = @(Invoke-AzCliJson -Arguments @(
+        "ad", "app", "list",
+        "--display-name", "Backup API"
+    ))
+
+    if ($existingApps.Count -eq 1) {
+        Write-Host "Reusing legacy 'Backup API' app registration for Stowhaven."
+    }
+}
+
 if ($existingApps.Count -gt 1) {
     throw "Found multiple app registrations named '$DisplayName'. Rename duplicates or use a unique display name before running this script again."
 }
@@ -130,8 +144,8 @@ $backupGatewayAppRoleId = if ($backupGatewayAppRole) { $backupGatewayAppRole.id 
 $appRoles = @($existingAppRoles | Where-Object { $_.value -ne "backup.gateway" }) + @(
     @{
         allowedMemberTypes = @("Application")
-        description = "Allows the Swagger Gateway managed identity to call the Backup API."
-        displayName = "Backup Gateway"
+        description = "Allows the Stowhaven Gateway managed identity to call the Stowhaven API."
+        displayName = "Stowhaven Gateway"
         id = $backupGatewayAppRoleId
         isEnabled = $true
         value = "backup.gateway"
@@ -145,22 +159,22 @@ $apiDefinition = @{
         oauth2PermissionScopes = @(
             @{
                 adminConsentDescription = "Allows a backup client to register devices, start backup runs, commit runs, and restore its own data."
-                adminConsentDisplayName = "Use Backup API as a backup client"
+                adminConsentDisplayName = "Use Stowhaven as a backup client"
                 id = $backupClientScopeId
                 isEnabled = $true
                 type = "User"
-                userConsentDescription = "Back up and restore your data using the Backup API."
+                userConsentDescription = "Back up and restore your data using Stowhaven."
                 userConsentDisplayName = "Back up and restore your data"
                 value = "backup.client"
             },
             @{
-                adminConsentDescription = "Allows trusted operators to use administrative Backup API operations."
-                adminConsentDisplayName = "Administer Backup API"
+                adminConsentDescription = "Allows trusted operators to use administrative Stowhaven operations."
+                adminConsentDisplayName = "Administer Stowhaven"
                 id = $backupAdminScopeId
                 isEnabled = $true
                 type = "Admin"
-                userConsentDescription = "Administer Backup API."
-                userConsentDisplayName = "Administer Backup API"
+                userConsentDescription = "Administer Stowhaven."
+                userConsentDisplayName = "Administer Stowhaven"
                 value = "backup.admin"
             }
         )
@@ -186,7 +200,7 @@ finally {
 }
 
 Write-Host ""
-Write-Host "Backup API app registration created." -ForegroundColor Green
+Write-Host "Stowhaven API app registration created." -ForegroundColor Green
 Write-Host ""
 Write-Host "API app ID:"
 Write-Host "  $apiAppId"
@@ -202,6 +216,6 @@ Write-Host "  API_AUTH_CLIENT_ID = $apiAppId"
 Write-Host "  API_AUTH_AUDIENCE  = $identifierUri"
 Write-Host ""
 Write-Host "Then create client app registrations with:"
-Write-Host "  ./scripts/New-BackupClientAppRegistration.ps1 -ApiAppId $apiAppId -DisplayName 'Backup Client' -GrantAdminConsent"
-Write-Host "  ./scripts/New-BackupClientAppRegistration.ps1 -ApiAppId $apiAppId -DisplayName 'Backup Admin Client' -IncludeAdminScope -GrantAdminConsent"
+Write-Host "  ./scripts/New-BackupClientAppRegistration.ps1 -ApiAppId $apiAppId -DisplayName 'Stowhaven Client' -GrantAdminConsent"
+Write-Host "  ./scripts/New-BackupClientAppRegistration.ps1 -ApiAppId $apiAppId -DisplayName 'Stowhaven Admin Client' -IncludeAdminScope -GrantAdminConsent"
 Write-Host ""

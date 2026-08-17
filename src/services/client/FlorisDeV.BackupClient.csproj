@@ -5,6 +5,8 @@
         <TargetFramework>net10.0</TargetFramework>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
+        <Product>Stowhaven</Product>
+        <Description>Stowhaven backup and restore client</Description>
         <UserSecretsId>5ed2dfc4-d949-471e-b756-f5eef4dae4bd</UserSecretsId>
     </PropertyGroup>
 

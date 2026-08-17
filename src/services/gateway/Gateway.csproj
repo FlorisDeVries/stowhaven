@@ -7,6 +7,8 @@
         <DockerDefaultTargetOS>Linux</DockerDefaultTargetOS>
         <RootNamespace>Gateway</RootNamespace>
         <AssemblyName>Gateway</AssemblyName>
+        <Product>Stowhaven</Product>
+        <Description>Stowhaven authentication and API gateway</Description>
     </PropertyGroup>
 
     <ItemGroup>

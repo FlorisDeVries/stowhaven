@@ -45,14 +45,20 @@ public static class ProgramExtensions
             builder.Services.AddSwaggerGen(c =>
             {
                 var productVersion = FileVersionInfo.GetVersionInfo(assembly.Location).ProductVersion;
+                var documentTitle = builder.Environment.ApplicationName switch
+                {
+                    "FlorisDeV.BackupApi" => "Stowhaven API",
+                    "FlorisDeV.BackupWorker" => "Stowhaven Worker API",
+                    _ => builder.Environment.ApplicationName
+                };
 
                 c.SwaggerDoc("main", new OpenApiInfo
                 {
-                    Title = builder.Environment.ApplicationName,
+                    Title = documentTitle,
                     Version = productVersion,
                     Description = builder.Environment.IsDevelopment()
-                        ? "Backup endpoints (Development mode - no authentication required)"
-                        : "Backup endpoints secured with JWT Bearer authentication via Azure AD"
+                        ? "Stowhaven endpoints (Development mode - no authentication required)"
+                        : "Stowhaven endpoints secured with JWT Bearer authentication via Microsoft Entra ID"
                 });
 
                 // Add JWT Bearer security definition for non-development environments

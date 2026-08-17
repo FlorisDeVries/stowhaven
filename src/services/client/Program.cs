@@ -25,6 +25,7 @@ var host = Host.CreateDefaultBuilder(args)
     .UseContentRoot(AppContext.BaseDirectory)
     .UseWindowsService(options =>
     {
+        // Compatibility identifier for existing Windows Service registrations.
         options.ServiceName = "FlorisDeV Backup Client";
     })
     .AddSerilog("backup-client", logFilePath)

@@ -1,137 +1,94 @@
-# Monitoring and Observability
+# Monitoring and observability
 
-This project uses structured logging, OpenTelemetry instrumentation, health checks, and Azure monitoring resources to make the API, worker, and client observable in local and production environments.
+The API, worker, and client use structured logging and OpenTelemetry. Azure deployments also create Log Analytics and Application Insights resources.
 
-## Observability model
+## What is wired today
 
-| Environment | Primary tools | Configuration |
+| Runtime | Logs | Traces and metrics |
 | --- | --- | --- |
-| Local Docker Compose | Console logs, Zipkin, Aspire dashboard | `appsettings.Development.json` points OTLP/Zipkin exporters to local services. |
-| Production Azure | Console logs, Log Analytics, Application Insights | Container Apps receive `APPLICATIONINSIGHTS_CONNECTION_STRING`; local OTLP/Zipkin endpoints stay empty. |
-| Client development | Console logs, optional local OTLP/Zipkin | Client appsettings can point to localhost exporters when local tracing is wanted. |
+| Local API/worker | Console plus OTLP | OTLP to the Aspire dashboard |
+| Local client | Console/file plus optional OTLP | OTLP when its endpoint is configured |
+| Azure API/worker | Container Apps platform logs and Application Insights SDK | `APPLICATIONINSIGHTS_CONNECTION_STRING` enables the SDK and the Container Apps environment also receives it for Dapr; the explicit Azure Monitor OpenTelemetry exporter is currently disabled |
+| Gateway | Default ASP.NET Core/container logs | No custom OpenTelemetry registration |
 
-Production should not use Docker Compose hostnames such as `dev-dashboard` or `zipkin`. Those endpoints are development-only.
+The shared logging library registers OTLP and Azure Monitor exporters. It does not register a Zipkin exporter. Docker Compose still starts a Zipkin container, but current application traces are not sent there.
 
-## Local monitoring services
+## Local stack
 
-Docker Compose starts the development observability stack together with the API and worker:
-
-- `zipkin` for distributed trace visualization.
-- `dev-dashboard` for the .NET Aspire dashboard and OTLP ingestion.
-- `backup-api` and `backup-worker` with Dapr sidecars.
-- `azurite` and `redis` for local Dapr components.
-
-Start the stack:
+Start the services:
 
 ```bash
 docker compose up -d
 ```
 
-Useful local URLs:
+Useful endpoints:
 
 | Service | URL |
 | --- | --- |
-| Backup Gateway | `http://localhost:8200` |
-| Backup API | `http://localhost:8210` |
-| Backup Worker | `http://localhost:8220` |
-| Zipkin | `http://localhost:9411` |
+| Gateway and combined Swagger UI | `http://localhost:8200` |
+| Direct API | `http://localhost:8210` |
+| Direct worker | `http://localhost:8220` |
 | Aspire dashboard | `http://localhost:18888` |
+| Zipkin container (not wired) | `http://localhost:9411` |
 | RedisInsight | `http://localhost:5540` |
 
-## Local exporter configuration
+API and worker containers send OTLP to `http://dev-dashboard:18889`. The client normally runs on the host and its Development configuration uses `http://localhost:4317`, the Aspire dashboard's host OTLP/gRPC port.
 
-API and worker development settings intentionally use Docker Compose service names because those processes run inside the Compose network:
+Open `http://localhost:18888` after running a backup to inspect application logs, traces, and metrics. Do not expect the run to appear in Zipkin unless a Zipkin exporter is added to the code.
 
-```json
-{
-  "OTEL_EXPORTER_OTLP_ENDPOINT": "http://dev-dashboard:18889",
-  "OTEL_EXPORTER_ZIPKIN_ENDPOINT": "http://zipkin:9411/api/v2/spans"
-}
-```
+## Exporter configuration
 
-The backup client usually runs outside Docker, so localhost endpoints are appropriate when local tracing is enabled:
+The active settings are:
 
 ```json
 {
   "OTEL_SERVICE_NAME": "backup-client",
-  "OTEL_EXPORTER_ZIPKIN_ENDPOINT": "http://localhost:9411/api/v2/spans",
   "OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4317",
   "OTEL_EXPORTER_AZURE_MONITOR_CONNECTION": ""
 }
 ```
 
-To disable a local exporter, set its value to an empty string:
+- Set `OTEL_EXPORTER_OTLP_ENDPOINT` to enable OTLP traces, metrics, and logs.
+- Set `OTEL_EXPORTER_AZURE_MONITOR_CONNECTION` to enable the explicit Azure Monitor exporters.
+- Leave an exporter setting empty to disable it.
 
-```json
-{
-  "OTEL_EXPORTER_ZIPKIN_ENDPOINT": "",
-  "OTEL_EXPORTER_OTLP_ENDPOINT": ""
-}
-```
+`APPLICATIONINSIGHTS_CONNECTION_STRING` is injected into the production API and worker and is consumed by the Application Insights SDK registered by both services. The shared OpenTelemetry setup separately reads `OTEL_EXPORTER_AZURE_MONITOR_CONNECTION`. In the current Bicep deployment the latter is deliberately empty, so OpenTelemetry instruments are not also exported through the Azure Monitor OpenTelemetry exporter.
 
-## Production monitoring
+## Instruments
 
-Production infrastructure creates:
+The client activity source and meter are `florisdev.backup.client`.
 
-- Log Analytics workspace.
-- Application Insights resource.
-- Container Apps environment connected to Log Analytics.
-- `APPLICATIONINSIGHTS_CONNECTION_STRING` injected into the API and worker Container Apps.
+| Client instrument | Type | Unit |
+| --- | --- | --- |
+| `florisdev.backup.files.count` | Counter | files |
+| `florisdev.backup.failures` | Counter | failures |
+| `florisdev.backup.duration` | Histogram | ms |
+| `florisdev.backup.size` | Histogram | bytes |
 
-The API and worker default production appsettings keep these local-development exporters empty:
+The API and worker use their own `TelemetryProvider.SourceName` values and the shared `florisdev.backup.*` instruments around runs, SAS generation, event processing, state operations, failures, and duration. HTTP server/client auto-instrumentation is enabled for API and worker only in Development.
 
-```json
-{
-  "OTEL_EXPORTER_ZIPKIN_ENDPOINT": "",
-  "OTEL_EXPORTER_OTLP_ENDPOINT": "",
-  "OTEL_EXPORTER_AZURE_MONITOR_CONNECTION": ""
-}
-```
+## Health endpoints
 
-This avoids failed outbound dependencies to local-only services. Application telemetry is sent through Application Insights SDK configuration and Container Apps platform logging.
+API and worker expose:
 
-## Viewing a local backup trace
+- `GET /health/liveness` — self check only
+- `GET /health/readiness` — self plus configured Dapr and Blob Storage checks
+- `GET /healthz` — compatibility endpoint with a detailed response
 
-1. Start the local stack:
+The API additionally exposes `GET /api/health`, `GET /api/health/alive`, and `GET /api/health/ready`; the client uses `/api/health/alive` for its authenticated scaled-to-zero wake-up probe.
 
-   ```bash
-   docker compose up -d
-   ```
+The public Gateway exposes `GET /healthz`. It proxies API routes under `/api`, so API health can also be reached through the Gateway with paths such as `/api/health/liveness` when authentication permits it.
 
-2. Run the backup client:
+The Dapr health check remains part of readiness because the API and worker use Dapr bindings. The production configuration disables the obsolete pub/sub-specific portion of that probe.
 
-   ```bash
-   cd src/services/client
-   dotnet run
-   ```
+## Production queries
 
-3. Open the Aspire dashboard at `http://localhost:18888` and inspect traces, metrics, and logs.
-4. Open Zipkin at `http://localhost:9411` and query recent traces if Zipkin export is enabled.
+Container stdout/stderr is available in the Log Analytics workspace connected to the Container Apps environment. Application Insights receives telemetry from the application SDK and Dapr configuration. When the OpenTelemetry instruments must also use the Azure Monitor exporter, set `OTEL_EXPORTER_AZURE_MONITOR_CONNECTION` to the Application Insights connection string through a secure deployment setting and check for duplicate auto-instrumentation.
 
-## Trace context
+Use stable identifiers such as `device.id`, `backup.run_id`, and commit IDs to correlate operations. Avoid adding SAS URLs, recovery phrases, access tokens, or full local file paths to telemetry.
 
-Traces and logs include:
+## Related documentation
 
-- service name, such as `backup-api`, `backup-worker`, or `backup-client`;
-- operation names for backup scans, upload operations, API calls, and commit processing;
-- correlation IDs propagated through request logging middleware;
-- tags such as backup target count, transferred bytes, success/failure markers, and exception details.
-
-## Health checks
-
-The API exposes:
-
-- `GET /api/health`
-- `GET /api/health/alive`
-- `GET /api/health/ready`
-
-The checks cover application readiness plus configured dependencies such as Dapr and Azure Blob Storage where applicable. Container Apps can use these endpoints for operational diagnostics.
-
-## Best practices
-
-- Keep local OTLP and Zipkin endpoints in development settings only.
-- Use `APPLICATIONINSIGHTS_CONNECTION_STRING` for production API and worker telemetry.
-- Do not set `OTEL_EXPORTER_OTLP_ENDPOINT` to Docker Compose service names in production.
-- Use structured log templates and named properties rather than string interpolation.
-- Add custom `Activity` spans around business operations that need end-to-end tracing.
-- Tag traces with stable identifiers such as `device.id`, `run.id`, and `commit.id`, but avoid local file paths or secrets.
+- [Technical design](TECHNICAL_DESIGN.md#13-observability-and-health)
+- [Advanced client configuration](ADVANCED_CONFIGURATION.md#telemetry)
+- [GitHub Actions deployment](GITHUB_ACTIONS_DEPLOYMENT.md)

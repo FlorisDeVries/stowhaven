@@ -1,10 +1,10 @@
 #!/usr/bin/env pwsh
 <#
 .SYNOPSIS
-Grants the Backup API gateway application role to the Gateway managed identity.
+Grants the Stowhaven API gateway application role to the Gateway managed identity.
 
 .DESCRIPTION
-Assigns the `backup.gateway` application role from the Backup API app registration
+Assigns the `backup.gateway` application role from the Stowhaven API app registration
 to the Gateway Container App managed identity service principal. Run this after
 the Gateway Container App has a system-assigned managed identity.
 

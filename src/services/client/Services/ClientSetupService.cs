@@ -15,7 +15,7 @@ public interface IClientSetupService
 {
     /// <summary>
     /// Interactive first-time setup: collects backup targets, signs in, and verifies
-    /// the account can actually reach the backup API end-to-end. Individual steps can
+    /// the account can actually reach Stowhaven end-to-end. Individual steps can
     /// be skipped via <paramref name="options"/> for reruns that only need part of the flow.
     /// </summary>
     Task ConfigureAsync(ConfigureOptions options, CancellationToken cancellationToken);
@@ -46,7 +46,7 @@ public partial class ClientSetupService(
 
     public async Task ConfigureAsync(ConfigureOptions options, CancellationToken cancellationToken)
     {
-        Console.WriteLine("=== Backup Client Setup ===");
+        Console.WriteLine("=== Stowhaven Setup ===");
         Console.WriteLine();
 
         if (options.SkipTargets)
@@ -78,7 +78,7 @@ public partial class ClientSetupService(
         else
         {
             Console.WriteLine();
-            Console.WriteLine("Checking access to the backup API...");
+            Console.WriteLine("Checking access to Stowhaven...");
             await CheckAccessAsync(cancellationToken);
         }
 
