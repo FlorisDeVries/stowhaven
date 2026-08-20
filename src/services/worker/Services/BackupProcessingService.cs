@@ -646,7 +646,11 @@ public partial class BackupProcessingService(
             var stagingPrefix = $"staging/{deviceId:N}/{runId:N}/";
             var deletedStagingBlobCount = 0;
 
-            await foreach (var blob in containerClient.GetBlobsAsync(prefix: stagingPrefix, cancellationToken: cancellationToken))
+            await foreach (var blob in containerClient.GetBlobsAsync(
+                               BlobTraits.None,
+                               BlobStates.None,
+                               prefix: stagingPrefix,
+                               cancellationToken: cancellationToken))
             {
                 await containerClient.GetBlobClient(blob.Name).DeleteIfExistsAsync(cancellationToken: cancellationToken);
                 deletedStagingBlobCount++;

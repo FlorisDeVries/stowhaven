@@ -1,4 +1,5 @@
 using Azure.Storage.Blobs;
+using Azure.Storage.Blobs.Models;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -229,7 +230,11 @@ public partial class OperationalService(
         var deletedCount = 0;
         var skippedActiveRunCount = 0;
 
-        await foreach (var blob in containerClient.GetBlobsAsync(prefix: "staging/", cancellationToken: cancellationToken))
+        await foreach (var blob in containerClient.GetBlobsAsync(
+                   BlobTraits.None,
+                   BlobStates.None,
+                   prefix: "staging/",
+                   cancellationToken: cancellationToken))
         {
             scannedCount++;
             var lastModified = blob.Properties.LastModified;
