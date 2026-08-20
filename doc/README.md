@@ -12,7 +12,7 @@ The main project overview is in [../README.md](../README.md). This folder contai
 
 - [Technical Design](TECHNICAL_DESIGN.md) - full architecture, flows, storage layout, state model, and security design.
 - [Authentication](AUTHENTICATION.md) - Entra ID authentication and authorization model.
-- [App Registrations](APP_REGISTRATIONS.md) - Entra application roles, scopes, credentials, and current deployment IDs.
+- [App Registrations](APP_REGISTRATIONS.md) - Entra application roles, scopes, credentials, and configuration locations.
 - [Monitoring](MONITORING.md) - logs, metrics, health checks, and diagnostics.
 - [Advanced Configuration](ADVANCED_CONFIGURATION.md) - performance tuning, resilience, encryption, and advanced client scenarios.
 - [Testing Guide](TESTING.md) - test strategy and client testing instructions.

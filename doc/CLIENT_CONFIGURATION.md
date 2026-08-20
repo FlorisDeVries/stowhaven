@@ -53,7 +53,7 @@ The client resolves configuration relative to the executable directory, not the 
 
 | File | Purpose |
 | --- | --- |
-| `appsettings.json` | Shipped defaults, hosted Gateway URL, authentication identifiers, default ignore file, and baseline client options. |
+| `appsettings.json` | Shipped placeholders for the hosted Gateway and authentication identifiers, plus the default ignore file and baseline client options. Replace the placeholders for your deployment before publishing the client. |
 | `appsettings.{Environment}.json` | Environment-specific overrides. |
 | `appsettings.local.json` | Per-machine backup targets written by `configure`; intentionally excluded from publish output. |
 

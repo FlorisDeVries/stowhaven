@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.44.1.10279",
-      "templateHash": "17687038214368102253"
+      "templateHash": "5338858048144615000"
     }
   },
   "parameters": {
@@ -18,7 +18,7 @@
     },
     "nameSuffix": {
       "type": "string",
-      "defaultValue": "fdev-weu-prd",
+      "defaultValue": "stowhaven-weu-dev",
       "minLength": 1,
       "metadata": {
         "description": "Suffix for resource names (with dashes)"
@@ -26,7 +26,7 @@
     },
     "nameSuffixStr": {
       "type": "string",
-      "defaultValue": "fdevweuprd",
+      "defaultValue": "stowhavenweudev",
       "minLength": 2,
       "metadata": {
         "description": "Suffix for storage-account-style names (no dashes)"
@@ -62,14 +62,14 @@
     },
     "containerImageRegistry": {
       "type": "string",
-      "defaultValue": "ghcr.io/florisdevries/stowhaven",
+      "defaultValue": "ghcr.io/your-github-owner/stowhaven",
       "metadata": {
         "description": "Container image registry path that service image names are appended to. GHCR requires a lowercase repository path."
       }
     },
     "ghcrPullUsername": {
       "type": "string",
-      "defaultValue": "FlorisDeVries",
+      "defaultValue": "",
       "metadata": {
         "description": "Username owning the GHCR pull token. Only used when ghcrPullToken is provided."
       }
@@ -83,9 +83,9 @@
     },
     "deployContainerApps": {
       "type": "bool",
-      "defaultValue": true,
+      "defaultValue": false,
       "metadata": {
-        "description": "Deploy Container Apps and their runtime role assignments. Set false for first-phase infrastructure bootstrap before images exist in the registry."
+        "description": "Deploy Container Apps and their runtime role assignments. Authentication inputs must also be complete. Defaults to false for a safe foundation-only deployment."
       }
     },
     "allowCopyDeleteFallback": {
@@ -148,14 +148,14 @@
       "type": "string",
       "defaultValue": "",
       "metadata": {
-        "description": "Optional Microsoft Entra application client ID for Container Apps built-in authentication on the Gateway. Leave empty to deploy without built-in auth."
+        "description": "Microsoft Entra application client ID for Container Apps built-in authentication on the Gateway. Required when deployContainerApps is true."
       }
     },
     "gatewayAuthClientSecret": {
       "type": "securestring",
       "defaultValue": "",
       "metadata": {
-        "description": "Optional Microsoft Entra application client secret for Container Apps built-in authentication on the Gateway."
+        "description": "Microsoft Entra application client secret for Container Apps built-in authentication on the Gateway. Required when deployContainerApps is true."
       }
     },
     "gatewayAuthAllowedAudiences": {
@@ -242,20 +242,21 @@
     },
     "apiAuthClientId": {
       "type": "string",
-      "defaultValue": "906eb0e3-e351-47c0-a68a-690207f4cccb",
+      "defaultValue": "",
       "metadata": {
         "description": "Microsoft Entra application/client ID of the Stowhaven API app registration."
       }
     },
     "apiAuthAudience": {
       "type": "string",
-      "defaultValue": "[format('api://{0}', parameters('apiAuthClientId'))]",
+      "defaultValue": "[if(empty(parameters('apiAuthClientId')), '', format('api://{0}', parameters('apiAuthClientId')))]",
       "metadata": {
         "description": "JWT audience accepted by the Stowhaven API. Defaults to api://{apiAuthClientId}."
       }
     }
   },
   "variables": {
+    "deployAuthenticatedContainerApps": "[and(and(and(and(parameters('deployContainerApps'), not(empty(parameters('gatewayAuthClientId')))), not(empty(parameters('gatewayAuthClientSecret')))), not(empty(parameters('apiAuthClientId')))), not(empty(parameters('apiAuthAudience'))))]",
     "commonTags": {
       "Environment": "Production",
       "Project": "Stowhaven"
@@ -323,7 +324,7 @@
       ]
     },
     {
-      "condition": "[parameters('deployContainerApps')]",
+      "condition": "[variables('deployAuthenticatedContainerApps')]",
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
       "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('dataStorageAccountName'))]",
@@ -339,7 +340,7 @@
       ]
     },
     {
-      "condition": "[parameters('deployContainerApps')]",
+      "condition": "[variables('deployAuthenticatedContainerApps')]",
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
       "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('dataStorageAccountName'))]",
@@ -355,7 +356,7 @@
       ]
     },
     {
-      "condition": "[parameters('deployContainerApps')]",
+      "condition": "[variables('deployAuthenticatedContainerApps')]",
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
       "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('dataStorageAccountName'))]",
@@ -371,7 +372,7 @@
       ]
     },
     {
-      "condition": "[parameters('deployContainerApps')]",
+      "condition": "[variables('deployAuthenticatedContainerApps')]",
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
       "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('dataStorageAccountName'))]",
@@ -387,7 +388,7 @@
       ]
     },
     {
-      "condition": "[parameters('deployContainerApps')]",
+      "condition": "[variables('deployAuthenticatedContainerApps')]",
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
       "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('dataStorageAccountName'))]",
@@ -403,7 +404,7 @@
       ]
     },
     {
-      "condition": "[parameters('deployContainerApps')]",
+      "condition": "[variables('deployAuthenticatedContainerApps')]",
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
       "scope": "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]",
@@ -419,7 +420,7 @@
       ]
     },
     {
-      "condition": "[parameters('deployContainerApps')]",
+      "condition": "[variables('deployAuthenticatedContainerApps')]",
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
       "scope": "[resourceId('Microsoft.KeyVault/vaults', variables('keyVaultName'))]",
@@ -435,7 +436,7 @@
       ]
     },
     {
-      "condition": "[parameters('deployContainerApps')]",
+      "condition": "[variables('deployAuthenticatedContainerApps')]",
       "type": "Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments",
       "apiVersion": "2024-05-15",
       "name": "[format('{0}/{1}', variables('cosmosAccountNameEffective'), guid(resourceGroup().id, variables('cosmosAccountNameEffective'), format('ca-{0}', parameters('nameSuffix')), 'cosmos-data-contributor'))]",
@@ -449,7 +450,7 @@
       ]
     },
     {
-      "condition": "[parameters('deployContainerApps')]",
+      "condition": "[variables('deployAuthenticatedContainerApps')]",
       "type": "Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments",
       "apiVersion": "2024-05-15",
       "name": "[format('{0}/{1}', variables('cosmosAccountNameEffective'), guid(resourceGroup().id, variables('cosmosAccountNameEffective'), format('ca-{0}-worker', parameters('nameSuffix')), 'cosmos-data-contributor'))]",
@@ -492,7 +493,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.44.1.10279",
-              "templateHash": "9038720613819834524"
+              "templateHash": "13549594709600063193"
             }
           },
           "parameters": {
@@ -505,7 +506,7 @@
             "nameSuffixStr": {
               "type": "string",
               "metadata": {
-                "description": "Suffix for storage account names (no dashes, e.g. fdevweuprd)"
+                "description": "Suffix for storage account names (no dashes, e.g. stowhavenweudev)"
               }
             },
             "lifecycleArchiveAfterDays": {
@@ -944,7 +945,7 @@
       }
     },
     {
-      "condition": "[parameters('deployContainerApps')]",
+      "condition": "[variables('deployAuthenticatedContainerApps')]",
       "type": "Microsoft.Resources/deployments",
       "apiVersion": "2025-04-01",
       "name": "compute",
@@ -1067,7 +1068,7 @@
             "_generator": {
               "name": "bicep",
               "version": "0.44.1.10279",
-              "templateHash": "10949819132835713979"
+              "templateHash": "16055933078047825555"
             }
           },
           "parameters": {
@@ -1211,16 +1212,14 @@
             },
             "gatewayAuthClientId": {
               "type": "string",
-              "defaultValue": "",
               "metadata": {
-                "description": "Optional Microsoft Entra application client ID for Container Apps built-in authentication on the Gateway. Leave empty to deploy without built-in auth."
+                "description": "Microsoft Entra application client ID for Container Apps built-in authentication on the Gateway."
               }
             },
             "gatewayAuthClientSecret": {
               "type": "securestring",
-              "defaultValue": "",
               "metadata": {
-                "description": "Optional Microsoft Entra application client secret for Container Apps built-in authentication on the Gateway."
+                "description": "Microsoft Entra application client secret for Container Apps built-in authentication on the Gateway."
               }
             },
             "gatewayAuthAllowedAudiences": {
@@ -1293,14 +1292,12 @@
             },
             "apiAuthClientId": {
               "type": "string",
-              "defaultValue": "906eb0e3-e351-47c0-a68a-690207f4cccb",
               "metadata": {
                 "description": "Microsoft Entra application/client ID of the Stowhaven API app registration."
               }
             },
             "apiAuthAudience": {
               "type": "string",
-              "defaultValue": "[format('api://{0}', parameters('apiAuthClientId'))]",
               "metadata": {
                 "description": "JWT audience accepted by the Stowhaven API. Defaults to api://{apiAuthClientId}."
               }
@@ -1897,29 +1894,33 @@
     }
   ],
   "outputs": {
+    "containerAppsDeployed": {
+      "type": "bool",
+      "value": "[variables('deployAuthenticatedContainerApps')]"
+    },
     "containerAppName": {
       "type": "string",
-      "value": "[if(parameters('deployContainerApps'), reference(resourceId('Microsoft.Resources/deployments', 'compute'), '2025-04-01').outputs.containerAppName.value, '')]"
+      "value": "[if(variables('deployAuthenticatedContainerApps'), reference(resourceId('Microsoft.Resources/deployments', 'compute'), '2025-04-01').outputs.containerAppName.value, '')]"
     },
     "containerAppUrl": {
       "type": "string",
-      "value": "[if(parameters('deployContainerApps'), format('https://{0}', reference(resourceId('Microsoft.Resources/deployments', 'compute'), '2025-04-01').outputs.containerAppFqdn.value), '')]"
+      "value": "[if(variables('deployAuthenticatedContainerApps'), format('https://{0}', reference(resourceId('Microsoft.Resources/deployments', 'compute'), '2025-04-01').outputs.containerAppFqdn.value), '')]"
     },
     "workerContainerAppName": {
       "type": "string",
-      "value": "[if(parameters('deployContainerApps'), reference(resourceId('Microsoft.Resources/deployments', 'compute'), '2025-04-01').outputs.workerContainerAppName.value, '')]"
+      "value": "[if(variables('deployAuthenticatedContainerApps'), reference(resourceId('Microsoft.Resources/deployments', 'compute'), '2025-04-01').outputs.workerContainerAppName.value, '')]"
     },
     "gatewayContainerAppName": {
       "type": "string",
-      "value": "[if(parameters('deployContainerApps'), reference(resourceId('Microsoft.Resources/deployments', 'compute'), '2025-04-01').outputs.gatewayContainerAppName.value, '')]"
+      "value": "[if(variables('deployAuthenticatedContainerApps'), reference(resourceId('Microsoft.Resources/deployments', 'compute'), '2025-04-01').outputs.gatewayContainerAppName.value, '')]"
     },
     "gatewayContainerAppUrl": {
       "type": "string",
-      "value": "[if(parameters('deployContainerApps'), format('https://{0}', reference(resourceId('Microsoft.Resources/deployments', 'compute'), '2025-04-01').outputs.gatewayContainerAppFqdn.value), '')]"
+      "value": "[if(variables('deployAuthenticatedContainerApps'), format('https://{0}', reference(resourceId('Microsoft.Resources/deployments', 'compute'), '2025-04-01').outputs.gatewayContainerAppFqdn.value), '')]"
     },
     "gatewayPrincipalId": {
       "type": "string",
-      "value": "[if(parameters('deployContainerApps'), reference(resourceId('Microsoft.Resources/deployments', 'compute'), '2025-04-01').outputs.gatewayPrincipalId.value, '')]"
+      "value": "[if(variables('deployAuthenticatedContainerApps'), reference(resourceId('Microsoft.Resources/deployments', 'compute'), '2025-04-01').outputs.gatewayPrincipalId.value, '')]"
     },
     "dataStorageAccountName": {
       "type": "string",

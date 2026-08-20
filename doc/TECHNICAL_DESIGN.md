@@ -68,7 +68,7 @@ Production exposes only the Gateway publicly. API and worker ingress are interna
 
 The production client requests the Gateway's delegated `backup.access` scope. The Gateway validates that token with Easy Auth and exchanges it for the API's `backup.client` scope while preserving the user's tenant and object identifiers. The API accepts delegated `backup.client`/`backup.admin` tokens and the `backup.gateway` application role.
 
-The two delegated scopes currently pass the same global token gate. No endpoint-level policy restricts `/api/ops/*` to `backup.admin`, so that scope is reserved rather than an enforced administrative boundary in the current implementation.
+The two delegated scopes pass the global token gate, while `/api/ops/*` has an additional endpoint-level policy requiring the exact `backup.admin` scope. Normal `backup.client` and app-only `backup.gateway` tokens cannot call those operational routes.
 
 The API binds every registered device to the authenticated `(tenantId, userId)` pair. Device-scoped backup and restore operations authorize that ownership before reading state or issuing storage access.
 

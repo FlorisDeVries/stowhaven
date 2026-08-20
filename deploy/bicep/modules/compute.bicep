@@ -66,12 +66,12 @@ param apiMinReplicas int = 0
 @description('Minimum Gateway replicas. Keep 0 for lowest cost; the app scales up on HTTP requests.')
 param gatewayMinReplicas int = 0
 
-@description('Optional Microsoft Entra application client ID for Container Apps built-in authentication on the Gateway. Leave empty to deploy without built-in auth.')
-param gatewayAuthClientId string = ''
+@description('Microsoft Entra application client ID for Container Apps built-in authentication on the Gateway.')
+param gatewayAuthClientId string
 
-@description('Optional Microsoft Entra application client secret for Container Apps built-in authentication on the Gateway.')
+@description('Microsoft Entra application client secret for Container Apps built-in authentication on the Gateway.')
 @secure()
-param gatewayAuthClientSecret string = ''
+param gatewayAuthClientSecret string
 
 @description('Optional allowed token audiences for Gateway built-in auth. Defaults to the Gateway auth client ID when auth is enabled.')
 param gatewayAuthAllowedAudiences array = []
@@ -105,10 +105,10 @@ param tags object
 param apiAuthTenantId string = tenant().tenantId
 
 @description('Microsoft Entra application/client ID of the Stowhaven API app registration.')
-param apiAuthClientId string = '906eb0e3-e351-47c0-a68a-690207f4cccb'
+param apiAuthClientId string
 
 @description('JWT audience accepted by the Stowhaven API. Defaults to api://{apiAuthClientId}.')
-param apiAuthAudience string = 'api://${apiAuthClientId}'
+param apiAuthAudience string
 
 var ghcrAuthEnabled = !empty(ghcrPullToken) && !empty(ghcrPullUsername)
 var ghcrPullTokenSecretName = 'ghcr-pull-token'

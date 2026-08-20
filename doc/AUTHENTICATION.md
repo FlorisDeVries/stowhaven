@@ -39,7 +39,7 @@ Swagger document requests do not use OBO. The Gateway adds a deployment-specific
 
 The API accepts delegated `backup.client` or `backup.admin`, and the `backup.gateway` application role. Both API and Gateway app registrations should issue v2 access tokens.
 
-The normal hosted client does not request `backup.admin`. Although that scope exists in the API registration, the application currently has no endpoint-level admin policy; `/api/ops/*` is reachable by any authenticated token that passes the global API gate. Do not treat the presence of `backup.admin` as an enforced administrative boundary yet.
+The normal hosted client does not request `backup.admin`. Operational routes under `/api/ops/*` additionally require that delegated scope. The Gateway's `backup.gateway` application role and a normal `backup.client` token do not satisfy the operations policy.
 
 ## Client configuration
 
@@ -84,6 +84,7 @@ Production controllers require authentication globally. After JWT validation:
 
 - delegated tokens must include `backup.client` or `backup.admin`;
 - app-only tokens must include `backup.gateway`;
+- `/api/ops/*` requires a delegated token containing the exact `backup.admin` scope;
 - device registration records the authenticated tenant/user identity;
 - device-scoped backup and restore operations authorize that identity against the device registration.
 
@@ -98,11 +99,11 @@ Set these GitHub repository values for the hosted flow:
 - variable `API_AUTH_CLIENT_ID`
 - variable `API_AUTH_AUDIENCE`
 
-If either Gateway auth value is empty, Bicep omits Easy Auth and OBO configuration. That can be useful in a deliberately isolated non-production environment, but it is not the secure hosted setup.
+The GitHub workflow rejects a full deployment if required Gateway or API settings are missing. The Bicep template also defaults to a foundation-only deployment and omits Container Apps unless all authentication inputs are complete.
 
 The Gateway managed identity's `backup.gateway` assignment is a manual post-deployment step today; use `scripts/Grant-GatewayApiAppRole.ps1` if the fallback path is required.
 
-For the complete registration shapes and current IDs, see [App registrations](APP_REGISTRATIONS.md).
+For the complete registration shapes and configuration locations, see [App registrations](APP_REGISTRATIONS.md).
 
 ## Security notes
 
@@ -110,7 +111,7 @@ For the complete registration shapes and current IDs, see [App registrations](AP
 - Restrict user assignment on the Gateway enterprise application when the product is not tenant-wide.
 - Rotate the Gateway OBO client secret before expiry and update the GitHub secret.
 - Keep the API and worker ingress internal; only the Gateway should be public.
-- Add an explicit `backup.admin` authorization policy before exposing operational endpoints to users who should not administer the service.
+- Grant `backup.admin` only to dedicated operator clients and accounts; normal backup clients need only `backup.access` at the Gateway.
 
 ## References
 

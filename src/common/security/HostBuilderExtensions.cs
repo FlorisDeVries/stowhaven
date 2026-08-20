@@ -1,4 +1,5 @@
 using FlorisDeV.Security.Authentication;
+using FlorisDeV.Security.Authorization;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Builder;
@@ -48,9 +49,14 @@ public static class HostBuilderExtensions
                 // the local sidecar without a JWT.
                 options.FallbackPolicy = null;
 
-                // Example: Policy requiring specific role
-                options.AddPolicy("RequireAdminRole", policy =>
-                    policy.RequireRole("Admin", "Developer"));
+                options.AddPolicy(BackupAuthorizationPolicies.Admin, policy =>
+                {
+                    policy.RequireAuthenticatedUser();
+                    policy.RequireAssertion(context =>
+                        BackupAuthorizationPolicies.HasScope(
+                            context.User,
+                            BackupAuthorizationPolicies.AdminScope));
+                });
             });
         }
 

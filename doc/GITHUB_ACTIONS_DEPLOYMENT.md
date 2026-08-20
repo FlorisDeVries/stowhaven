@@ -1,45 +1,28 @@
 # Deploying Stowhaven with GitHub Actions
 
-This project deploys through GitHub Actions with Azure OIDC and a multi-phase workflow.
+Stowhaven deploys through GitHub Actions using Azure OpenID Connect (OIDC). No Azure client secret is stored in GitHub.
 
 ## Workflow phases
 
-The workflow in `.github/workflows/deploy.yml` runs these phases:
+`.github/workflows/deploy.yml` runs five phases:
 
-1. **Build and test**
-   - Restores, builds, and tests `FlorisDeV.BackupApi.sln`.
-   - Builds `src/services/gateway/Gateway.csproj` separately because the Gateway is not in the solution.
+1. Build and test the solution and the separately hosted Gateway project.
+2. Compile and validate the Bicep foundation and full deployment.
+3. Deploy shared infrastructure after approval through the `production` environment.
+4. Build the API, worker, and Gateway images and push them to GHCR.
+5. Deploy the Container Apps with the immutable commit SHA as their image tag.
 
-2. **Validate Bicep**
-   - Compiles Bicep and parameters.
-   - Validates both `deployContainerApps=false` and `deployContainerApps=true` modes.
-
-3. **Deploy foundation**
-   - Deploys shared infrastructure only with `deployContainerApps=false`.
-   - Creates or updates Blob/Queue Storage, monitoring, Key Vault, and the database/containers in the referenced Cosmos DB account.
-   - Container images do not need to exist yet.
-
-4. **Build and push images**
-   - Builds `backup-api` from `src/services/api/Dockerfile`.
-   - Builds `backup-worker` from `src/services/worker/Dockerfile`.
-   - Builds `gateway` from `src/services/gateway/Dockerfile`.
-   - Pushes the commit-SHA tag and `latest` for all three images to GitHub Container Registry (GHCR).
-
-5. **Deploy Container Apps**
-   - Re-runs the Bicep template with `deployContainerApps=true` and `imageTag=<commit sha>`.
-   - Creates or updates the internal API and worker Container Apps and the public Gateway after the images exist.
+Pull requests run only the first phase. Deployment jobs receive narrowly scoped permissions, and third-party actions are pinned to commit SHAs.
 
 ## One-time Azure setup
 
-Use these commands from a local terminal where `az login` is already authenticated with an account that can create app registrations and assign roles.
-
-Set variables:
+Run these commands after `az login` with an account allowed to create app registrations and assign roles. Replace every example value for your environment.
 
 ```bash
-SUBSCRIPTION_ID="6afebbda-6afc-4bf0-a8ee-740a9688d0eb"
-TENANT_ID="cf8adfe1-bb3b-4ef0-8ba9-44dcddb8ecb9"
-RESOURCE_GROUP="rg-fdev-weu-backup-prd"
-GITHUB_ORG="FlorisDeVries"
+SUBSCRIPTION_ID="<azure-subscription-id>"
+TENANT_ID="<entra-tenant-id>"
+RESOURCE_GROUP="<azure-resource-group>"
+GITHUB_ORG="<github-owner>"
 GITHUB_REPO="stowhaven"
 APP_NAME="github-${GITHUB_REPO}-deploy"
 ```
@@ -58,19 +41,47 @@ SP_OBJECT_ID=$(az ad sp create \
   --output tsv)
 ```
 
-Create GitHub federated credentials for `main` and the `production` environment:
+If reusing an existing deployment identity, set `APP_ID` to its application/client ID and resolve its service-principal object ID:
+
+```bash
+APP_ID="<existing-deployment-app-id>"
+SP_OBJECT_ID=$(az ad sp show --id "$APP_ID" --query id --output tsv)
+```
+
+### Create immutable GitHub OIDC subjects
+
+GitHub's immutable subject format binds trust to the numeric owner and repository IDs as well as their readable names. Resolve the IDs with GitHub CLI:
+
+```bash
+GITHUB_OWNER_ID=$(gh api "users/$GITHUB_ORG" --jq .id)
+GITHUB_REPOSITORY_ID=$(gh api "repos/$GITHUB_ORG/$GITHUB_REPO" --jq .id)
+
+MAIN_SUBJECT="repo:${GITHUB_ORG}@${GITHUB_OWNER_ID}/${GITHUB_REPO}@${GITHUB_REPOSITORY_ID}:ref:refs/heads/main"
+PRODUCTION_SUBJECT="repo:${GITHUB_ORG}@${GITHUB_OWNER_ID}/${GITHUB_REPO}@${GITHUB_REPOSITORY_ID}:environment:production"
+```
+
+Create one credential for branch-scoped jobs (`validate` and `deploy-apps`) and one for the environment-scoped foundation job:
 
 ```bash
 az ad app federated-credential create \
   --id "$APP_ID" \
-  --parameters "{\"name\":\"main-branch\",\"issuer\":\"https://token.actions.githubusercontent.com\",\"subject\":\"repo:${GITHUB_ORG}/${GITHUB_REPO}:ref:refs/heads/main\",\"audiences\":[\"api://AzureADTokenExchange\"]}"
+  --parameters "{\"name\":\"stowhaven-main-immutable\",\"issuer\":\"https://token.actions.githubusercontent.com\",\"subject\":\"${MAIN_SUBJECT}\",\"audiences\":[\"api://AzureADTokenExchange\"]}"
 
 az ad app federated-credential create \
   --id "$APP_ID" \
-  --parameters "{\"name\":\"production-environment\",\"issuer\":\"https://token.actions.githubusercontent.com\",\"subject\":\"repo:${GITHUB_ORG}/${GITHUB_REPO}:environment:production\",\"audiences\":[\"api://AzureADTokenExchange\"]}"
+  --parameters "{\"name\":\"stowhaven-production-immutable\",\"issuer\":\"https://token.actions.githubusercontent.com\",\"subject\":\"${PRODUCTION_SUBJECT}\",\"audiences\":[\"api://AzureADTokenExchange\"]}"
 ```
 
-Register the Azure resource providers used by the Bicep template. This is a one-time subscription setup step and must be run by an identity with subscription-level provider registration permissions:
+When migrating from an older repository name, keep the old credentials until a complete Stowhaven deployment succeeds. Then list and remove only the obsolete entries:
+
+```bash
+az ad app federated-credential list --id "$APP_ID" --output table
+az ad app federated-credential delete --id "$APP_ID" --federated-credential-id "<obsolete-credential-name>"
+```
+
+### Register providers and grant deployment roles
+
+Register the providers used by the template:
 
 ```bash
 for namespace in \
@@ -83,19 +94,12 @@ for namespace in \
   Microsoft.Storage; do
   az provider register --namespace "$namespace" --wait
 done
-
-az provider list \
-  --query "[?namespace=='Microsoft.App' || namespace=='Microsoft.DocumentDB' || namespace=='Microsoft.Insights' || namespace=='Microsoft.KeyVault' || namespace=='Microsoft.ManagedIdentity' || namespace=='Microsoft.OperationalInsights' || namespace=='Microsoft.Storage'].{namespace:namespace,state:registrationState}" \
-  --output table
 ```
 
-Assign Azure roles at resource-group scope:
+Assign the deployment identity at resource-group scope:
 
 ```bash
-RG_ID=$(az group show \
-  --name "$RESOURCE_GROUP" \
-  --query id \
-  --output tsv)
+RG_ID=$(az group show --name "$RESOURCE_GROUP" --query id --output tsv)
 
 az role assignment create \
   --assignee-object-id "$SP_OBJECT_ID" \
@@ -108,88 +112,81 @@ az role assignment create \
   --assignee-principal-type ServicePrincipal \
   --role "Role Based Access Control Administrator" \
   --scope "$RG_ID"
-
 ```
 
-Why these roles:
+`Contributor` deploys the resources. `Role Based Access Control Administrator` permits the role-assignment operations declared in Bicep; scope it to the deployment resource group.
 
-- `Contributor`: deploys ARM/Bicep resources in the resource group.
-- `Role Based Access Control Administrator`: lets the workflow create managed-identity role assignments declared in Bicep.
+## GitHub repository configuration
 
-Images are pushed to GHCR with the workflow's `packages: write` permission, so the Azure deployment identity does not need an image-registry push role.
-
-## GitHub repository variables or secrets
-
-Create these as **repository-level** variables under **Settings → Secrets and variables → Actions → Variables**.
-
+Create these under **Settings → Secrets and variables → Actions → Variables**:
 
 | Variable | Value |
 | --- | --- |
-| `AZURE_CLIENT_ID` | the `APP_ID` from the setup commands |
-| `AZURE_TENANT_ID` | `cf8adfe1-bb3b-4ef0-8ba9-44dcddb8ecb9` |
-| `AZURE_SUBSCRIPTION_ID` | `6afebbda-6afc-4bf0-a8ee-740a9688d0eb` |
-| `AZURE_RESOURCE_GROUP` | `rg-fdev-weu-backup-prd` |
-| `GATEWAY_AUTH_CLIENT_ID` | application ID of the Gateway app registration used by Easy Auth and OBO |
-| `API_AUTH_CLIENT_ID` | application ID of the protected Stowhaven API |
-| `API_AUTH_AUDIENCE` | API audience, normally `api://<API_AUTH_CLIENT_ID>` |
+| `AZURE_CLIENT_ID` | deployment identity application/client ID (`APP_ID`) |
+| `AZURE_TENANT_ID` | Entra tenant ID |
+| `AZURE_SUBSCRIPTION_ID` | Azure subscription ID |
+| `AZURE_RESOURCE_GROUP` | target resource-group name |
+| `AZURE_NAME_SUFFIX` | existing dashed resource suffix, for example `stowhaven-weu-prd` |
+| `AZURE_NAME_SUFFIX_STR` | corresponding storage-safe suffix without dashes |
+| `AZURE_COSMOS_ACCOUNT_NAME` | existing Cosmos DB account name |
+| `GHCR_IMAGE_REGISTRY` | lowercase package root, for example `ghcr.io/example/stowhaven` |
+| `GHCR_PULL_USERNAME` | GitHub username that owns the package-read token |
+| `GATEWAY_AUTH_CLIENT_ID` | Gateway application/client ID used by Easy Auth and OBO |
+| `API_AUTH_CLIENT_ID` | protected API application/client ID |
+| `API_AUTH_AUDIENCE` | normally `api://<API_AUTH_CLIENT_ID>` |
 
 Create these under **Actions → Secrets**:
 
 | Secret | Value |
 | --- | --- |
-| `GHCR_PULL_TOKEN` | token with `read:packages`, used by Container Apps to pull private GHCR images |
-| `GATEWAY_AUTH_CLIENT_SECRET` | client secret for the Gateway's OBO exchange |
+| `GHCR_PULL_TOKEN` | fine-grained or classic token able to read the private GHCR packages |
+| `GATEWAY_AUTH_CLIENT_SECRET` | Gateway confidential-client secret used for OBO |
 
-No Azure deployment client secret is required. GitHub-to-Azure authentication uses OIDC. See [Authentication](AUTHENTICATION.md) for the API, Gateway, and public-client registrations.
+The Azure IDs are identifiers, not credentials, so variables are preferred. Legacy secrets with the same Azure names can remain during migration because the workflow falls back to them when a variable is absent.
 
 ## GitHub environment
 
-Create a GitHub environment named `production` under **Settings → Environments**.
+Create a `production` environment under **Settings → Environments**. Restrict it to `main` and, where your GitHub plan supports it, require a deployment reviewer.
 
-Recommended settings:
+The environment protects the foundation job. The image build and final application deployment depend on that approved job, so a single approval gates the full deployment.
 
-- Require manual approval for deployments.
-- Restrict deployment branches to `main`.
+## Repository and package rename
 
-The workflow uses this environment on the foundation deployment job as the production approval gate. The image build and final Container Apps deployment depend on that approved foundation job, so one approval unlocks the complete multi-phase deployment.
+After a repository rename:
 
-## Renaming the existing GitHub repository
+1. Point local clones at the new URL: `git remote set-url origin git@github.com:<owner>/stowhaven.git`.
+2. Create new immutable OIDC credentials using the current owner/repository names and numeric IDs.
+3. Update the workflow's lowercase `IMAGE_REGISTRY` path if the owner or repository changed.
+4. Run a complete deployment to publish `backup-api`, `backup-worker`, and `gateway` beneath the new GHCR repository path.
+5. Verify Container Apps are using the new images before removing old federated credentials or packages.
 
-The repository-facing configuration now expects `FlorisDeVries/stowhaven`. When renaming the existing GitHub repository:
-
-1. Rename the repository to `stowhaven` in GitHub.
-2. Update the local remote with `git remote set-url origin git@github.com:FlorisDeVries/stowhaven.git`.
-3. Create or update the Azure workload identity's federated credentials so their subjects use `repo:FlorisDeVries/stowhaven:...`. Credentials tied to `repo:FlorisDeVries/backup-api:...` will no longer authorize Actions after the rename.
-4. Run the deployment once to publish the images under `ghcr.io/florisdevries/stowhaven`. The service image suffixes remain `backup-api`, `backup-worker`, and `gateway` for compatibility.
-5. After a successful deployment, remove obsolete federated credentials and GHCR packages only if they are no longer referenced.
-
-GitHub redirects old repository URLs, but the OIDC subject and GHCR package path do not follow that redirect automatically.
+GitHub redirects ordinary repository URLs after a rename. Azure OIDC subjects and GHCR image paths are separate trust and artifact identifiers and must be migrated explicitly.
 
 ## Running deployment
 
-After the variables and environment are configured:
+Push the workflow and Bicep changes to `main`, then use **Actions → Deploy Stowhaven**, or let the `main` push trigger it. Approve the `production` environment when prompted.
 
-1. Push the workflow and Bicep changes to `main`.
-2. Open **Actions → Deploy Stowhaven**.
-3. Run the workflow manually, or let it run from the `main` push.
-4. Approve the `production` environment when prompted.
-
-The workflow deploys foundation first, pushes all three images, then deploys Container Apps with the commit SHA as the image tag.
+Do not remove old credentials merely because validation passes. Wait for the final Container Apps deployment and a health check through the public Gateway.
 
 ## Local equivalent
 
-The same phases can be run locally:
+Set all values explicitly; the committed Bicep parameters are safe examples, not production configuration:
 
 ```bash
+RESOURCE_GROUP="<azure-resource-group>"
+NAME_SUFFIX="<dashed-resource-suffix>"
+NAME_SUFFIX_STR="<storage-safe-resource-suffix>"
+COSMOS_ACCOUNT_NAME="<existing-cosmos-account>"
+GHCR_USERNAME="<github-owner>"
+GHCR_TOKEN="<token-with-read-and-write-packages>"
+IMAGE_REGISTRY="ghcr.io/<lowercase-owner>/stowhaven"
+
 az deployment group create \
-  --resource-group rg-fdev-weu-backup-prd \
+  --resource-group "$RESOURCE_GROUP" \
   --template-file deploy/bicep/main.bicep \
   --parameters deploy/bicep/main.bicepparam \
-  --parameters deployContainerApps=false
-
-GHCR_USERNAME="FlorisDeVries"
-GHCR_TOKEN="<token-with-write-and-read-packages>"
-IMAGE_REGISTRY="ghcr.io/florisdevries/stowhaven"
+  --parameters deployContainerApps=false \
+  --parameters nameSuffix="$NAME_SUFFIX" nameSuffixStr="$NAME_SUFFIX_STR" cosmosAccountName="$COSMOS_ACCOUNT_NAME" containerImageRegistry="$IMAGE_REGISTRY"
 
 echo "$GHCR_TOKEN" | docker login ghcr.io --username "$GHCR_USERNAME" --password-stdin
 
@@ -201,13 +198,14 @@ docker push "$IMAGE_REGISTRY/backup-worker:local"
 docker push "$IMAGE_REGISTRY/gateway:local"
 
 az deployment group create \
-  --resource-group rg-fdev-weu-backup-prd \
+  --resource-group "$RESOURCE_GROUP" \
   --template-file deploy/bicep/main.bicep \
   --parameters deploy/bicep/main.bicepparam \
   --parameters imageTag=local deployContainerApps=true \
+  --parameters nameSuffix="$NAME_SUFFIX" nameSuffixStr="$NAME_SUFFIX_STR" cosmosAccountName="$COSMOS_ACCOUNT_NAME" containerImageRegistry="$IMAGE_REGISTRY" \
   --parameters ghcrPullUsername="$GHCR_USERNAME" ghcrPullToken="$GHCR_TOKEN" \
   --parameters gatewayAuthClientId="$GATEWAY_AUTH_CLIENT_ID" gatewayAuthClientSecret="$GATEWAY_AUTH_CLIENT_SECRET" \
   --parameters apiAuthClientId="$API_AUTH_CLIENT_ID" apiAuthAudience="${API_AUTH_AUDIENCE:-api://$API_AUTH_CLIENT_ID}"
 ```
 
-Set `GATEWAY_AUTH_CLIENT_ID`, `GATEWAY_AUTH_CLIENT_SECRET`, and `API_AUTH_CLIENT_ID` in the shell before the final deployment. `API_AUTH_AUDIENCE` is optional when the audience is `api://<API_AUTH_CLIENT_ID>`. Leaving the Gateway values empty disables Easy Auth and OBO and should only be done deliberately for a non-production environment.
+Set `GATEWAY_AUTH_CLIENT_ID`, `GATEWAY_AUTH_CLIENT_SECRET`, and `API_AUTH_CLIENT_ID` before the full deployment. The workflow rejects incomplete configuration, and Bicep omits Container Apps unless all Gateway and API authentication inputs are present.

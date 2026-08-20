@@ -1,0 +1,35 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  - package-ecosystem: nuget
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      nuget-production:
+        dependency-type: production
+      nuget-development:
+        dependency-type: development
+
+  - package-ecosystem: docker
+    directory: /src/services/api
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: docker
+    directory: /src/services/worker
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: docker
+    directory: /src/services/gateway
+    schedule:
+      interval: weekly

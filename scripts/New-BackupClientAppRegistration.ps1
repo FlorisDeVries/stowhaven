@@ -12,13 +12,13 @@ By default, only the normal backup client scope (`backup.client`) is granted.
 Use -IncludeAdminScope only for trusted operator/admin clients.
 
 .EXAMPLE
-./scripts/New-BackupClientAppRegistration.ps1
+./scripts/New-BackupClientAppRegistration.ps1 -ApiAppId "<api-app-id>" -ApiUrl "https://<gateway-host>.azurecontainerapps.io"
 
 .EXAMPLE
-./scripts/New-BackupClientAppRegistration.ps1 -DisplayName "Stowhaven Client - Floris Laptop" -GrantAdminConsent
+./scripts/New-BackupClientAppRegistration.ps1 -ApiAppId "<api-app-id>" -ApiUrl "https://<api-host>" -DisplayName "Stowhaven Client - Laptop" -GrantAdminConsent
 
 .EXAMPLE
-./scripts/New-BackupClientAppRegistration.ps1 -IncludeAdminScope -GrantAdminConsent
+./scripts/New-BackupClientAppRegistration.ps1 -ApiAppId "<api-app-id>" -ApiUrl "https://<api-host>" -IncludeAdminScope -GrantAdminConsent
 #>
 
 [CmdletBinding()]
@@ -30,7 +30,8 @@ param(
 
     [string]$TenantId,
 
-    [string]$ApiUrl = "https://ca-fdev-weu-prd.kinddesert-f7d01f23.westeurope.azurecontainerapps.io",
+    [Parameter(Mandatory = $true)]
+    [string]$ApiUrl,
 
     [switch]$IncludeAdminScope,
 

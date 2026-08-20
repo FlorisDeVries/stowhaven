@@ -1,12 +1,15 @@
 using FlorisDeV.BackupApi.Services;
 using FlorisDeV.BackupContracts.Api.Responses;
 using FlorisDeV.BackupContracts.State;
+using FlorisDeV.Security.Authorization;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 namespace FlorisDeV.BackupApi.Controllers;
 
 [ApiController]
 [Route("api/ops")]
+[Authorize(Policy = BackupAuthorizationPolicies.Admin)]
 public sealed class OperationsController(IOperationalService operationalService) : ControllerBase
 {
     [HttpGet("manifests")]

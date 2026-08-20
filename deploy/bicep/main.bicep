@@ -2,7 +2,7 @@
 // Deploys to the existing resource group specified at deployment time.
 // Usage:
 //   az deployment group create \
-//     --resource-group rg-fdev-weu-backup-prd \
+//     --resource-group <resource-group> \
 //     --template-file deploy/bicep/main.bicep \
 //     --parameters deploy/bicep/main.bicepparam
 
@@ -17,11 +17,11 @@ param location string = 'westeurope'
 
 @description('Suffix for resource names (with dashes)')
 @minLength(1)
-param nameSuffix string = 'fdev-weu-prd'
+param nameSuffix string = 'stowhaven-weu-dev'
 
 @description('Suffix for storage-account-style names (no dashes)')
 @minLength(2)
-param nameSuffixStr string = 'fdevweuprd'
+param nameSuffixStr string = 'stowhavenweudev'
 
 @description('Days after which blobs are moved to archive tier')
 param lifecycleArchiveAfterDays int = 30
@@ -36,17 +36,17 @@ param logAnalyticsDailyQuotaGb int = 1
 param imageTag string = 'latest'
 
 @description('Container image registry path that service image names are appended to. GHCR requires a lowercase repository path.')
-param containerImageRegistry string = 'ghcr.io/florisdevries/stowhaven'
+param containerImageRegistry string = 'ghcr.io/your-github-owner/stowhaven'
 
 @description('Username owning the GHCR pull token. Only used when ghcrPullToken is provided.')
-param ghcrPullUsername string = 'FlorisDeVries'
+param ghcrPullUsername string = ''
 
 @description('GitHub token with read:packages used by Container Apps to pull images. Injected by the deploy workflow from the GHCR_PULL_TOKEN secret; leave empty when the packages are public.')
 @secure()
 param ghcrPullToken string = ''
 
-@description('Deploy Container Apps and their runtime role assignments. Set false for first-phase infrastructure bootstrap before images exist in the registry.')
-param deployContainerApps bool = true
+@description('Deploy Container Apps and their runtime role assignments. Authentication inputs must also be complete. Defaults to false for a safe foundation-only deployment.')
+param deployContainerApps bool = false
 
 @description('Explicitly allow copy/delete fallback when ADLS Gen2 rename fails. Keep false in production unless early deletion cost and partial-failure risks are accepted.')
 param allowCopyDeleteFallback bool = false
@@ -72,10 +72,10 @@ param apiMinReplicas int = 0
 @description('Minimum Gateway replicas. Keep 0 for lowest cost; the app scales up on HTTP requests.')
 param gatewayMinReplicas int = 0
 
-@description('Optional Microsoft Entra application client ID for Container Apps built-in authentication on the Gateway. Leave empty to deploy without built-in auth.')
+@description('Microsoft Entra application client ID for Container Apps built-in authentication on the Gateway. Required when deployContainerApps is true.')
 param gatewayAuthClientId string = ''
 
-@description('Optional Microsoft Entra application client secret for Container Apps built-in authentication on the Gateway.')
+@description('Microsoft Entra application client secret for Container Apps built-in authentication on the Gateway. Required when deployContainerApps is true.')
 @secure()
 param gatewayAuthClientSecret string = ''
 
@@ -119,10 +119,12 @@ param keyVaultNetworkDefaultAction string = 'Allow'
 param apiAuthTenantId string = tenant().tenantId
 
 @description('Microsoft Entra application/client ID of the Stowhaven API app registration.')
-param apiAuthClientId string = '906eb0e3-e351-47c0-a68a-690207f4cccb'
+param apiAuthClientId string = ''
 
 @description('JWT audience accepted by the Stowhaven API. Defaults to api://{apiAuthClientId}.')
-param apiAuthAudience string = 'api://${apiAuthClientId}'
+param apiAuthAudience string = empty(apiAuthClientId) ? '' : 'api://${apiAuthClientId}'
+
+var deployAuthenticatedContainerApps = deployContainerApps && !empty(gatewayAuthClientId) && !empty(gatewayAuthClientSecret) && !empty(apiAuthClientId) && !empty(apiAuthAudience)
 
 // ---------------------------------------------------------------------------
 // Locals / derived values
@@ -242,7 +244,7 @@ resource cosmosDeviceRegistryContainer 'Microsoft.DocumentDB/databaseAccounts/sq
 }
 
 // Deploy Container App after monitoring, storage, and dapr-infra.
-module compute 'modules/compute.bicep' = if (deployContainerApps) {
+module compute 'modules/compute.bicep' = if (deployAuthenticatedContainerApps) {
   name: 'compute'
   params: {
     location: location
@@ -291,7 +293,7 @@ module compute 'modules/compute.bicep' = if (deployContainerApps) {
 // Role assignments (after compute provides the managed identity principal ID)
 // ---------------------------------------------------------------------------
 
-resource roleAssignStorageContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployContainerApps) {
+resource roleAssignStorageContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployAuthenticatedContainerApps) {
   name: guid(dataStorageAccount.id, 'ca-${nameSuffix}', 'storage-contributor')
   scope: dataStorageAccount
   properties: {
@@ -302,7 +304,7 @@ resource roleAssignStorageContributor 'Microsoft.Authorization/roleAssignments@2
   }
 }
 
-resource roleAssignWorkerStorageContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployContainerApps) {
+resource roleAssignWorkerStorageContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployAuthenticatedContainerApps) {
   name: guid(dataStorageAccount.id, 'ca-${nameSuffix}-worker', 'storage-contributor')
   scope: dataStorageAccount
   properties: {
@@ -313,7 +315,7 @@ resource roleAssignWorkerStorageContributor 'Microsoft.Authorization/roleAssignm
   }
 }
 
-resource roleAssignStorageDelegator 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployContainerApps) {
+resource roleAssignStorageDelegator 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployAuthenticatedContainerApps) {
   name: guid(dataStorageAccount.id, 'ca-${nameSuffix}', 'storage-delegator')
   scope: dataStorageAccount
   properties: {
@@ -324,7 +326,7 @@ resource roleAssignStorageDelegator 'Microsoft.Authorization/roleAssignments@202
   }
 }
 
-resource roleAssignStorageQueueContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployContainerApps) {
+resource roleAssignStorageQueueContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployAuthenticatedContainerApps) {
   name: guid(dataStorageAccount.id, 'ca-${nameSuffix}', 'queue-contributor')
   scope: dataStorageAccount
   properties: {
@@ -335,7 +337,7 @@ resource roleAssignStorageQueueContributor 'Microsoft.Authorization/roleAssignme
   }
 }
 
-resource roleAssignWorkerStorageQueueContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployContainerApps) {
+resource roleAssignWorkerStorageQueueContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployAuthenticatedContainerApps) {
   name: guid(dataStorageAccount.id, 'ca-${nameSuffix}-worker', 'queue-contributor')
   scope: dataStorageAccount
   properties: {
@@ -346,7 +348,7 @@ resource roleAssignWorkerStorageQueueContributor 'Microsoft.Authorization/roleAs
   }
 }
 
-resource roleAssignKeyVaultSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployContainerApps) {
+resource roleAssignKeyVaultSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployAuthenticatedContainerApps) {
   name: guid(keyVault.id, 'ca-${nameSuffix}', 'kv-secrets-user')
   scope: keyVault
   properties: {
@@ -357,7 +359,7 @@ resource roleAssignKeyVaultSecretsUser 'Microsoft.Authorization/roleAssignments@
   }
 }
 
-resource roleAssignWorkerKeyVaultSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployContainerApps) {
+resource roleAssignWorkerKeyVaultSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployAuthenticatedContainerApps) {
   name: guid(keyVault.id, 'ca-${nameSuffix}-worker', 'kv-secrets-user')
   scope: keyVault
   properties: {
@@ -368,7 +370,7 @@ resource roleAssignWorkerKeyVaultSecretsUser 'Microsoft.Authorization/roleAssign
   }
 }
 
-resource roleAssignCosmosDataContributor 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-05-15' = if (deployContainerApps) {
+resource roleAssignCosmosDataContributor 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-05-15' = if (deployAuthenticatedContainerApps) {
   name: guid(resourceGroup().id, cosmosAccount.name, 'ca-${nameSuffix}', 'cosmos-data-contributor')
   parent: cosmosAccount
   properties: {
@@ -378,7 +380,7 @@ resource roleAssignCosmosDataContributor 'Microsoft.DocumentDB/databaseAccounts/
   }
 }
 
-resource roleAssignWorkerCosmosDataContributor 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-05-15' = if (deployContainerApps) {
+resource roleAssignWorkerCosmosDataContributor 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2024-05-15' = if (deployAuthenticatedContainerApps) {
   name: guid(resourceGroup().id, cosmosAccount.name, 'ca-${nameSuffix}-worker', 'cosmos-data-contributor')
   parent: cosmosAccount
   properties: {
@@ -392,12 +394,13 @@ resource roleAssignWorkerCosmosDataContributor 'Microsoft.DocumentDB/databaseAcc
 // Outputs
 // ---------------------------------------------------------------------------
 
-output containerAppName string = deployContainerApps ? compute!.outputs.containerAppName : ''
-output containerAppUrl string = deployContainerApps ? 'https://${compute!.outputs.containerAppFqdn}' : ''
-output workerContainerAppName string = deployContainerApps ? compute!.outputs.workerContainerAppName : ''
-output gatewayContainerAppName string = deployContainerApps ? compute!.outputs.gatewayContainerAppName : ''
-output gatewayContainerAppUrl string = deployContainerApps ? 'https://${compute!.outputs.gatewayContainerAppFqdn}' : ''
-output gatewayPrincipalId string = deployContainerApps ? compute!.outputs.gatewayPrincipalId : ''
+output containerAppsDeployed bool = deployAuthenticatedContainerApps
+output containerAppName string = deployAuthenticatedContainerApps ? compute!.outputs.containerAppName : ''
+output containerAppUrl string = deployAuthenticatedContainerApps ? 'https://${compute!.outputs.containerAppFqdn}' : ''
+output workerContainerAppName string = deployAuthenticatedContainerApps ? compute!.outputs.workerContainerAppName : ''
+output gatewayContainerAppName string = deployAuthenticatedContainerApps ? compute!.outputs.gatewayContainerAppName : ''
+output gatewayContainerAppUrl string = deployAuthenticatedContainerApps ? 'https://${compute!.outputs.gatewayContainerAppFqdn}' : ''
+output gatewayPrincipalId string = deployAuthenticatedContainerApps ? compute!.outputs.gatewayPrincipalId : ''
 output dataStorageAccountName string = storage.outputs.dataStorageAccountName
 output containerName string = storage.outputs.containerName
 output logAnalyticsWorkspaceName string = monitoring.outputs.workspaceName

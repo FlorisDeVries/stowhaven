@@ -9,12 +9,13 @@ to the Gateway Container App managed identity service principal. Run this after
 the Gateway Container App has a system-assigned managed identity.
 
 .EXAMPLE
-./scripts/Grant-GatewayApiAppRole.ps1 -GatewayPrincipalId "de915347-5da5-460e-84d6-cbcd792d1bd7"
+./scripts/Grant-GatewayApiAppRole.ps1 -ApiAppId "<api-app-id>" -GatewayPrincipalId "<gateway-managed-identity-object-id>"
 #>
 
 [CmdletBinding()]
 param(
-    [string]$ApiAppId = "906eb0e3-e351-47c0-a68a-690207f4cccb",
+    [Parameter(Mandatory = $true)]
+    [string]$ApiAppId,
 
     [Parameter(Mandatory = $true)]
     [string]$GatewayPrincipalId,

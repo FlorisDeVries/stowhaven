@@ -86,7 +86,7 @@ The gateway authenticates public traffic and forwards it to the internal API wit
 
 The worker exposes an internal Dapr input-binding endpoint at `POST /api/backupevents/backup-run-committed`.
 
-The current token gate does not yet enforce `backup.admin` separately on `/api/ops/*`; see [Authentication](doc/AUTHENTICATION.md) before exposing those routes to non-operators.
+Operational endpoints under `/api/ops/*` require the delegated `backup.admin` scope in addition to authentication. See [Authentication](doc/AUTHENTICATION.md) before granting operator access.
 
 ## Storage and state model
 
@@ -216,7 +216,7 @@ dotnet publish src/services/client/FlorisDeV.BackupClient.csproj -c Release -r w
 dotnet publish src/services/client/FlorisDeV.BackupClient.csproj -c Release -r linux-x64 --self-contained true -p:PublishSingleFile=true -o publish/linux-x64
 ```
 
-Copy the resulting folder to the target machine. `appsettings.json` ships with working defaults for the hosted API/gateway; only backup targets are machine-specific.
+Copy the resulting folder to the target machine. Before publishing a client for your deployment, replace the Entra and Gateway placeholders in `src/services/client/appsettings.json`; backup targets remain machine-specific.
 
 ### 2. Install & configure
 
@@ -322,7 +322,7 @@ The Bicep deployment provisions or references:
 
 - [Technical Design](doc/TECHNICAL_DESIGN.md) - full architecture, flows, storage layout, state model, and security design.
 - [Authentication](doc/AUTHENTICATION.md) - Entra ID authentication and authorization model.
-- [App Registrations](doc/APP_REGISTRATIONS.md) - Entra application roles, scopes, credentials, and current deployment IDs.
+- [App Registrations](doc/APP_REGISTRATIONS.md) - Entra application roles, scopes, credentials, and configuration locations.
 - [Monitoring](doc/MONITORING.md) - logs, metrics, health checks, and diagnostics.
 - [Advanced Configuration](doc/ADVANCED_CONFIGURATION.md) - performance tuning, resilience, encryption, and advanced client scenarios.
 - [Testing Guide](doc/TESTING.md) - test strategy and client testing instructions.
@@ -333,4 +333,6 @@ The Bicep deployment provisions or references:
 
 ## Current project status
 
-This project is an active implementation of a personal Azure backup system. The production deployment path, infrastructure modules, client, API, worker, and tests are present in this repository. The design intentionally favors a small API surface, direct Blob uploads, managed identity, Dapr abstractions, and low long-term storage cost.
+This project is an active, self-hosted backup implementation. The production deployment path, infrastructure modules, client, API, worker, and tests are present, but operators remain responsible for access control, cost monitoring, retention policy, recovery-key custody, and regular restore drills. Do not treat a successful upload as a verified backup until you have tested restoration with your own data and deployment.
+
+Public configuration files contain placeholders. Deployment-specific identifiers belong in GitHub variables or untracked local overrides, and credentials belong only in a secret store. See [Contributing](CONTRIBUTING.md) before proposing changes and the [Security policy](SECURITY.md) before reporting a vulnerability. Stowhaven is available under the [MIT License](LICENSE).
