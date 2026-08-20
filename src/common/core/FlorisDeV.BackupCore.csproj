@@ -24,7 +24,7 @@
         <!-- The Cosmos SDK needs Newtonsoft.Json at runtime for its internal serialization,
              even though application documents use the System.Text.Json serializer. -->
         <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
-        <PackageReference Include="Swashbuckle.AspNetCore" Version="10.2.3" />
+        <PackageReference Include="Swashbuckle.AspNetCore" Version="9.0.4" />
     </ItemGroup>
 
     <ItemGroup>

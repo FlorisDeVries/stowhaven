@@ -13,6 +13,19 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      - dependency-name: FluentAssertions
+        update-types:
+          - version-update:semver-major
+      - dependency-name: Microsoft.ApplicationInsights.AspNetCore
+        update-types:
+          - version-update:semver-major
+      - dependency-name: Swashbuckle.AspNetCore
+        update-types:
+          - version-update:semver-major
+      - dependency-name: xunit.runner.visualstudio
+        update-types:
+          - version-update:semver-major
     groups:
       nuget-production:
         dependency-type: production

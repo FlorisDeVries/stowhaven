@@ -19,10 +19,6 @@
         <PackageReference Include="Azure.Identity" Version="1.21.0" />
         <PackageReference Include="Azure.Storage.Blobs" Version="12.29.1" />
         <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.11" />
-        <!-- Microsoft.Data.Sqlite 10.0.0 pins SQLitePCLRaw.bundle_e_sqlite3 2.1.11, which bundles a
-             pre-3.50.2 SQLite affected by GHSA-2m69-gcr7-jv3q. Force the patched 2.1.12 (same API
-             surface, just a newer bundled SQLite binary) until Microsoft.Data.Sqlite bumps it itself. -->
-        <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.5" />
         <PackageReference Include="Microsoft.Extensions.FileSystemGlobbing" Version="10.0.11" />
         <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.11" />
         <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.11" />
