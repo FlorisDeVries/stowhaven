@@ -16,23 +16,23 @@
     </ItemGroup>
 
     <ItemGroup>
-        <PackageReference Include="Azure.Identity" Version="1.16.0" />
-        <PackageReference Include="Azure.Storage.Blobs" Version="12.24.0" />
-        <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.0" />
+        <PackageReference Include="Azure.Identity" Version="1.21.0" />
+        <PackageReference Include="Azure.Storage.Blobs" Version="12.29.1" />
+        <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.11" />
         <!-- Microsoft.Data.Sqlite 10.0.0 pins SQLitePCLRaw.bundle_e_sqlite3 2.1.11, which bundles a
              pre-3.50.2 SQLite affected by GHSA-2m69-gcr7-jv3q. Force the patched 2.1.12 (same API
              surface, just a newer bundled SQLite binary) until Microsoft.Data.Sqlite bumps it itself. -->
-        <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.12" />
-        <PackageReference Include="Microsoft.Extensions.FileSystemGlobbing" Version="10.0.0" />
-        <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.0" />
-        <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.0" />
-        <PackageReference Include="Microsoft.Extensions.Http.Resilience" Version="10.3.0" />
-        <PackageReference Include="OpenTelemetry" Version="1.15.3" />
-        <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.15.3" />
-        <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.15.3" />
-        <PackageReference Include="OpenTelemetry.Instrumentation.Http" Version="1.15.1" />
-        <PackageReference Include="Refit" Version="10.0.1" />
-        <PackageReference Include="Refit.HttpClientFactory" Version="10.0.1" />
+        <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.5" />
+        <PackageReference Include="Microsoft.Extensions.FileSystemGlobbing" Version="10.0.11" />
+        <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.11" />
+        <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.11" />
+        <PackageReference Include="Microsoft.Extensions.Http.Resilience" Version="10.9.0" />
+        <PackageReference Include="OpenTelemetry" Version="1.17.0" />
+        <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.17.0" />
+        <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.17.0" />
+        <PackageReference Include="OpenTelemetry.Instrumentation.Http" Version="1.17.0" />
+        <PackageReference Include="Refit" Version="15.2.0" />
+        <PackageReference Include="Refit.HttpClientFactory" Version="15.2.0" />
     </ItemGroup>
 
     <ItemGroup>

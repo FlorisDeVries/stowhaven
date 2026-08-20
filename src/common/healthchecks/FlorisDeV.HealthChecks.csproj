@@ -11,25 +11,25 @@
     </ItemGroup>
 
     <ItemGroup>
-        <PackageReference Include="AsyncFixer" Version="1.6.0">
+        <PackageReference Include="AsyncFixer" Version="2.1.0">
             <PrivateAssets>all</PrivateAssets>
             <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
         </PackageReference>
-        <PackageReference Include="Azure.Storage.Blobs" Version="12.25.0" />
-        <PackageReference Include="Dapr.Client" Version="1.15.4" />
-        <PackageReference Include="Microsoft.CST.DevSkim" Version="1.0.70">
+        <PackageReference Include="Azure.Storage.Blobs" Version="12.29.1" />
+        <PackageReference Include="Dapr.Client" Version="1.18.5" />
+        <PackageReference Include="Microsoft.CST.DevSkim" Version="1.0.90">
             <PrivateAssets>all</PrivateAssets>
             <IncludeAssets>analyzers; build; buildtransitive</IncludeAssets>
         </PackageReference>
-        <PackageReference Include="SharpCompress" Version="0.48.0">
+        <PackageReference Include="SharpCompress" Version="0.50.4">
             <PrivateAssets>all</PrivateAssets>
             <IncludeAssets>none</IncludeAssets>
         </PackageReference>
-        <PackageReference Include="Roslynator.Analyzers" Version="4.14.0">
+        <PackageReference Include="Roslynator.Analyzers" Version="4.16.1">
             <PrivateAssets>all</PrivateAssets>
             <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
         </PackageReference>
-        <PackageReference Include="SonarAnalyzer.CSharp" Version="10.15.0.120848">
+        <PackageReference Include="SonarAnalyzer.CSharp" Version="10.32.0.713">
             <PrivateAssets>all</PrivateAssets>
             <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
         </PackageReference>
