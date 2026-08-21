@@ -1,6 +1,7 @@
 # Stowhaven
 
 [![Deploy Stowhaven](https://github.com/FlorisDeVries/stowhaven/actions/workflows/deploy.yml/badge.svg)](https://github.com/FlorisDeVries/stowhaven/actions/workflows/deploy.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![.NET 10](https://img.shields.io/badge/.NET-10.0-512BD4?logo=dotnet)
 ![Azure Container Apps](https://img.shields.io/badge/Azure-Container%20Apps-0078D4?logo=microsoftazure)
 ![Dapr](https://img.shields.io/badge/Dapr-enabled-0D2192?logo=dapr)
