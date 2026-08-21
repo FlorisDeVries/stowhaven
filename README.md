@@ -39,20 +39,9 @@ The API issues short-lived, least-privilege SAS URLs so backup clients can uploa
 
 ## Architecture at a glance
 
-```mermaid
-flowchart LR
-    Client[Stowhaven Client] -->|Gateway-scoped token| Gateway[Public Stowhaven Gateway\nEasy Auth + OBO]
-    Gateway -->|API-scoped token| API[Internal Stowhaven API\nAzure Container App]
-    API -->|User Delegation SAS| Client
-    Client -->|Upload files + manifest| Blob[Azure Blob Storage\nbackups container]
-    API -->|Cosmos SDK| Cosmos[Azure Cosmos DB\nbackup-state]
-    API -->|Dapr output binding| Queue[Azure Storage Queue\nbackup-events]
-    Queue -->|Dapr input binding| Worker[Internal Stowhaven Worker\nAzure Container App]
-    Worker -->|Validate + move blobs| Blob
-    Worker -->|Cosmos SDK| Cosmos
-    API --> AppInsights[Application Insights]
-    Worker --> AppInsights
-```
+[![Stowhaven high-level architecture](doc/img/StowhavenHighLevelArchitecture.png)](doc/img/StowhavenHighLevelArchitecture.png)
+
+The editable source is available in [draw.io format](doc/StowhavenHighLevelArchitecture.drawio).
 
 The gateway authenticates public traffic and forwards it to the internal API with an API-scoped token. The API handles authorization, SAS issuance, and queuing commit work. The worker performs the heavier commit processing: validating staged blobs, moving active versions into place, retiring older versions, and updating authoritative state in Cosmos DB.
 
