@@ -15,7 +15,7 @@
             <PrivateAssets>all</PrivateAssets>
             <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
         </PackageReference>
-        <PackageReference Include="Azure.Storage.Blobs" Version="12.29.1" />
+        <PackageReference Include="Azure.Storage.Blobs" Version="12.29.2" />
         <PackageReference Include="Dapr.Client" Version="1.18.5" />
         <PackageReference Include="Microsoft.CST.DevSkim" Version="1.0.90">
             <PrivateAssets>all</PrivateAssets>
@@ -27,11 +27,11 @@
             <PrivateAssets>all</PrivateAssets>
             <IncludeAssets>none</IncludeAssets>
         </PackageReference>
-        <PackageReference Include="Roslynator.Analyzers" Version="4.16.1">
+        <PackageReference Include="Roslynator.Analyzers" Version="5.0.0">
             <PrivateAssets>all</PrivateAssets>
             <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
         </PackageReference>
-        <PackageReference Include="SonarAnalyzer.CSharp" Version="10.32.0.713">
+        <PackageReference Include="SonarAnalyzer.CSharp" Version="10.33.0.1635">
             <PrivateAssets>all</PrivateAssets>
             <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
         </PackageReference>
