@@ -13,9 +13,9 @@
         <PackageReference Include="Azure.Identity" Version="1.21.0" />
         <PackageReference Include="Azure.Storage.Blobs" Version="12.29.2" />
         <PackageReference Include="Azure.Storage.Files.DataLake" Version="12.27.1" />
-        <PackageReference Include="Dapr.AspNetCore" Version="1.18.7" />
-        <PackageReference Include="Dapr.Client" Version="1.18.7" />
-        <PackageReference Include="Microsoft.Azure.Cosmos" Version="3.63.0" />
+        <PackageReference Include="Dapr.AspNetCore" Version="1.18.8" />
+        <PackageReference Include="Dapr.Client" Version="1.18.8" />
+        <PackageReference Include="Microsoft.Azure.Cosmos" Version="3.63.1" />
         <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.12" />
         <!-- Microsoft.Data.Sqlite 10.0.0 pins SQLitePCLRaw.bundle_e_sqlite3 2.1.11, which bundles a
              pre-3.50.2 SQLite affected by GHSA-2m69-gcr7-jv3q. Force the patched 2.1.12 (same API
