@@ -17,7 +17,7 @@
             <PrivateAssets>all</PrivateAssets>
             <IncludeAssets>analyzers; build; buildtransitive</IncludeAssets>
         </PackageReference>
-        <PackageReference Include="SharpCompress" Version="0.50.4">
+        <PackageReference Include="SharpCompress" Version="0.50.5">
             <PrivateAssets>all</PrivateAssets>
             <IncludeAssets>none</IncludeAssets>
         </PackageReference>
@@ -52,9 +52,9 @@
     <ItemGroup>
         <!-- Fix CVE https://github.com/advisories/GHSA-rxg9-xrhp-64gj in transitive dependency -->
         <PackageReference Include="Microsoft.AspNetCore.Http" Version="2.3.13" />
-        <PackageReference Include="Microsoft.Extensions.FileSystemGlobbing" Version="10.0.12" />
-        <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.12" />
-        <PackageReference Include="System.Drawing.Common" Version="10.0.12" />
+        <PackageReference Include="Microsoft.Extensions.FileSystemGlobbing" Version="10.0.13" />
+        <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.13" />
+        <PackageReference Include="System.Drawing.Common" Version="10.0.13" />
     </ItemGroup>
 
     <ItemGroup>
