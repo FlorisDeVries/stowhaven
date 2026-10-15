@@ -16,7 +16,7 @@
         <PackageReference Include="Azure.Storage.Files.DataLake" Version="12.28.0" />
         <PackageReference Include="Dapr.AspNetCore" Version="1.18.10" />
         <PackageReference Include="Dapr.Client" Version="1.18.10" />
-        <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.12" />
+        <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.13" />
         <PackageReference Include="Swashbuckle.AspNetCore" Version="9.0.6" />
         <PackageReference Include="Refit" Version="16.3.0"/>
     </ItemGroup>

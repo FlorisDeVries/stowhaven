@@ -23,7 +23,7 @@
         </PackageReference>
         <PackageReference Include="Serilog" Version="4.4.0" />
         <PackageReference Include="Serilog.Sinks.Console" Version="6.1.1" />
-        <PackageReference Include="SharpCompress" Version="0.50.4">
+        <PackageReference Include="SharpCompress" Version="0.50.5">
             <PrivateAssets>all</PrivateAssets>
             <IncludeAssets>none</IncludeAssets>
         </PackageReference>
@@ -35,7 +35,7 @@
             <PrivateAssets>all</PrivateAssets>
             <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
         </PackageReference>
-        <PackageReference Include="System.Drawing.Common" Version="10.0.12" />
+        <PackageReference Include="System.Drawing.Common" Version="10.0.13" />
     </ItemGroup>
 
 </Project>
