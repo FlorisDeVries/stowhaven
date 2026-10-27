@@ -16,7 +16,7 @@ namespace FlorisDeV.BackupClient.Tests.Services;
 /// <summary>
 /// Unit tests for FileUploader using mocked dependencies.
 /// </summary>
-public class FileUploaderTests
+public partial class FileUploaderTests
 {
     private readonly Mock<ILogger<FileUploader>> _mockLogger = new();
     private readonly Mock<ILogger<ResiliencePipelineProvider>> _mockResilienceLogger = new();

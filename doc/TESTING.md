@@ -52,6 +52,8 @@ dotnet test FlorisDeV.BackupApi.sln --filter "Category=Unit&FullyQualifiedName~B
 
 Not every test necessarily carries a category, so the unfiltered solution run is the authoritative full suite.
 
+Recovery regressions cover expired claims, retry eligibility and attempt limits, heartbeat renewal during manifest persistence, interruption between catalog publication and version retirement, lost encrypted-upload responses with a verified restore, incomplete scans, case-distinct path journaling, version 2 client-state migration, and client recovery from terminal commit failures. Filesystem permission tests run on Unix; Windows uses the case-insensitive path branch.
+
 Several tests labelled Integration use temporary local files or SQLite. They do not require the Docker Compose stack or production Azure resources.
 
 ## Docker Compose smoke test

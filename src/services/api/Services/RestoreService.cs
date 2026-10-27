@@ -30,7 +30,7 @@ public class RestoreService(
         var page = await manifestManager.GetFileEntriesPageAsync(deviceId, pageSize, continuationToken, cancellationToken);
         var files = new List<RestoreFileItem>();
 
-        foreach (var entry in page.Entries.Where(e => !e.IsDeleted).OrderBy(e => e.RelativePath, StringComparer.OrdinalIgnoreCase))
+        foreach (var entry in page.Entries.Where(e => !e.IsDeleted).OrderBy(e => e.RelativePath, StringComparer.Ordinal))
         {
             var version = await manifestManager.GetFileVersionAsync(deviceId, entry.CurrentVersionId, cancellationToken);
             if (version is not { State: FileVersionState.Active })
@@ -63,7 +63,7 @@ public class RestoreService(
         }
 
         var files = new List<RestoreFileItem>(request.LogicalPaths.Count);
-        foreach (var logicalPath in request.LogicalPaths.Distinct(StringComparer.OrdinalIgnoreCase))
+        foreach (var logicalPath in request.LogicalPaths.Distinct(StringComparer.Ordinal))
         {
             var entry = await manifestManager.GetFileEntryAsync(deviceId, logicalPath, cancellationToken);
             if (entry == null || entry.IsDeleted)

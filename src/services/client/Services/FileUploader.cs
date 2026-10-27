@@ -151,7 +151,6 @@ public partial class FileUploader(
         TaggedFile taggedFile,
         CancellationToken cancellationToken)
     {
-        TaggedFile? uploadedFile = null;
         var storagePath = taggedFile.UniqueFileId ?? taggedFile.GetStoragePath();
         
         // Prepend base path to create full blob path within container
@@ -178,15 +177,31 @@ public partial class FileUploader(
                 _options.BlobUploadTimeoutSeconds);
         }
 
+        // Keep ciphertext, keys, and integrity metadata identical if a successful remote write's
+        // response is lost. Re-encrypting on each attempt would describe bytes storage never received.
+        using var preparationCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        preparationCts.CancelAfter(TimeSpan.FromSeconds(_options.BlobUploadTimeoutSeconds));
+        await using var preparedUpload = await encryptionService.PrepareUploadAsync(taggedFile, preparationCts.Token);
+        var uploadFile = preparedUpload.File;
+        var uploadSize = uploadFile.GetUploadSizeBytes();
+        var initialPosition = preparedUpload.Content.CanSeek ? preparedUpload.Content.Position : 0;
+        var attempt = 0;
+
         await resiliencePipelines.BlobUploadPipeline.ExecuteAsync(async ct =>
         {
             // Create timeout for this upload attempt
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeoutCts.CancelAfter(TimeSpan.FromSeconds(_options.BlobUploadTimeoutSeconds));
 
-            await using var preparedUpload = await encryptionService.PrepareUploadAsync(taggedFile, timeoutCts.Token);
-            var uploadFile = preparedUpload.File;
-            var uploadSize = uploadFile.GetUploadSizeBytes();
+            attempt++;
+            if (preparedUpload.Content.CanSeek)
+            {
+                preparedUpload.Content.Position = initialPosition;
+            }
+            else if (attempt > 1)
+            {
+                throw new InvalidOperationException("Upload content must be seekable to retry safely.");
+            }
 
             try
             {
@@ -216,13 +231,17 @@ public partial class FileUploader(
             }
             catch (RequestFailedException ex) when (IsAlreadyExistsResponse(ex))
             {
+                if (uploadFile.Encryption != null && attempt == 1)
+                {
+                    // A blob left by another invocation may use different encryption material.
+                    // Upload-only SAS cannot read it back to establish that identity.
+                    throw new InvalidOperationException("An existing encrypted blob cannot be matched to this upload payload.", ex);
+                }
                 LogBlobAlreadyExists(taggedFile.Metadata.FilePath, blobPath);
             }
-
-            uploadedFile = uploadFile;
         }, cancellationToken);
 
-        return uploadedFile ?? throw new InvalidOperationException($"Upload did not produce metadata for {taggedFile.GetStoragePath()}");
+        return uploadFile;
     }
 
     private static IDictionary<string, string>? CreateBackupMetadata(TaggedFile taggedFile)

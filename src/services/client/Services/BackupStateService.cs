@@ -317,7 +317,13 @@ public partial class BackupStateService : IBackupStateService, IDisposable
         }
     }
 
-    public async Task ClearPendingBackupRunAsync(Guid deviceId, Guid runId, CancellationToken cancellationToken = default)
+    public Task ClearPendingBackupRunAsync(Guid deviceId, Guid runId, CancellationToken cancellationToken = default)
+        => ClearRunAsync(deviceId, runId, invalidateTrackedFiles: false, cancellationToken);
+
+    public Task RecoverFailedRunAsync(Guid deviceId, Guid runId, CancellationToken cancellationToken = default)
+        => ClearRunAsync(deviceId, runId, invalidateTrackedFiles: true, cancellationToken);
+
+    private async Task ClearRunAsync(Guid deviceId, Guid runId, bool invalidateTrackedFiles, CancellationToken cancellationToken)
     {
         await EnsureInitializedAsync(cancellationToken);
 
@@ -331,6 +337,15 @@ public partial class BackupStateService : IBackupStateService, IDisposable
 
             try
             {
+                if (invalidateTrackedFiles)
+                {
+                    await using var invalidate = new SqliteCommand(BackupStateSql.InvalidateFailedRunFilesQuery, connection, transaction);
+                    invalidate.Parameters.AddWithValue("@DeviceId", deviceId.ToString());
+                    invalidate.Parameters.AddWithValue("@RunId", runId.ToString());
+                    await invalidate.ExecuteNonQueryAsync(cancellationToken);
+                    await using var totals = new SqliteCommand(BackupStateSql.UpdateDeviceStateTotalsQuery, connection, transaction);
+                    await totals.ExecuteNonQueryAsync(cancellationToken);
+                }
                 // The header and its journal rows are cleared together; a header without its
                 // journal would look like a resumable run with nothing uploaded.
                 foreach (var query in (string[])
@@ -807,13 +822,19 @@ public partial class BackupStateService : IBackupStateService, IDisposable
 
             if (existingVersion < BackupStateSql.SchemaVersion)
             {
-                await using var upgradeCommand = new SqliteCommand(BackupStateSql.DropLegacyPendingRunsScript, connection);
-                var dropped = await upgradeCommand.ExecuteNonQueryAsync(cancellationToken);
-
+                await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+                var dropped = 0;
+                if (existingVersion < 2)
+                {
+                    await using var upgradeCommand = new SqliteCommand(BackupStateSql.DropLegacyPendingRunsScript, connection, transaction);
+                    dropped = await upgradeCommand.ExecuteNonQueryAsync(cancellationToken);
+                }
+                await using var migrateCommand = new SqliteCommand(BackupStateSql.MigratePathCollationScript, connection, transaction);
+                await migrateCommand.ExecuteNonQueryAsync(cancellationToken);
                 await using var stampCommand = new SqliteCommand(
-                    $"PRAGMA user_version = {BackupStateSql.SchemaVersion}", connection);
+                    $"PRAGMA user_version = {BackupStateSql.SchemaVersion}", connection, transaction);
                 await stampCommand.ExecuteNonQueryAsync(cancellationToken);
-
+                await transaction.CommitAsync(cancellationToken);
                 LogSchemaUpgraded(existingVersion, BackupStateSql.SchemaVersion, dropped);
             }
 

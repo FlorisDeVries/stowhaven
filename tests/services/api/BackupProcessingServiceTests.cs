@@ -22,7 +22,7 @@ namespace FlorisDeV.BackupApi.Tests;
 /// <summary>
 /// Tests for BackupProcessingService to verify manifest processing, file operations, and state management.
 /// </summary>
-public class BackupProcessingServiceTests
+public partial class BackupProcessingServiceTests
 {
     private readonly Mock<ILogger<BackupProcessingService>> _loggerMock;
     private readonly Mock<IBlobStorageService> _blobStorageServiceMock;
@@ -115,7 +115,7 @@ public class BackupProcessingServiceTests
 
     [Fact]
     [Trait("Category", "Unit")]
-    public async Task ProcessBackupRunAsync_WhenConcurrentProcessing_SkipsProcessing()
+    public async Task ProcessBackupRunAsync_WhenConcurrentProcessing_PreservesDeliveryForRecovery()
     {
         // Arrange
         var deviceId = Guid.NewGuid();
@@ -137,10 +137,10 @@ public class BackupProcessingServiceTests
             .Setup(x => x.TryClaimCommitJobAsync(commitId, It.IsAny<CancellationToken>()))
             .ReturnsAsync((false, commitJob));
 
-        // Act
-        await _sut.ProcessBackupRunAsync(backupEvent);
+        // A non-success response keeps a delivery available if the current owner crashes.
+        await Assert.ThrowsAsync<InvalidOperationException>(() => _sut.ProcessBackupRunAsync(backupEvent));
 
-        // Assert - should not update anything
+        // It must not mutate a job owned by another worker.
         _manifestManagerMock.Verify(
             x => x.UpdateCommitJobAsync(It.IsAny<CommitJob>(), It.IsAny<CancellationToken>()),
             Times.Never);

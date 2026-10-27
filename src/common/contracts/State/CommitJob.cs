@@ -21,6 +21,7 @@ public class CommitJob
     public DateTimeOffset? LastErrorAt { get; set; }
     public DateTimeOffset? NextRetryAt { get; set; }
     public DateTimeOffset? DeadLetteredAt { get; set; }
+    public DateTimeOffset? LeaseExpiresAt { get; set; }
     public string? ETag { get; set; }
 }
 
@@ -63,6 +64,8 @@ public class CommitFileProgress
     public Guid RunId { get; set; }
     public required string UniqueFileId { get; set; }
     public required string LogicalPath { get; set; }
+    /// <summary>The superseded version, saved before changing the catalog so retirement can resume.</summary>
+    public string? PreviousVersionId { get; set; }
     public CommitFileStatus Status { get; set; }
     public DateTimeOffset UpdatedAt { get; set; }
     public string? Error { get; set; }

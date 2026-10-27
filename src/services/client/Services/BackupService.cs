@@ -679,6 +679,11 @@ public partial class BackupService(
             return false;
         }
 
+        if (commitStatus.Status == CommitJobStatus.Failed)
+        {
+            await backupStateService.RecoverFailedRunAsync(deviceId, runId.Value, cancellationToken);
+            throw new InvalidOperationException($"Backup commit {commitId} failed: {commitStatus.Error ?? "Unknown error"}. A later backup will retry the affected files.");
+        }
         await FinalizeRunStateAsync(deviceId, runId.Value, commitStatus, cancellationToken);
         return true;
     }
@@ -882,6 +887,12 @@ public partial class BackupService(
             return false;
         }
 
+        if (commitStatus.Status == CommitJobStatus.Failed)
+        {
+            await backupStateService.RecoverFailedRunAsync(pendingRun.DeviceId, pendingRun.RunId, cancellationToken);
+            logger.LogWarning("Discarded terminally failed commit {CommitId}; affected paths will be uploaded again", commitId);
+            return true;
+        }
         await FinalizeRunStateAsync(pendingRun.DeviceId, pendingRun.RunId, commitStatus, cancellationToken);
         LogPendingBackupRunFinalized(pendingRun.RunId, commitId.Value);
         return true;
@@ -940,7 +951,13 @@ public partial class BackupService(
                     LogCommitCompletedWithErrors(status.FilesFailed ?? 0, status.Error ?? string.Empty);
                     return status;
                 case CommitJobStatus.Failed:
-                    throw new InvalidOperationException($"Backup commit {commitId} failed: {status.Error ?? "Unknown error"}");
+                    if (status.NextRetryAt == null || status.DeadLetteredAt != null)
+                    {
+                        return status;
+                    }
+                    // A retryable server failure is still an in-flight run. Keep the journal
+                    // until the bounded retry sequence reaches a terminal outcome.
+                    break;
             }
 
             if (stopwatch.Elapsed >= timeout)

@@ -275,7 +275,7 @@ public partial class ClientSetupService(
     /// </summary>
     internal static Dictionary<string, string> ParseBackupTargets(IConfiguration configuration)
     {
-        var targets = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var targets = new Dictionary<string, string>(PathIdentity.Comparer);
 
         foreach (var child in configuration.GetSection("BackupClient:BackupTargets").GetChildren())
         {

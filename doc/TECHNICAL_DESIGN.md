@@ -198,11 +198,16 @@ Archive-tier blobs must be rehydrated before the read SAS can be used to downloa
 ## 11. Reliability and failure handling
 
 - Commit IDs are deterministic for `(deviceId, runId)`, so replaying `commit-run` reuses the same job.
-- ETag-based claiming prevents concurrent workers from processing the same queued job.
-- Per-file commit progress makes blob moves and state updates resumable after partial failures.
+- ETag-based claims have a two-minute lease. The worker renews its lease every 30 seconds, including while persisting a manifest; `CommitProcessing:HeartbeatIntervalSeconds` can set an interval from 1 to 60 seconds. Redelivery can reclaim an expired processing job. Active or not-yet-due deliveries return an error so the queue retains them.
+- Failed jobs with `NextRetryAt` are retried on queue redelivery after that time. Attempts use bounded exponential delays; exhausting `CommitProcessing:MaxAttempts` records a terminal failure. The delivery is acknowledged once it observes a terminal job.
+- Changed files record the superseded version before publishing a replacement catalog entry. Retirement follows that catalog update and resumes against the recorded old identity, so replay cannot retire the incoming version.
 - Staged-content mismatches are recorded as failed files. A run may finish as `CompletedWithErrors` when the percentage remains within the configured worker threshold.
 - Client upload retries use Polly v8 exponential backoff with jitter.
+- Encrypted uploads reuse the exact prepared ciphertext and metadata across retry attempts.
+- Permission or metadata failures abort filesystem scanning before deletion inference. Files whose metadata was enumerated but whose contents cannot be read remain present for deletion detection and are skipped for upload.
+- Client schema version 3 preserves case-distinct paths on Linux and uses case-insensitive paths on Windows. Migration preserves version 2 pending-run headers and journal entries. Restore selection preserves exact logical paths.
 - The client has separate upload and commit-status timeouts. A commit-status timeout does not cancel the durable server-side job.
+- Retryable failed commits retain the client journal. For a terminal failure, the client atomically invalidates cached hashes/timestamps for affected paths and clears the journal. Newly uploaded paths are also tracked as unconfirmed because they may already have been published remotely. This forces present files to be uploaded again and keeps absent files eligible for deletion on the next scan.
 - The API exposes operational endpoints for paged manifests/commits, failed files, commit retry, and staging cleanup.
 - Staging cleanup runs both through a Dapr cron binding and through a seven-day Blob lifecycle fallback.
 

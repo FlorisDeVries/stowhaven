@@ -1,3 +1,5 @@
+using FlorisDeV.BackupClient.Services;
+
 namespace FlorisDeV.BackupClient.Data;
 
 /// <summary>
@@ -9,16 +11,17 @@ internal static class BackupStateSql
     /// <summary>
     /// Current schema version, tracked in <c>PRAGMA user_version</c>. Version 2 replaced the
     /// single-row in-flight journal (every uploaded file inlined into one JSON payload) with the
-    /// append-only <c>PendingRunFiles</c> / <c>PendingRunDeletions</c> tables.
+    /// append-only <c>PendingRunFiles</c> / <c>PendingRunDeletions</c> tables. Version 3 migrates
+    /// path-keyed tables to the platform's collation without discarding submitted journals.
     /// </summary>
-    internal const long SchemaVersion = 2;
+    internal const long SchemaVersion = 3;
 
     /// <summary>
     /// Creates the database schema if it doesn't exist.
     /// Includes tables and indexes for optimal query performance.
     /// Also enables SQLite optimizations like WAL mode for better concurrency.
     /// </summary>
-    internal const string CreateSchemaScript = @"
+    internal static readonly string CreateSchemaScript = @"
         -- Enable WAL mode for better concurrency (allows concurrent reads during writes)
         PRAGMA journal_mode=WAL;
 
@@ -39,7 +42,7 @@ internal static class BackupStateSql
 
         -- File state from last successful backup
         CREATE TABLE IF NOT EXISTS BackupFiles (
-            RelativePath TEXT PRIMARY KEY,
+            RelativePath TEXT PRIMARY KEY COLLATE __PATH_COLLATION__,
             Sha256Hash TEXT NOT NULL,
             SizeBytes INTEGER NOT NULL,
             LastModifiedUtc TEXT NOT NULL,
@@ -64,7 +67,7 @@ internal static class BackupStateSql
         CREATE TABLE IF NOT EXISTS PendingRunFiles (
             DeviceId TEXT NOT NULL,
             RunId TEXT NOT NULL,
-            StoragePath TEXT NOT NULL COLLATE NOCASE,
+            StoragePath TEXT NOT NULL COLLATE __PATH_COLLATION__,
             Sha256Hash TEXT NOT NULL,
             SizeBytes INTEGER NOT NULL,
             LastModifiedUtc TEXT NOT NULL,
@@ -77,7 +80,7 @@ internal static class BackupStateSql
         CREATE TABLE IF NOT EXISTS PendingRunDeletions (
             DeviceId TEXT NOT NULL,
             RunId TEXT NOT NULL,
-            StoragePath TEXT NOT NULL COLLATE NOCASE,
+            StoragePath TEXT NOT NULL COLLATE __PATH_COLLATION__,
             PRIMARY KEY (DeviceId, RunId, StoragePath)
         );
 
@@ -85,14 +88,33 @@ internal static class BackupStateSql
         -- BackupFiles, so neither the scanned set nor the deletion set is ever materialized in
         -- memory. Truncated at the start of each scan.
         CREATE TABLE IF NOT EXISTS ScanScratchPaths (
-            StoragePath TEXT PRIMARY KEY COLLATE NOCASE
+            StoragePath TEXT PRIMARY KEY COLLATE __PATH_COLLATION__
         );
 
         -- Indexes for performance
         CREATE INDEX IF NOT EXISTS idx_backupfiles_hash ON BackupFiles(Sha256Hash);
         CREATE INDEX IF NOT EXISTS idx_backupfiles_runid ON BackupFiles(BackupRunId);
         CREATE INDEX IF NOT EXISTS idx_backupfiles_backedup ON BackupFiles(BackedUpAt);
-    ";
+    ".Replace("__PATH_COLLATION__", PathIdentity.SqliteCollation, StringComparison.Ordinal);
+
+    // Rebuild the path-keyed tables in one transaction. Version 2 pending journals remain valid:
+    // changing collation must not discard a submitted run that may already be applying server-side.
+    internal static readonly string MigratePathCollationScript = """
+        ALTER TABLE BackupFiles RENAME TO BackupFilesPrevious;
+        ALTER TABLE PendingRunFiles RENAME TO PendingRunFilesPrevious;
+        ALTER TABLE PendingRunDeletions RENAME TO PendingRunDeletionsPrevious;
+        ALTER TABLE ScanScratchPaths RENAME TO ScanScratchPathsPrevious;
+        """ + CreateTablesScript + """
+        INSERT OR REPLACE INTO BackupFiles SELECT * FROM BackupFilesPrevious;
+        INSERT OR REPLACE INTO PendingRunFiles SELECT * FROM PendingRunFilesPrevious;
+        INSERT OR REPLACE INTO PendingRunDeletions SELECT * FROM PendingRunDeletionsPrevious;
+        DROP TABLE BackupFilesPrevious;
+        DROP TABLE PendingRunFilesPrevious;
+        DROP TABLE PendingRunDeletionsPrevious;
+        DROP TABLE ScanScratchPathsPrevious;
+        """ + CreateTablesScript;
+
+    private static string CreateTablesScript => CreateSchemaScript[CreateSchemaScript.IndexOf("CREATE TABLE", StringComparison.Ordinal)..];
 
     /// <summary>
     /// Drops in-flight journal rows written by schema v1. Those rows inlined every uploaded file
@@ -142,10 +164,10 @@ internal static class BackupStateSql
         "SELECT RelativePath, Sha256Hash, SizeBytes, LastModifiedUtc, BackedUpAt, BackupRunId, UniqueFileId FROM BackupFiles";
 
     /// <summary>
-    /// Selects a single file state by relative path (case-insensitive).
+    /// Selects a single file state using the platform's path comparison.
     /// </summary>
-    internal const string SelectFileByPathQuery =
-        "SELECT RelativePath, Sha256Hash, SizeBytes, LastModifiedUtc, BackedUpAt, BackupRunId, UniqueFileId FROM BackupFiles WHERE RelativePath = @RelativePath COLLATE NOCASE";
+    internal static readonly string SelectFileByPathQuery =
+        $"SELECT RelativePath, Sha256Hash, SizeBytes, LastModifiedUtc, BackedUpAt, BackupRunId, UniqueFileId FROM BackupFiles WHERE RelativePath = @RelativePath COLLATE {PathIdentity.SqliteCollation}";
 
     /// <summary>
     /// Upserts (insert or update) a backup file record.
@@ -163,11 +185,26 @@ internal static class BackupStateSql
             UniqueFileId = excluded.UniqueFileId";
 
     /// <summary>
-    /// Deletes a file record by relative path (case-insensitive).
+    /// Deletes a file record using the platform's path comparison.
     /// Used when cleaning up deleted file tracking.
     /// </summary>
-    internal const string DeleteFileByPathQuery =
-        "DELETE FROM BackupFiles WHERE RelativePath = @RelativePath COLLATE NOCASE";
+    internal static readonly string DeleteFileByPathQuery =
+        $"DELETE FROM BackupFiles WHERE RelativePath = @RelativePath COLLATE {PathIdentity.SqliteCollation}";
+
+    internal const string InvalidateFailedRunFilesQuery = """
+        -- A new file may already have been published remotely before the run failed. Track it
+        -- even if it was never in BackupFiles, so its disappearance still produces a deletion.
+        INSERT INTO BackupFiles (RelativePath, Sha256Hash, SizeBytes, LastModifiedUtc, BackedUpAt, BackupRunId, UniqueFileId)
+        SELECT StoragePath, '', SizeBytes, '0001-01-01T00:00:00.0000000+00:00', LastModifiedUtc, RunId, UniqueFileId
+        FROM PendingRunFiles
+        WHERE DeviceId = @DeviceId AND RunId = @RunId
+        ON CONFLICT(RelativePath) DO UPDATE SET Sha256Hash = '', LastModifiedUtc = excluded.LastModifiedUtc;
+        UPDATE BackupFiles SET Sha256Hash = '', LastModifiedUtc = '0001-01-01T00:00:00.0000000+00:00'
+        WHERE EXISTS (SELECT 1 FROM PendingRunFiles f
+            WHERE f.DeviceId = @DeviceId AND f.RunId = @RunId AND f.StoragePath = BackupFiles.RelativePath)
+           OR EXISTS (SELECT 1 FROM PendingRunDeletions d
+            WHERE d.DeviceId = @DeviceId AND d.RunId = @RunId AND d.StoragePath = BackupFiles.RelativePath);
+        """;
 
     internal const string SelectPendingBackupRunQuery =
         "SELECT PayloadJson FROM PendingBackupRuns WHERE DeviceId = @DeviceId";

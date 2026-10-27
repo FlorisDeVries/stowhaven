@@ -8,6 +8,7 @@ namespace FlorisDeV.BackupApi.Services;
 
 public partial class ManifestManager
 {
+    public static readonly TimeSpan CommitLeaseDuration = TimeSpan.FromMinutes(2);
     public async Task<CommitJob> CreateCommitJobAsync(Guid deviceId, Guid runId, CancellationToken cancellationToken = default)
     {
         using var activity = telemetry.ActivitySource.StartActivity("CreateCommitJob");
@@ -55,7 +56,16 @@ public partial class ManifestManager
 
         var commitJob = await GetCommitJobAsync(commitId, cancellationToken);
 
-        if (commitJob.Status != CommitJobStatus.Queued)
+        var now = DateTimeOffset.UtcNow;
+        var canClaim = commitJob.Status switch
+        {
+            CommitJobStatus.Queued => true,
+            // The UpdatedAt fallback lets jobs left by an older worker recover after an upgrade.
+            CommitJobStatus.Processing => (commitJob.LeaseExpiresAt ?? commitJob.UpdatedAt.Add(CommitLeaseDuration)) <= now,
+            CommitJobStatus.Failed => commitJob.DeadLetteredAt == null && commitJob.NextRetryAt is { } retryAt && retryAt <= now,
+            _ => false
+        };
+        if (!canClaim)
         {
             telemetry.StateOperations.Add(1, new TagList { { "operation", "claim" }, { "store", "manifest" }, { "entity", "commitjob" }, { "result", "not_queued" } });
             return (false, commitJob);
@@ -64,7 +74,11 @@ public partial class ManifestManager
         var expectedETag = commitJob.ETag;
         commitJob.Status = CommitJobStatus.Processing;
         commitJob.AttemptCount++;
-        commitJob.UpdatedAt = DateTimeOffset.UtcNow;
+        commitJob.UpdatedAt = now;
+        commitJob.LeaseExpiresAt = now.Add(CommitLeaseDuration);
+        commitJob.CompletedAt = null;
+        commitJob.NextRetryAt = null;
+        commitJob.Error = null;
 
         try
         {
@@ -163,6 +177,9 @@ public partial class ManifestManager
 
         var expectedETag = commitJob.ETag;
         commitJob.UpdatedAt = DateTimeOffset.UtcNow;
+        commitJob.LeaseExpiresAt = commitJob.Status == CommitJobStatus.Processing
+            ? commitJob.UpdatedAt.Add(CommitLeaseDuration)
+            : null;
 
         try
         {
