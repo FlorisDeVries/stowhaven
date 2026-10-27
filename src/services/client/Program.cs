@@ -2,6 +2,7 @@
 using FlorisDeV.BackupClient;
 using FlorisDeV.BackupClient.Clients.BackupApi;
 using FlorisDeV.BackupClient.Services;
+using FlorisDeV.BackupClient.Models;
 using FlorisDeV.BackupClient.Telemetry;
 using FlorisDeV.Logging;
 using Microsoft.Extensions.Configuration;
@@ -18,7 +19,18 @@ var allowInteractiveAuthentication =
     command?.Equals("configure", StringComparison.OrdinalIgnoreCase) == true ||
     command?.Equals("login", StringComparison.OrdinalIgnoreCase) == true;
 
-var host = Host.CreateDefaultBuilder(args)
+var resultArgument = Array.FindIndex(args, argument => argument.Equals("--result-file", StringComparison.OrdinalIgnoreCase));
+string? resultFile = null;
+var hostArguments = args;
+if (resultArgument >= 0)
+{
+    if (resultArgument + 1 >= args.Length || args[resultArgument + 1].StartsWith("--", StringComparison.Ordinal))
+        throw new ArgumentException("--result-file requires a file path.");
+    resultFile = args[resultArgument + 1];
+    hostArguments = args.Where((_, index) => index != resultArgument && index != resultArgument + 1).ToArray();
+}
+
+var host = Host.CreateDefaultBuilder(hostArguments)
     // Resolve appsettings.json/appsettings.local.json next to the executable, regardless of the
     // caller's current directory (matters for the PATH-linked binary and for install.sh, which
     // exec's the installed exe without changing into its directory first).
@@ -39,6 +51,8 @@ var host = Host.CreateDefaultBuilder(args)
         // Per-machine overrides (backup targets, etc.) written by the "configure" command.
         // Not a publish content item, so it survives re-publishing the exe in place.
         configuration.AddJsonFile("appsettings.local.json", optional: true, reloadOnChange: false);
+        if (resultFile != null)
+            configuration.AddInMemoryCollection(new Dictionary<string, string?> { ["BackupClient:ResultFilePath"] = resultFile });
     })
     .ConfigureServices((context, services) =>
     {
@@ -115,6 +129,7 @@ if (scheduleEnabled)
 
 await host.StartAsync();
 
+resultFile ??= host.Services.GetRequiredService<IConfiguration>()["BackupClient:ResultFilePath"];
 try
 {
     var logger = host.Services.GetRequiredService<ILogger<Program>>();
@@ -123,18 +138,30 @@ try
     // Log startup configuration for troubleshooting
     host.LogStartupConfiguration();
 
-    var tokenSource = new CancellationTokenSource();
-    var result = args.FirstOrDefault()?.Equals("restore", StringComparison.OrdinalIgnoreCase) == true
-        ? await host.Services.GetRequiredService<IRestoreService>().RestoreAsync(tokenSource.Token)
-        : await host.Services.GetRequiredService<IBackupService>().Backup(tokenSource.Token);
+    using var tokenSource = new CancellationTokenSource();
+    var result = command?.Equals("restore", StringComparison.OrdinalIgnoreCase) == true
+        ? new BackupResult { Operation = "restore", Outcome = await host.Services.GetRequiredService<IRestoreService>().RestoreAsync(tokenSource.Token)
+            ? BackupOutcome.Succeeded : BackupOutcome.Failed }
+        : await host.Services.GetRequiredService<IBackupService>().RunAsync(tokenSource.Token);
 
-    logger.LogInformation("Operation completed with result: {Result}", result);
+    await result.WriteAsync(resultFile, tokenSource.Token);
+    Environment.ExitCode = result.ExitCode;
+    logger.LogInformation("Operation outcome {Outcome}; run {RunId}, commit {CommitId}, exit code {ExitCode}", result.Outcome, result.RunId, result.CommitId, result.ExitCode);
 }
 catch (Exception e)
 {
     host.Services.GetRequiredService<ILogger<Program>>()
         .LogCritical(e, "Application terminated unexpectedly");
-    throw;
+    Environment.ExitCode = 1;
+    try
+    {
+        await new BackupResult { Operation = command?.Equals("restore", StringComparison.OrdinalIgnoreCase) == true ? "restore" : "backup",
+            Outcome = BackupOutcome.Failed, ErrorType = e.GetType().Name }.WriteAsync(resultFile);
+    }
+    catch (Exception reportError) when (reportError is IOException or UnauthorizedAccessException)
+    {
+        host.Services.GetRequiredService<ILogger<Program>>().LogError(reportError, "Could not write the operation result file");
+    }
 }
 finally
 {

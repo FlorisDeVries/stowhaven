@@ -16,6 +16,10 @@ public partial class BackupEventsController(
     ILogger<BackupEventsController> logger
 ) : ControllerBase
 {
+    // Dapr input bindings probe this route with OPTIONS before delivering messages.
+    [HttpOptions("backup-run-committed")]
+    public IActionResult BindingMetadata() => Ok();
+
     /// <summary>
     /// Handles BackupRunCommitted events from the backup-events Azure Storage Queue.
     /// Invoked by Dapr sidecar when a message is received.

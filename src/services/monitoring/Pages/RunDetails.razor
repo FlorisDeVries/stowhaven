@@ -1,0 +1,58 @@
+@page "/runs/{DeviceId:guid}/{RunId:guid}"
+@attribute [Authorize]
+@inherits MonitoringPage
+
+<PageTitle>Backup run details · Stowhaven</PageTitle>
+<a class="back-link" href="runs">← Backup runs</a>
+<div class="page-heading"><div><p class="eyebrow">BACKUP RUN DETAILS</p><h1>Run <span class="mono">@Display.Short(RunId)</span></h1><p class="subtitle">Submitted files and the outcome of this backup run.</p></div><button class="button" disabled="@Busy" @onclick="() => RunAsync(LoadAsync)">↻ Refresh</button></div>
+<RequestState Busy="Busy" Error="@Error" />
+@if (details is not null)
+{
+    var run = details.Summary;
+    <div class="panel detail-panel"><div class="panel-heading"><h2>Run summary</h2><StatusBadge Value="run.Status" /></div><dl class="detail-grid">
+        <div><dt>Run ID</dt><dd class="mono">@run.RunId</dd></div><div><dt>Device ID</dt><dd class="mono">@run.DeviceId</dd></div><div><dt>Commit job</dt><dd>@if (run.CommitId is { } commitId) { <a class="mono" href="@($"commits/{commitId}")">@commitId ↗</a> } else { <span>Not submitted</span> }</dd></div>
+        <div><dt>Started</dt><dd>@Display.Time(run.StartedAt)</dd></div><div><dt>Completed</dt><dd>@Display.Time(run.CompletedAt)</dd></div><div><dt>Files backed up</dt><dd>@Display.Number(run.FilesBackedUp)</dd></div>
+        <div><dt>Manifest entries</dt><dd>@Display.Number(details.FileCount)</dd></div><div><dt>Deletions</dt><dd>@Display.Number(details.DeletedCount)</dd></div>
+    </dl></div>
+    @if (!details.ManifestAvailable)
+    {
+        <div class="notice neutral">@(details.ManifestUnavailableReason ?? "The submitted manifest is no longer available. Run and commit records are still available.")</div>
+    }
+    else
+    {
+        <div class="panel"><div class="panel-heading"><h2>Submitted manifest</h2><span class="muted">Paginated file entries</span></div>
+            @if (files is not null)
+            {
+                <div class="table-scroll"><table><thead><tr><th>File</th><th>Size</th><th>Modified</th><th>Encryption</th></tr></thead><tbody>
+                    @foreach (var file in files.Files) { <tr @key="file.UniqueFileId"><td class="file-path">@file.LogicalPath</td><td>@Display.Bytes(file.Size)</td><td class="timestamp">@Display.Time(file.Mtime)</td><td>@(file.Encryption?.Mode ?? "None")</td></tr> }
+                    @foreach (var deleted in files.Deleted) { <tr><td class="file-path">@deleted</td><td colspan="3"><span class="status neutral">Deletion</span></td></tr> }
+                </tbody></table></div>
+                @if (files.Files.Count == 0 && files.Deleted.Count == 0) { <div class="empty-state">This page contains no manifest entries.</div> }
+                <Pager Cursor="cursor" NextToken="@files.NextContinuationToken" Busy="Busy" Previous="PreviousAsync" Next="NextAsync" />
+            }
+        </div>
+    }
+}
+@code {
+    [Parameter] public Guid DeviceId { get; set; }
+    [Parameter] public Guid RunId { get; set; }
+    private (Guid Device, Guid Run) loaded;
+    private ManifestDetailsResponse? details;
+    private ManifestFilesResponse? files;
+    private readonly PageCursor cursor = new();
+    protected override async Task LoadAsync()
+    {
+        if (loaded != (DeviceId, RunId)) { cursor.Reset(); details = null; files = null; loaded = (DeviceId, RunId); }
+        details = await Api.RunAsync(DeviceId, RunId, Lifetime.Token);
+        if (details.ManifestAvailable) await LoadFilesAsync();
+        else files = null;
+    }
+    private async Task LoadFilesAsync() => files = await Api.RunFilesAsync(DeviceId, RunId, cursor.Current, Lifetime.Token);
+    private async Task NextAsync()
+    {
+        if (files?.NextContinuationToken is not { } token) return;
+        cursor.Next(token); files = null;
+        await RunAsync(LoadFilesAsync);
+    }
+    private async Task PreviousAsync() { cursor.Back(); files = null; await RunAsync(LoadFilesAsync); }
+}

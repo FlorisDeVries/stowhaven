@@ -31,17 +31,27 @@ public partial class ManifestManager
             return existingCommitJob;
         }
 
+        var run = await store.GetAsync<BackupRun>(BackupRunDocument, DevicePartition(deviceId), $"{runId:N}", cancellationToken);
         var commitJob = new CommitJob
         {
             CommitId = commitId,
             DeviceId = deviceId,
             RunId = runId,
+            RunStartedAt = run?.Data.StartedAt ?? now,
             Status = CommitJobStatus.Queued,
             CreatedAt = now,
             UpdatedAt = now
         };
 
-        commitJob.ETag = await SaveCommitJobAsync(commitJob, etag: null, cancellationToken);
+        commitJob.ETag = await store.TryCreateAsync(
+            CommitJobDocument, CommitPartition(commitId), $"{commitId:N}", commitJob,
+            sortValue: commitJob.CreatedAt.ToUnixTimeMilliseconds(), cancellationToken: cancellationToken);
+        if (commitJob.ETag == null)
+        {
+            // Another request won after our initial read. It may already be processing; return
+            // its current state instead of replacing it with our stale Queued candidate.
+            return await GetCommitJobAsync(commitId, cancellationToken);
+        }
 
         telemetry.StateOperations.Add(1, new TagList { { "operation", "create" }, { "store", "manifest" }, { "entity", "commitjob" } });
 
@@ -61,7 +71,7 @@ public partial class ManifestManager
         {
             CommitJobStatus.Queued => true,
             // The UpdatedAt fallback lets jobs left by an older worker recover after an upgrade.
-            CommitJobStatus.Processing => (commitJob.LeaseExpiresAt ?? commitJob.UpdatedAt.Add(CommitLeaseDuration)) <= now,
+            CommitJobStatus.Processing => (commitJob.LeaseExpiresAt ?? commitJob.UpdatedAt.Add(_commitLeaseDuration)) <= now,
             CommitJobStatus.Failed => commitJob.DeadLetteredAt == null && commitJob.NextRetryAt is { } retryAt && retryAt <= now,
             _ => false
         };
@@ -72,10 +82,35 @@ public partial class ManifestManager
         }
 
         var expectedETag = commitJob.ETag;
+        if (commitJob.RunStartedAt == default)
+        {
+            var run = await store.GetAsync<BackupRun>(BackupRunDocument, DevicePartition(commitJob.DeviceId),
+                $"{commitJob.RunId:N}", cancellationToken);
+            commitJob.RunStartedAt = run?.Data.StartedAt ?? commitJob.CreatedAt;
+        }
+        commitJob.ClaimId = Guid.NewGuid();
+        var deviceClaim = await TryAcquireDeviceLeaseAsync(commitJob, cancellationToken);
+        if (!deviceClaim.Acquired)
+        {
+            if (deviceClaim.Superseded)
+            {
+                commitJob.Status = CommitJobStatus.Failed;
+                commitJob.FailureCategory = "Superseded";
+                commitJob.Error = "A newer backup run has already completed for this device.";
+                commitJob.DeadLetteredAt = now;
+                commitJob.CompletedAt = now;
+                commitJob.NextRetryAt = null;
+                commitJob.LeaseExpiresAt = null;
+                commitJob.ClaimId = null;
+                try { commitJob.ETag = await SaveCommitJobAsync(commitJob, expectedETag, cancellationToken); }
+                catch (StateConcurrencyException) { commitJob = await GetCommitJobAsync(commitId, cancellationToken); }
+            }
+            return (false, commitJob);
+        }
         commitJob.Status = CommitJobStatus.Processing;
         commitJob.AttemptCount++;
         commitJob.UpdatedAt = now;
-        commitJob.LeaseExpiresAt = now.Add(CommitLeaseDuration);
+        commitJob.LeaseExpiresAt = now.Add(_commitLeaseDuration);
         commitJob.CompletedAt = null;
         commitJob.NextRetryAt = null;
         commitJob.Error = null;
@@ -86,6 +121,7 @@ public partial class ManifestManager
         }
         catch (StateConcurrencyException)
         {
+            await UpdateDeviceLeaseAsync(commitJob, release: true, cancellationToken);
             LogConcurrentCommitJobUpdate(logger, commitId, expectedETag);
             telemetry.StateOperations.Add(1, new TagList { { "operation", "claim" }, { "store", "manifest" }, { "entity", "commitjob" }, { "result", "conflict" } });
             return (false, commitJob);
@@ -178,11 +214,19 @@ public partial class ManifestManager
         var expectedETag = commitJob.ETag;
         commitJob.UpdatedAt = DateTimeOffset.UtcNow;
         commitJob.LeaseExpiresAt = commitJob.Status == CommitJobStatus.Processing
-            ? commitJob.UpdatedAt.Add(CommitLeaseDuration)
+            ? commitJob.UpdatedAt.Add(_commitLeaseDuration)
             : null;
 
         try
         {
+            // Renew before publishing progress. Release only after file mutations are complete;
+            // terminal publication can then be retried without overlapping catalog operations.
+            if (commitJob.ClaimId != null && commitJob.Status != CommitJobStatus.Processing)
+            {
+                var current = await GetCommitJobAsync(commitJob.CommitId, cancellationToken);
+                if (current.ETag != expectedETag) throw new StateConcurrencyException(CommitJobDocument, $"{commitJob.CommitId:N}");
+            }
+            await UpdateDeviceLeaseAsync(commitJob, release: commitJob.Status != CommitJobStatus.Processing, cancellationToken);
             commitJob.ETag = await SaveCommitJobAsync(commitJob, expectedETag, cancellationToken);
         }
         catch (StateConcurrencyException)

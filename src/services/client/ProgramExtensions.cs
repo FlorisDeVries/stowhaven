@@ -28,6 +28,7 @@ public static class ProgramExtensions
         services.AddTransient<IClientSetupService, ClientSetupService>();
         services.AddTransient<IBackupService, BackupService>();
         services.AddTransient<IRestoreService, RestoreService>();
+        services.AddSingleton<IRestoreBlobClientFactory, RestoreBlobClientFactory>();
     }
 
     public static void AddApplicationConfigurations(

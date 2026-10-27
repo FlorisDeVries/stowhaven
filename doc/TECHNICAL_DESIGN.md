@@ -181,7 +181,9 @@ The phrase and unwrapped keys never go to the Gateway, API, worker, or storage a
 6. Encrypted files are authenticated, decrypted with the local recovery phrase, and verified against their plaintext SHA-256 before being moved to the destination.
 7. Existing destination files are rejected unless `BackupClient:Restore:OverwriteExisting` is enabled.
 
-Archive-tier blobs must be rehydrated before the read SAS can be used to download them; automatic rehydration is not implemented.
+Restore preparation checks the selected blobs' access tiers. The client requests standard-priority rehydration to Hot for archived files by default, reports how many files are waiting, and polls until they are online. `BackupClient:Restore:RehydrateArchivedFiles=false` keeps preparation manual. Polling defaults to 30 seconds with a 24-hour wait limit; a timeout stops the client wait while storage continues rehydrating. If selected versions change during preparation, the client rejects the inconsistent selection and asks for a fresh restore.
+
+Restore credentials are renewed before their expiry and once after an authentication-expiry download failure. The original selected file identities are retained during renewal. Download progress is logged, and ciphertext/plaintext integrity checks still precede destination publication.
 
 ## 10. SAS and storage security
 
@@ -197,8 +199,8 @@ Archive-tier blobs must be rehydrated before the read SAS can be used to downloa
 
 ## 11. Reliability and failure handling
 
-- Commit IDs are deterministic for `(deviceId, runId)`, so replaying `commit-run` reuses the same job.
-- ETag-based claims have a two-minute lease. The worker renews its lease every 30 seconds, including while persisting a manifest; `CommitProcessing:HeartbeatIntervalSeconds` can set an interval from 1 to 60 seconds. Redelivery can reclaim an expired processing job. Active or not-yet-due deliveries return an error so the queue retains them.
+- Commit IDs are deterministic for `(deviceId, runId)`. Job creation is an atomic insert-if-absent in both state providers; concurrent requests return the winning job without replacing its progress or lease. Replaying `commit-run` returns the existing outcome, including after completion or a lost response. Queued jobs are re-published so a retry can recover a failed queue publish; processing and terminal jobs are returned without another event.
+- ETag-based job and device claims serialize catalog mutations per device while allowing different devices to commit concurrently. Completed runs advance a per-device watermark; delayed older runs become terminally `Superseded` rather than overwriting newer data. Default leases last two minutes (`CommitProcessing:LeaseDurationSeconds`, 5–3600 seconds). Heartbeats default to 30 seconds and are capped at one-third of the configured lease duration. Redelivery can reclaim expired claims. Active or not-yet-due deliveries return an error so the queue retains them.
 - Failed jobs with `NextRetryAt` are retried on queue redelivery after that time. Attempts use bounded exponential delays; exhausting `CommitProcessing:MaxAttempts` records a terminal failure. The delivery is acknowledged once it observes a terminal job.
 - Changed files record the superseded version before publishing a replacement catalog entry. Retirement follows that catalog update and resumes against the recorded old identity, so replay cannot retire the incoming version.
 - Staged-content mismatches are recorded as failed files. A run may finish as `CompletedWithErrors` when the percentage remains within the configured worker threshold.
@@ -210,6 +212,8 @@ Archive-tier blobs must be rehydrated before the read SAS can be used to downloa
 - Retryable failed commits retain the client journal. For a terminal failure, the client atomically invalidates cached hashes/timestamps for affected paths and clears the journal. Newly uploaded paths are also tracked as unconfirmed because they may already have been published remotely. This forces present files to be uploaded again and keeps absent files eligible for deletion on the next scan.
 - The API exposes operational endpoints for paged manifests/commits, failed files, commit retry, and staging cleanup.
 - Staging cleanup runs both through a Dapr cron binding and through a seven-day Blob lifecycle fallback.
+
+Client results distinguish `noChanges`, `succeeded`, `completedWithErrors`, `pending`, and `failed`. A pending commit is not recorded as completed. The CLI supports an atomically replaced JSON report through `--result-file` or `BackupClient:ResultFilePath`, and returns exit codes 0 (success/no changes), 1 (failure), 2 (pending), or 3 (partial success). Scheduled runs report the same outcomes in logs and the configured result file; the `florisdev.backup.outcomes` metric labels outcomes without adding device IDs as metric dimensions.
 
 ## 12. Lifecycle and cost behavior
 

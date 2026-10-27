@@ -13,15 +13,19 @@ public partial class ManifestManager : IManifestManager
     private readonly IStateDocumentStore store;
     private readonly ILogger<ManifestManager> logger;
     private readonly TelemetryProvider telemetry;
+    private readonly TimeSpan _commitLeaseDuration;
 
     public ManifestManager(
         [FromKeyedServices(StateStores.Manifest)] IStateDocumentStore store,
         ILogger<ManifestManager> logger,
-        TelemetryProvider telemetry)
+        TelemetryProvider telemetry,
+        IConfiguration? configuration = null)
     {
         this.store = store;
         this.logger = logger;
         this.telemetry = telemetry;
+        _commitLeaseDuration = TimeSpan.FromSeconds(Math.Clamp(
+            configuration?.GetValue("CommitProcessing:LeaseDurationSeconds", 120) ?? 120, 5, 3600));
     }
 
     // Document types within the manifest store.

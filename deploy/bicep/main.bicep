@@ -72,6 +72,15 @@ param apiMinReplicas int = 0
 @description('Minimum Gateway replicas. Keep 0 for lowest cost; the app scales up on HTTP requests.')
 param gatewayMinReplicas int = 0
 
+@description('Provision the Free static monitoring UI. Requires the monitoring SPA app registration and operator allowlist configured in the deployment workflow.')
+param deployMonitoringUi bool = false
+
+@description('Azure Static Web Apps control-plane region, independent of the backend region.')
+param monitoringUiLocation string = 'westeurope'
+
+@description('Entra user object IDs permitted to use admin operations through the Gateway. Empty denies all operators.')
+param monitoringAdminUserObjectIds array = []
+
 @description('Microsoft Entra application client ID for Container Apps built-in authentication on the Gateway. Required when deployContainerApps is true.')
 param gatewayAuthClientId string = ''
 
@@ -167,6 +176,15 @@ module monitoring 'modules/monitoring.bicep' = {
     nameSuffix: nameSuffix
     retentionDays: logAnalyticsRetentionDays
     dailyQuotaGb: logAnalyticsDailyQuotaGb
+    tags: commonTags
+  }
+}
+
+module monitoringUi 'modules/monitoring-ui.bicep' = if (deployMonitoringUi) {
+  name: 'monitoring-ui'
+  params: {
+    location: monitoringUiLocation
+    nameSuffix: nameSuffix
     tags: commonTags
   }
 }
@@ -268,6 +286,8 @@ module compute 'modules/compute.bicep' = if (deployAuthenticatedContainerApps) {
     staleStagingCleanupDryRun: staleStagingCleanupDryRun
     apiMinReplicas: apiMinReplicas
     gatewayMinReplicas: gatewayMinReplicas
+    monitoringUiAllowedOrigins: deployMonitoringUi ? [monitoringUi!.outputs.origin] : []
+    monitoringAdminUserObjectIds: monitoringAdminUserObjectIds
     gatewayAuthClientId: gatewayAuthClientId
     gatewayAuthClientSecret: gatewayAuthClientSecret
     gatewayAuthAllowedAudiences: gatewayAuthAllowedAudiences
@@ -405,3 +425,5 @@ output dataStorageAccountName string = storage.outputs.dataStorageAccountName
 output containerName string = storage.outputs.containerName
 output logAnalyticsWorkspaceName string = monitoring.outputs.workspaceName
 output appInsightsName string = monitoring.outputs.appInsightsName
+output monitoringUiName string = deployMonitoringUi ? monitoringUi!.outputs.name : ''
+output monitoringUiUrl string = deployMonitoringUi ? monitoringUi!.outputs.origin : ''

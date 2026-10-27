@@ -66,6 +66,12 @@ param apiMinReplicas int = 0
 @description('Minimum Gateway replicas. Keep 0 for lowest cost; the app scales up on HTTP requests.')
 param gatewayMinReplicas int = 0
 
+@description('Exact static monitoring UI origins allowed to call the public Gateway.')
+param monitoringUiAllowedOrigins array = []
+
+@description('Entra user object IDs allowed to use Gateway admin operations. Empty denies all.')
+param monitoringAdminUserObjectIds array = []
+
 @description('Microsoft Entra application client ID for Container Apps built-in authentication on the Gateway.')
 param gatewayAuthClientId string
 
@@ -128,6 +134,14 @@ var ghcrPullSecrets = ghcrAuthEnabled ? [
 ] : []
 
 var gatewayAuthEnabled = !empty(gatewayAuthClientId) && !empty(gatewayAuthClientSecret)
+var monitoringOriginEnvironment = [for (origin, index) in monitoringUiAllowedOrigins: {
+  name: 'Gateway__AllowedOrigins__${index}'
+  value: origin
+}]
+var monitoringOperatorEnvironment = [for (userId, index) in monitoringAdminUserObjectIds: {
+  name: 'Gateway__AdminUserObjectIds__${index}'
+  value: userId
+}]
 var gatewayProxyHeaderValueEffective = empty(gatewayProxyHeaderValue) ? uniqueString(subscription().id, resourceGroup().id, nameSuffix, 'gateway') : gatewayProxyHeaderValue
 var gatewayAuthSecrets = gatewayAuthEnabled ? [
   {
@@ -478,6 +492,15 @@ resource gatewayContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
         external: true
         targetPort: 8080
         transport: 'http'
+        // Handle browser OPTIONS preflights at ingress before Easy Auth. Actual
+        // admin requests still require a validated bearer token and operator access.
+        corsPolicy: {
+          allowedOrigins: monitoringUiAllowedOrigins
+          allowedMethods: [ 'GET', 'POST', 'OPTIONS' ]
+          allowedHeaders: [ 'Authorization', 'Content-Type' ]
+          allowCredentials: false
+          maxAge: 600
+        }
         traffic: [
           {
             weight: 100
@@ -526,6 +549,8 @@ resource gatewayContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
               name: 'Gateway__ApiTokenScope'
               value: '${apiAuthAudience}/.default'
             }
+            ...monitoringOriginEnvironment
+            ...monitoringOperatorEnvironment
             ...(gatewayAuthEnabled ? [
               {
                 name: 'Gateway__OboClientId'

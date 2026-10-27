@@ -1,0 +1,11 @@
+@inject NavigationManager Navigation
+
+<div class="welcome panel">
+    <span class="welcome-icon" aria-hidden="true">◈</span>
+    <p class="eyebrow">YOUR BACKUPS, AT A GLANCE</p>
+    <h1>A little peace of mind.</h1>
+    <p>Inspect backup activity, follow commit progress, and resolve failures from one place.</p>
+    <button class="button primary" @onclick="SignIn">Sign in with Microsoft <span aria-hidden="true">→</span></button>
+    <p class="muted small-text">Access is limited to your organization’s configured operators.</p>
+</div>
+@code { private void SignIn() => Navigation.NavigateToLogin("authentication/login"); }

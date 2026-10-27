@@ -60,6 +60,7 @@ Description=Stowhaven Client
 
 [Service]
 Type=oneshot
+SuccessExitStatus=2
 ExecStart=$INSTALL_DIR/$EXE_NAME
 EOF
 

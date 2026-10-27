@@ -2,6 +2,9 @@
 
 The API, worker, and client use structured logging and OpenTelemetry. Azure deployments also create Log Analytics and Application Insights resources.
 
+For the standalone Blazor admin dashboard, including run history, commit progress,
+and operator setup, see [Admin monitoring UI](MONITORING_UI.md).
+
 ## What is wired today
 
 | Runtime | Logs | Traces and metrics |

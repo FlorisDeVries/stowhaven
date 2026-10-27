@@ -1,5 +1,10 @@
 # Authentication and authorization
 
+The Blazor monitoring UI uses a dedicated SPA registration, the Gateway's
+`monitoring.admin` scope, and an explicit operator allowlist. Public Gateway
+`/api/ops/*` requests require these checks before the downstream `backup.admin`
+exchange. See [Admin monitoring UI](MONITORING_UI.md#entra-setup) for setup.
+
 Hosted Stowhaven clients call the public Gateway. The Stowhaven API and worker have internal Container Apps ingress.
 
 ```mermaid

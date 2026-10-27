@@ -82,5 +82,11 @@ public sealed partial class ManifestManagerConcurrencyTests
         copy.UpdatedAt = job.UpdatedAt;
         copy.LeaseExpiresAt = expiry;
         await _store.UpsertAsync("commitJob", $"commit:{job.CommitId:N}", $"{job.CommitId:N}", copy, copy.ETag);
+        var deviceLease = await _store.GetAsync<DeviceCommitLease>("deviceCommitLease", $"device:{job.DeviceId:N}", "commit");
+        if (deviceLease != null)
+        {
+            deviceLease.Data.ExpiresAt = expiry;
+            await _store.UpsertAsync("deviceCommitLease", $"device:{job.DeviceId:N}", "commit", deviceLease.Data, deviceLease.ETag);
+        }
     }
 }

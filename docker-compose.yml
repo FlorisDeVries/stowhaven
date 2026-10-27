@@ -139,6 +139,8 @@ services:
             - ASPNETCORE_URLS=http://+:8080
             - Gateway__ApiBaseUrl=http://backup-api:8080
             - Gateway__WorkerBaseUrl=http://backup-worker:8080
+            - Gateway__AllowedOrigins__0=http://localhost:8300
+            - Gateway__AllowDevelopmentAdmin=true
         ports:
             - 127.0.0.1:8200:8080
         depends_on:

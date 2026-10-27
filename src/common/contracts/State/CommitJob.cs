@@ -8,6 +8,7 @@ public class CommitJob
     public Guid CommitId { get; set; }
     public Guid DeviceId { get; set; }
     public Guid RunId { get; set; }
+    public DateTimeOffset RunStartedAt { get; set; }
     public CommitJobStatus Status { get; set; }
     public string? Error { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
@@ -22,6 +23,7 @@ public class CommitJob
     public DateTimeOffset? NextRetryAt { get; set; }
     public DateTimeOffset? DeadLetteredAt { get; set; }
     public DateTimeOffset? LeaseExpiresAt { get; set; }
+    public Guid? ClaimId { get; set; }
     public string? ETag { get; set; }
 }
 

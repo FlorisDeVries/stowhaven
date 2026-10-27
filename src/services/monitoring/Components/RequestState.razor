@@ -1,0 +1,6 @@
+@if (!string.IsNullOrWhiteSpace(Error)) { <div class="notice danger" role="alert">@Error</div> }
+@if (Busy) { <div class="loading-line" role="status">Loading data… The service may take a moment to wake from idle.</div> }
+@code {
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public string? Error { get; set; }
+}

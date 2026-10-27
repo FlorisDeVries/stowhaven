@@ -21,6 +21,7 @@ namespace FlorisDeV.BackupClient.Services;
 public interface IBackupService
 {
     Task<bool> Backup(CancellationToken cancellationToken);
+    Task<BackupResult> RunAsync(CancellationToken cancellationToken);
 }
 
 /// <summary>
@@ -41,6 +42,9 @@ public partial class BackupService(
     private readonly BackupClientOptions _options = backupOptions.Value;
 
     public async Task<bool> Backup(CancellationToken cancellationToken)
+        => (await RunAsync(cancellationToken)).Outcome != BackupOutcome.Failed;
+
+    public async Task<BackupResult> RunAsync(CancellationToken cancellationToken)
     {
         var stopwatch = Stopwatch.StartNew();
         var metricTags = new TagList { { "operation.name", "Backup" } };
@@ -61,15 +65,17 @@ public partial class BackupService(
             SetupTelemetryBackupStart(activity, deviceId, targets);
 
             var pendingRun = await LoadUsablePendingRunAsync(deviceId, cancellationToken);
+            CommitExecution? resumed = null;
+            Guid? resumedRunId = pendingRun?.RunId;
             var finalizedPendingRun = false;
             if (pendingRun is { ManifestUploaded: true } or { CommitId: not null })
             {
-                var finalized = await ResumeFinalizedRunAsync(pendingRun, cancellationToken);
-                if (!finalized)
+                resumed = await ResumeFinalizedRunAsync(pendingRun, cancellationToken);
+                if (resumed.Status == null)
                 {
                     stopwatch.Stop();
                     RecordOperationDuration(activity, metricTags, stopwatch, "commit_pending");
-                    return true;
+                    return Result(BackupOutcome.Pending, deviceId, pendingRun.RunId, resumed);
                 }
 
                 // The invocation that notices a completed pending run must still inspect the live
@@ -105,7 +111,11 @@ public partial class BackupService(
             // Step 4: Handle case of no changes
             if (!processingResult.HasStartedBackupRun && deletedCount == 0)
             {
-                return HandleNoChanges(activity, metricTags, stopwatch);
+                HandleNoChanges(activity, metricTags, stopwatch);
+                var outcome = resumed?.Status?.Status == CommitJobStatus.CompletedWithErrors || processingResult.Stats.SkippedCount > 0
+                    ? BackupOutcome.CompletedWithErrors
+                    : resumed?.Status?.Status == CommitJobStatus.Succeeded ? BackupOutcome.Succeeded : BackupOutcome.NoChanges;
+                return Result(outcome, deviceId, resumedRunId, resumed, processingResult.Stats);
             }
 
             if (!processingResult.HasStartedBackupRun && deletedCount > 0)
@@ -134,13 +144,13 @@ public partial class BackupService(
                 pendingRun,
                 cancellationToken);
 
-            if (!commitFinalized)
+            if (commitFinalized.Status == null)
             {
                 // The commit is still processing server-side and will finalize on a later run. This is a
                 // clean, non-fatal outcome: the pending-run journal is intact and no re-upload is needed.
                 stopwatch.Stop();
                 RecordOperationDuration(activity, metricTags, stopwatch, "commit_pending");
-                return true;
+                return Result(BackupOutcome.Pending, deviceId, processingResult.RunId, commitFinalized, processingResult.Stats);
             }
 
             // Step 6: Validate failure threshold and record metrics
@@ -154,7 +164,11 @@ public partial class BackupService(
 
             LogBackupCompleted(processingResult.Stats.NewFilesCount + processingResult.Stats.ModifiedFilesCount, processingResult.Stats.TotalBytes,
                 stopwatch.ElapsedMilliseconds);
-            return true;
+            var partial = commitFinalized.Status.Status == CommitJobStatus.CompletedWithErrors ||
+                processingResult.Stats.SkippedCount + processingResult.Stats.SkippedChangedCount +
+                processingResult.Stats.SkippedSasExpiredCount + processingResult.Stats.TotalUploadFailures > 0;
+            return Result(partial ? BackupOutcome.CompletedWithErrors : BackupOutcome.Succeeded,
+                deviceId, processingResult.RunId, commitFinalized, processingResult.Stats);
         }
         catch (Exception ex)
         {
@@ -599,7 +613,7 @@ public partial class BackupService(
     }
 
 
-    private bool HandleNoChanges(Activity? activity, TagList metricTags, Stopwatch stopwatch)
+    private void HandleNoChanges(Activity? activity, TagList metricTags, Stopwatch stopwatch)
     {
         LogNoChangesDetected();
         stopwatch.Stop();
@@ -610,15 +624,13 @@ public partial class BackupService(
         activity?.SetTag(ActivityAttributes.BackupSuccess, true);
         activity?.SetTag("backup.skipped", true);
 
-        return true;
     }
 
     /// <summary>
-    /// Uploads the manifest, commits the run, and waits for server-side completion. Returns <c>true</c>
-    /// when the run was finalized locally; <c>false</c> when the commit is still processing server-side
-    /// and finalization was deferred to a later run (the pending-run journal is left in place).
+    /// Uploads the manifest, commits the run, and returns its identity and terminal status.
+    /// A null status means server-side processing is pending and the journal remains durable.
     /// </summary>
-    private async Task<bool> CommitBackupAsync(
+    private async Task<CommitExecution> CommitBackupAsync(
         bool hasStartedBackupRun,
         Guid? runId,
         Guid deviceId,
@@ -632,7 +644,7 @@ public partial class BackupService(
         CancellationToken cancellationToken)
     {
         if (!hasStartedBackupRun)
-            return true;
+            throw new InvalidOperationException("No backup run was started.");
 
         if (manifestContainerClient == null)
             throw new InvalidOperationException("Manifest upload client was not initialized for the backup run");
@@ -676,7 +688,7 @@ public partial class BackupService(
         if (commitStatus == null)
         {
             // Commit still processing server-side; leave the pending run so a later run finalizes it.
-            return false;
+            return new CommitExecution(commitId.Value, null);
         }
 
         if (commitStatus.Status == CommitJobStatus.Failed)
@@ -685,7 +697,7 @@ public partial class BackupService(
             throw new InvalidOperationException($"Backup commit {commitId} failed: {commitStatus.Error ?? "Unknown error"}. A later backup will retry the affected files.");
         }
         await FinalizeRunStateAsync(deviceId, runId.Value, commitStatus, cancellationToken);
-        return true;
+        return new CommitExecution(commitId.Value, commitStatus);
     }
 
     /// <summary>
@@ -860,7 +872,7 @@ public partial class BackupService(
         return null;
     }
 
-    private async Task<bool> ResumeFinalizedRunAsync(
+    private async Task<CommitExecution> ResumeFinalizedRunAsync(
         PendingBackupRun pendingRun,
         CancellationToken cancellationToken)
     {
@@ -884,18 +896,18 @@ public partial class BackupService(
         if (commitStatus == null)
         {
             // Still processing server-side; keep the pending run so a later run finalizes it.
-            return false;
+            return new CommitExecution(commitId.Value, null);
         }
 
         if (commitStatus.Status == CommitJobStatus.Failed)
         {
             await backupStateService.RecoverFailedRunAsync(pendingRun.DeviceId, pendingRun.RunId, cancellationToken);
             logger.LogWarning("Discarded terminally failed commit {CommitId}; affected paths will be uploaded again", commitId);
-            return true;
+            return new CommitExecution(commitId.Value, commitStatus);
         }
         await FinalizeRunStateAsync(pendingRun.DeviceId, pendingRun.RunId, commitStatus, cancellationToken);
         LogPendingBackupRunFinalized(pendingRun.RunId, commitId.Value);
-        return true;
+        return new CommitExecution(commitId.Value, commitStatus);
     }
 
     private Task SavePendingRunAsync(
@@ -1213,6 +1225,7 @@ public partial class BackupService(
 
     private void HandleBackupFailure(Exception ex, Activity? activity, Stopwatch stopwatch)
     {
+        telemetry.BackupOutcomes.Add(1, new TagList { { "outcome", BackupOutcome.Failed.ToString() } });
         stopwatch.Stop();
 
         var failureTags = new TagList
@@ -1276,6 +1289,23 @@ public partial class BackupService(
         public int SkippedSasExpiredCount { get; set; }
         public int TotalUploadAttempts { get; set; }
         public int TotalUploadFailures { get; set; }
+    }
+
+    private sealed record CommitExecution(Guid CommitId, CommitStatusResponse? Status);
+
+    private BackupResult Result(BackupOutcome outcome, Guid device, Guid? run, CommitExecution? commit, BackupStats? stats = null)
+    {
+        telemetry.BackupOutcomes.Add(1, new TagList { { "outcome", outcome.ToString() } });
+        logger.LogInformation("Backup outcome {Outcome}; device {DeviceId}, run {RunId}, commit {CommitId}", outcome, device, run, commit?.CommitId);
+        return new BackupResult
+        {
+            Outcome = outcome, DeviceId = device, RunId = run, CommitId = commit?.CommitId,
+            FilesScanned = stats?.TotalScanned ?? 0,
+            FilesUploaded = Math.Max(0, (stats?.TotalUploadAttempts ?? 0) - (stats?.TotalUploadFailures ?? 0) - (stats?.SkippedSasExpiredCount ?? 0)),
+            FilesSkipped = (stats?.SkippedCount ?? 0) + (stats?.SkippedChangedCount ?? 0),
+            FilesFailed = (stats?.TotalUploadFailures ?? 0) + (commit?.Status?.FilesFailed ?? 0),
+            FilesDeferred = stats?.SkippedSasExpiredCount ?? 0
+        };
     }
 
     private sealed record FileProcessingResult(

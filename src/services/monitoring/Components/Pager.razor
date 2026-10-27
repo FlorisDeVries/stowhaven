@@ -1,0 +1,11 @@
+<div class="pagination"><span>Page @Cursor.Page <span class="muted">· Up to 25 records per page</span></span><div>
+    <button class="button small" aria-label="Previous page" disabled="@(Busy || !Cursor.CanGoBack)" @onclick="Previous">← Previous</button>
+    <button class="button small" aria-label="Next page" disabled="@(Busy || string.IsNullOrWhiteSpace(NextToken))" @onclick="Next">Next →</button>
+</div></div>
+@code {
+    [Parameter, EditorRequired] public PageCursor Cursor { get; set; } = default!;
+    [Parameter] public string? NextToken { get; set; }
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public EventCallback Previous { get; set; }
+    [Parameter] public EventCallback Next { get; set; }
+}

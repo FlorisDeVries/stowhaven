@@ -40,7 +40,8 @@ public partial class BackupProcessingService(
     /// </summary>
     private readonly int _maxParallelFiles = Math.Max(1, configuration.GetValue("CommitProcessing:MaxParallelFiles", 8));
     private readonly TimeSpan _heartbeatInterval = TimeSpan.FromSeconds(
-        Math.Clamp(configuration.GetValue("CommitProcessing:HeartbeatIntervalSeconds", 30), 1, 60));
+        Math.Min(Math.Clamp(configuration.GetValue("CommitProcessing:HeartbeatIntervalSeconds", 30), 1, 60),
+            Math.Clamp(configuration.GetValue("CommitProcessing:LeaseDurationSeconds", 120), 5, 3600) / 3.0));
 
     public async Task ProcessBackupRunAsync(BackupRunCommittedEvent backupEvent, CancellationToken cancellationToken = default)
     {

@@ -13,6 +13,35 @@ namespace FlorisDeV.BackupClient.Tests.Services;
 public partial class BackupServiceTests
 {
     [Fact]
+    public async Task LostCommitResponse_ResumesCompletedJobWithoutStartingAnotherRun()
+    {
+        var device = Guid.NewGuid(); var run = Guid.NewGuid(); var commit = Guid.NewGuid();
+        SetupPendingRecovery(device, run, commit, new CommitStatusResponse
+        {
+            CommitId = commit, DeviceId = device, RunId = run, Status = CommitJobStatus.Succeeded
+        });
+        // The manifest was submitted, but the initial commit response never reached the journal.
+        _mockStateService.Setup(x => x.GetPendingBackupRunAsync(device, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(CreatePendingRun(device, run, commit) with { CommitId = null });
+        _mockApiClient.Setup(x => x.CommitBackupRun(device,
+                It.Is<FlorisDeV.BackupContracts.Api.Requests.CommitBackupRunRequest>(request => request.RunId == run),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new CommitBackupRunResponse
+                { CommitId = commit, DeviceId = device, RunId = run, Status = CommitJobStatus.Succeeded });
+
+        Assert.True(await _sut.Backup(CancellationToken.None));
+
+        _mockStateService.Verify(x => x.SavePendingBackupRunAsync(
+            It.Is<PendingBackupRun>(pending => pending.RunId == run && pending.CommitId == commit && pending.ManifestUploaded),
+            It.IsAny<CancellationToken>()), Times.Once);
+        _mockStateService.Verify(x => x.PromotePendingRunFilesToStateAsync(device, run, It.IsAny<CancellationToken>()), Times.Once);
+        _mockStateService.Verify(x => x.ClearPendingBackupRunAsync(device, run, It.IsAny<CancellationToken>()), Times.Once);
+        _mockApiClient.Verify(x => x.StartBackupRun(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
+        _mockScanner.Verify(x => x.ScanAllTargetsAsync(It.IsAny<IReadOnlyDictionary<string, string>>(),
+            It.IsAny<string[]?>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Fact]
     public async Task TerminallyFailedPendingCommit_ReconcilesAndContinuesScanning()
     {
         var device = Guid.NewGuid(); var run = Guid.NewGuid(); var commit = Guid.NewGuid();

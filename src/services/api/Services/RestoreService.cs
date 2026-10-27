@@ -14,11 +14,14 @@ public interface IRestoreService
         StartRestoreRequest request,
         string? clientIp = null,
         CancellationToken cancellationToken = default);
+
+    Task<RefreshRestoreSasResponse> RefreshSasAsync(Guid deviceId, string? clientIp = null, CancellationToken cancellationToken = default);
 }
 
 public class RestoreService(
     IManifestManager manifestManager,
-    ISasUrlService sasUrlService) : IRestoreService
+    ISasUrlService sasUrlService,
+    IRestoreAvailabilityService? availability = null) : IRestoreService
 {
     public const int DefaultPageSize = 100;
     public const int MaxPageSize = 1000;
@@ -77,7 +80,13 @@ public class RestoreService(
                 throw new FileNotFoundException($"Active restore version '{entry.CurrentVersionId}' was not found for '{logicalPath}'.");
             }
 
-            files.Add(ToRestoreFileItem(entry, version));
+            var file = ToRestoreFileItem(entry, version);
+            if (availability != null)
+            {
+                file = file with { Availability = await availability.EnsureAvailableAsync(deviceId, version.UniqueFileId,
+                    request.RehydrateArchivedFiles, cancellationToken) };
+            }
+            files.Add(file);
         }
 
         var restorePath = $"devices/{deviceId:N}/files";
@@ -102,6 +111,13 @@ public class RestoreService(
         LastWriteUtc = entry.LastWriteUtc,
         Encryption = version.Encryption
     };
+
+    public async Task<RefreshRestoreSasResponse> RefreshSasAsync(Guid deviceId, string? clientIp = null, CancellationToken cancellationToken = default)
+        => new()
+        {
+            DeviceId = deviceId,
+            SasUrlInfo = await sasUrlService.GenerateReadSasUrlAsync($"devices/{deviceId:N}/files", clientIp, 60, cancellationToken)
+        };
 
     private static int NormalizePageSize(int pageSize)
     {

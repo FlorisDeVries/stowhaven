@@ -160,13 +160,9 @@ public class BackupRunService(
 
         try
         {
-            // Verify the backup run exists and is in valid state
-            var run = await manifestManager.GetBackupRunAsync(deviceId, runId, cancellationToken);
-
-            if (run.Status == BackupRunStatus.Succeeded)
-            {
-                throw new InvalidOperationException($"Backup run {runId} has already been committed");
-            }
+            // Verify the run exists. A repeated request may follow a lost response, including
+            // after the worker has finished; it must return the existing deterministic job.
+            _ = await manifestManager.GetBackupRunAsync(deviceId, runId, cancellationToken);
 
             // Create a CommitJob for async processing
             var commitJob = await manifestManager.CreateCommitJobAsync(deviceId, runId, cancellationToken);
@@ -179,8 +175,12 @@ public class BackupRunService(
             activity?.SetTag(ActivityAttributes.OperationStatus, "success");
             activity?.SetTag("commit_job_status", commitJob.Status.ToString());
 
-            // Publish event for async post-processing
-            await eventPublisher.PublishBackupRunCommittedAsync(commitJob, cancellationToken);
+            // A queued job may have been saved before an earlier publish failed. Re-publishing
+            // recovers that case. Processing and terminal jobs already have their outcome/owner.
+            if (commitJob.Status == CommitJobStatus.Queued)
+            {
+                await eventPublisher.PublishBackupRunCommittedAsync(commitJob, cancellationToken);
+            }
 
             return commitJob;
         }
