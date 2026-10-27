@@ -12,13 +12,13 @@
     </PropertyGroup>
 
     <ItemGroup>
-        <PackageReference Include="Azure.Storage.Blobs" Version="12.29.1" />
-        <PackageReference Include="Azure.Storage.Files.DataLake" Version="12.27.1" />
-        <PackageReference Include="Dapr.AspNetCore" Version="1.18.5" />
-        <PackageReference Include="Dapr.Client" Version="1.18.5" />
-        <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.11" />
+        <PackageReference Include="Azure.Storage.Blobs" Version="12.30.1" />
+        <PackageReference Include="Azure.Storage.Files.DataLake" Version="12.28.0" />
+        <PackageReference Include="Dapr.AspNetCore" Version="1.18.10" />
+        <PackageReference Include="Dapr.Client" Version="1.18.10" />
+        <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.13" />
         <PackageReference Include="Swashbuckle.AspNetCore" Version="9.0.6" />
-        <PackageReference Include="Refit" Version="15.2.0"/>
+        <PackageReference Include="Refit" Version="16.4.0"/>
     </ItemGroup>
 
     <ItemGroup>
