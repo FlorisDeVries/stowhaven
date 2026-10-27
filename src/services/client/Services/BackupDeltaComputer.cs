@@ -43,7 +43,7 @@ public partial class BackupDeltaComputer(
         var allStates = await stateService.GetAllFileStatesAsync(cancellationToken);
         var stateDict = new Dictionary<string, BackupFileState>(
             allStates.Count,
-            StringComparer.OrdinalIgnoreCase);
+            PathIdentity.Comparer);
 
         foreach (var state in allStates)
         {
@@ -101,7 +101,7 @@ public partial class BackupDeltaComputer(
     {
         var currentPaths = new HashSet<string>(
             currentFiles.Select(f => f.FilePath),
-            StringComparer.OrdinalIgnoreCase);
+            PathIdentity.Comparer);
 
         return previousFiles.Keys
             .Where(path => !currentPaths.Contains(path))

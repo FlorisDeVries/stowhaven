@@ -52,4 +52,12 @@ public class RestoreController(
         var response = await restoreService.StartRestoreAsync(deviceId, request, clientIp, cancellationToken);
         return Ok(response);
     }
+
+    [HttpPost("/api/devices/{deviceId:guid}/restore/refresh-sas")]
+    public async Task<ActionResult<RefreshRestoreSasResponse>> RefreshSas(Guid deviceId, CancellationToken cancellationToken)
+    {
+        await deviceAuthorizationService.AuthorizeDeviceAsync(User, deviceId, cancellationToken);
+        var clientIp = sasSecurityOptions.Value.EnableIpRestriction ? HttpContext.Connection.RemoteIpAddress?.ToString() : null;
+        return Ok(await restoreService.RefreshSasAsync(deviceId, clientIp, cancellationToken));
+    }
 }

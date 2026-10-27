@@ -14,11 +14,14 @@ public interface IRestoreService
         StartRestoreRequest request,
         string? clientIp = null,
         CancellationToken cancellationToken = default);
+
+    Task<RefreshRestoreSasResponse> RefreshSasAsync(Guid deviceId, string? clientIp = null, CancellationToken cancellationToken = default);
 }
 
 public class RestoreService(
     IManifestManager manifestManager,
-    ISasUrlService sasUrlService) : IRestoreService
+    ISasUrlService sasUrlService,
+    IRestoreAvailabilityService? availability = null) : IRestoreService
 {
     public const int DefaultPageSize = 100;
     public const int MaxPageSize = 1000;
@@ -30,7 +33,7 @@ public class RestoreService(
         var page = await manifestManager.GetFileEntriesPageAsync(deviceId, pageSize, continuationToken, cancellationToken);
         var files = new List<RestoreFileItem>();
 
-        foreach (var entry in page.Entries.Where(e => !e.IsDeleted).OrderBy(e => e.RelativePath, StringComparer.OrdinalIgnoreCase))
+        foreach (var entry in page.Entries.Where(e => !e.IsDeleted).OrderBy(e => e.RelativePath, StringComparer.Ordinal))
         {
             var version = await manifestManager.GetFileVersionAsync(deviceId, entry.CurrentVersionId, cancellationToken);
             if (version is not { State: FileVersionState.Active })
@@ -63,7 +66,7 @@ public class RestoreService(
         }
 
         var files = new List<RestoreFileItem>(request.LogicalPaths.Count);
-        foreach (var logicalPath in request.LogicalPaths.Distinct(StringComparer.OrdinalIgnoreCase))
+        foreach (var logicalPath in request.LogicalPaths.Distinct(StringComparer.Ordinal))
         {
             var entry = await manifestManager.GetFileEntryAsync(deviceId, logicalPath, cancellationToken);
             if (entry == null || entry.IsDeleted)
@@ -77,7 +80,13 @@ public class RestoreService(
                 throw new FileNotFoundException($"Active restore version '{entry.CurrentVersionId}' was not found for '{logicalPath}'.");
             }
 
-            files.Add(ToRestoreFileItem(entry, version));
+            var file = ToRestoreFileItem(entry, version);
+            if (availability != null)
+            {
+                file = file with { Availability = await availability.EnsureAvailableAsync(deviceId, version.UniqueFileId,
+                    request.RehydrateArchivedFiles, cancellationToken) };
+            }
+            files.Add(file);
         }
 
         var restorePath = $"devices/{deviceId:N}/files";
@@ -102,6 +111,13 @@ public class RestoreService(
         LastWriteUtc = entry.LastWriteUtc,
         Encryption = version.Encryption
     };
+
+    public async Task<RefreshRestoreSasResponse> RefreshSasAsync(Guid deviceId, string? clientIp = null, CancellationToken cancellationToken = default)
+        => new()
+        {
+            DeviceId = deviceId,
+            SasUrlInfo = await sasUrlService.GenerateReadSasUrlAsync($"devices/{deviceId:N}/files", clientIp, 60, cancellationToken)
+        };
 
     private static int NormalizePageSize(int pageSize)
     {

@@ -1,0 +1,26 @@
+@page "/"
+@attribute [Authorize]
+@inherits MonitoringPage
+
+<PageTitle>Overview · Stowhaven</PageTitle>
+<div class="page-heading"><div><p class="eyebrow">BACKUP MONITORING</p><h1>Your backup activity.</h1><p class="subtitle">A clear view of what’s running, what’s safe, and what needs attention.</p></div>
+    <button class="button" disabled="@Busy" @onclick="() => RunAsync(LoadAsync)"><span aria-hidden="true">↻</span> Refresh</button>
+</div>
+<RequestState Busy="Busy" Error="@Error" />
+@if (history is not null)
+{
+    <div class="scope-note"><span class="small-dot"></span> Latest @history.Commits.Count commit jobs <span class="muted">· Counts below cover this page only</span></div>
+    <div class="stat-grid">
+        <div class="stat-card"><span class="stat-label">Successful</span><strong>@history.Commits.Count(c => c.Status == CommitJobStatus.Succeeded)</strong><span class="stat-caption">Completed without errors <span class="stat-symbol success-text">✓</span></span></div>
+        <div class="stat-card"><span class="stat-label">In progress</span><strong>@history.Commits.Count(c => c.Status is CommitJobStatus.Queued or CommitJobStatus.Processing)</strong><span class="stat-caption">Queued or processing <span class="stat-symbol info-text">↻</span></span></div>
+        <div class="stat-card"><span class="stat-label">Needs attention</span><strong>@history.Commits.Count(c => c.Status is CommitJobStatus.Failed or CommitJobStatus.CompletedWithErrors)</strong><span class="stat-caption">Failed or completed with errors <span class="stat-symbol warning-text">!</span></span></div>
+        <div class="stat-card"><span class="stat-label">Files processed</span><strong>@history.Commits.Sum(c => (long)(c.FilesProcessed ?? 0)).ToString("N0")</strong><span class="stat-caption">Across these commit jobs <span class="stat-symbol">▤</span></span></div>
+    </div>
+    <div class="panel"><div class="panel-heading"><div><h2>Recent commit jobs</h2><p>The latest recorded activity across your devices.</p></div><a class="subtle-link" href="commits">View all jobs <span aria-hidden="true">→</span></a></div><CommitTable Commits="history.Commits" /></div>
+    <div class="info-strip"><span class="info-icon" aria-hidden="true">i</span><div><strong>Quiet by design.</strong><p>This view refreshes on demand so your backup services can scale to zero while you’re away.</p></div><span class="last-updated">Updated @Display.Time(LoadedAt)</span></div>
+}
+
+@code {
+    private ListCommitJobsResponse? history;
+    protected override async Task LoadAsync() => history = await Api.CommitsAsync(cancellationToken: Lifetime.Token);
+}

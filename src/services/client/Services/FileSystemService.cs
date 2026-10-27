@@ -27,7 +27,7 @@ public interface IFileSystemService
     /// <param name="cancellationToken">Cancellation token for the async operation.</param>
     /// <returns>
     /// A read-only list of file metadata for all files found. Files that cannot be accessed
-    /// due to permission issues are logged and skipped (not included in results).
+    /// due to permission or metadata errors fail the scan, preventing false deletion detection.
     /// </returns>
     /// <exception cref="DirectoryNotFoundException">Thrown when the specified directory does not exist.</exception>
     /// <exception cref="OperationCanceledException">Thrown when the operation is cancelled.</exception>
@@ -51,7 +51,7 @@ public interface IFileSystemService
     /// <param name="cancellationToken">Cancellation token for the async operation.</param>
     /// <returns>
     /// An async enumerable that yields file metadata as files are discovered. Files that cannot
-    /// be accessed due to permission issues are logged and skipped (not yielded).
+    /// be accessed due to permission or metadata errors fail the scan, preventing false deletions.
     /// </returns>
     /// <exception cref="DirectoryNotFoundException">Thrown when the specified directory does not exist.</exception>
     /// <exception cref="OperationCanceledException">Thrown when the operation is cancelled.</exception>
@@ -207,7 +207,8 @@ public partial class FileSystemService(ILogger<FileSystemService> logger, IOptio
         catch (UnauthorizedAccessException ex)
         {
             LogDirectoryAccessDenied(currentPath, ex);
-            yield break;
+            // An incomplete scan must never be used to infer that tracked files were deleted.
+            throw;
         }
 
         foreach (var filePath in files)
@@ -241,18 +242,21 @@ public partial class FileSystemService(ILogger<FileSystemService> logger, IOptio
             }
             catch (UnauthorizedAccessException ex)
             {
-                // Expected: Permission denied for some files - log and skip
+                // Fail the scan rather than losing this path from deletion detection.
                 LogFileMetadataError(filePath, ex);
+                throw;
             }
             catch (FileNotFoundException ex)
             {
                 // Expected: File may have been deleted between enumeration and metadata read
                 LogFileMetadataError(filePath, ex);
+                throw;
             }
             catch (IOException ex)
             {
-                // Expected: File may be locked or have I/O errors - log and skip
+                // Missing metadata makes deletion inference unsafe for this scan.
                 LogFileMetadataError(filePath, ex);
+                throw;
             }
             // Other exceptions (e.g., OutOfMemoryException) should bubble up
 
@@ -270,7 +274,7 @@ public partial class FileSystemService(ILogger<FileSystemService> logger, IOptio
         catch (UnauthorizedAccessException ex)
         {
             LogDirectoryAccessDenied(currentPath, ex);
-            yield break;
+            throw;
         }
 
         foreach (var directory in directories)

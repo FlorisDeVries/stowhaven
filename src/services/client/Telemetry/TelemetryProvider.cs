@@ -18,6 +18,7 @@ public class TelemetryProvider : IDisposable
 
     public Counter<int> CountFiles { get; }
     public Counter<long> CountBackupFailures { get; }
+    public Counter<long> BackupOutcomes { get; }
 
     public Histogram<long> BackupDuration { get; }
     public Histogram<long> BackupSize { get; }
@@ -39,6 +40,7 @@ public class TelemetryProvider : IDisposable
         ActivitySource = new ActivitySource(SourceName, SourceVersion);
         _meter = new Meter(SourceName, SourceVersion);
         
+        BackupOutcomes = _meter.CreateCounter<long>("florisdev.backup.outcomes", description: "Backup invocations by reported outcome");
         CountFiles = _meter.CreateCounter<int>(
             "florisdev.backup.files.count", 
             unit: "files",

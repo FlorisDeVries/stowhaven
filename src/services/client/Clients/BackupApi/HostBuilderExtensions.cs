@@ -95,7 +95,7 @@ public static class HostBuilderExtensions
         // Ref: https://learn.microsoft.com/en-us/dotnet/core/resilience/http-resilience?tabs=dotnet-cli
         //      https://devblogs.microsoft.com/dotnet/building-resilient-cloud-services-with-dotnet-8/
         services
-            .AddRefitClient<IBackupApiClient>(new RefitSettings
+            .AddRefitGeneratedClient<IBackupApiClient>(new RefitSettings
             {
                 ContentSerializer = new SystemTextJsonContentSerializer(new JsonSerializerOptions
                 {

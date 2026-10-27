@@ -210,7 +210,10 @@ Configure a destination and optional source device/logical paths:
       "DestinationPath": "C:\\Restore",
       "LogicalPaths": [],
       "ListPageSize": 500,
-      "OverwriteExisting": false
+      "OverwriteExisting": false,
+      "RehydrateArchivedFiles": true,
+      "RehydrationPollIntervalSeconds": 30,
+      "RehydrationTimeoutMinutes": 1440
     }
   }
 }
@@ -226,7 +229,26 @@ backup-client restore
 - An empty `LogicalPaths` array restores all active files returned by the API.
 - Existing destination files are rejected unless `OverwriteExisting` is `true`.
 - `ClientAndServer` backups require the local recovery phrase file. The client verifies ciphertext, HMAC, and plaintext integrity before writing the restored file.
-- Archive-tier blobs must be rehydrated to an online tier before restore; the client does not automate rehydration.
+- Archived files are automatically requested for standard-priority rehydration to Hot, then polled before download. Storage retrieval and tier-change charges apply. Set `RehydrateArchivedFiles=false` to manage rehydration yourself. A preparation timeout leaves storage rehydration running; retry restore later.
+- Download credentials renew automatically during long restores. Progress is logged as files are prepared and downloaded.
+
+## Backup outcomes and scheduler results
+
+```bash
+backup-client --result-file ~/.local/share/backup-client/last-result.json
+```
+
+`BackupClient:ResultFilePath` configures the same report for one-shot and scheduled runs. Reports contain an outcome, device/run/commit IDs when available, file counts, report time, and exit code. They are replaced atomically. Logs and the `florisdev.backup.outcomes` metric also distinguish outcomes.
+
+| Outcome | Exit code | Meaning |
+| --- | --- | --- |
+| `noChanges` | 0 | Scan completed without changes. |
+| `succeeded` | 0 | Commit completed and local state was finalized. |
+| `failed` | 1 | Operation failed; check the logs. |
+| `pending` | 2 | Submission is durable; server completion is still pending. |
+| `completedWithErrors` | 3 | Some files failed or were skipped/deferred. |
+
+The bundled systemd unit accepts exit code 2 as a normal pending outcome. Exit code 3 remains visible as a degraded run. Update existing scheduler rules to interpret these codes explicitly; a pending report is not proof of a completed backup.
 
 ## Essential configuration
 
@@ -284,4 +306,4 @@ Review ignore rules before increasing concurrency. For many small files, a highe
 
 ### Restore cannot read an archived blob
 
-Rehydrate the blob to Hot or Cool in Azure Storage and retry after rehydration completes.
+Keep `Restore:RehydrateArchivedFiles=true` to request standard-priority rehydration automatically. If the wait limit expires, retry later; storage continues the preparation. When automatic preparation is disabled, rehydrate to Hot or Cool in Azure Storage before retrying.

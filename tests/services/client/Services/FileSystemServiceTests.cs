@@ -965,7 +965,7 @@ public class FileSystemServiceTests : IDisposable
     [Fact]
     [Trait("Category", "Integration")]
     [Trait("OS", "Unix")]
-    public async Task ScanDirectoryAsync_WithUnauthorizedDirectory_SkipsDirectoryAndContinues()
+    public async Task ScanDirectoryAsync_WithUnauthorizedDirectory_RejectsIncompleteScan()
     {
         // Arrange
         CreateTestFile("accessible/file1.txt", "accessible");
@@ -990,11 +990,9 @@ public class FileSystemServiceTests : IDisposable
             try
             {
                 // Act
-                var result = await _sut.ScanDirectoryAsync(_testDirectory);
-
-                // Assert - should skip restricted directory but get other files
-                result.Should().HaveCount(2, "should skip inaccessible directory but continue scanning");
-                result.Should().OnlyContain(f => !f.FilePath.Contains("restricted"));
+                var scan = () => _sut.ScanDirectoryAsync(_testDirectory);
+                await scan.Should().ThrowAsync<UnauthorizedAccessException>(
+                    "an incomplete scan must not be interpreted as deletions");
             }
             finally
             {
@@ -1057,7 +1055,7 @@ public class FileSystemServiceTests : IDisposable
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task ScanDirectoryStreamAsync_WithUnauthorizedDirectory_SkipsAndYieldsOtherFiles()
+    public async Task ScanDirectoryStreamAsync_WithUnauthorizedDirectory_RejectsIncompleteScan()
     {
         // Arrange
         CreateTestFile("accessible/file1.txt", "accessible");
@@ -1080,15 +1078,11 @@ public class FileSystemServiceTests : IDisposable
             try
             {
                 // Act
-                var results = new List<FileMetadata>();
-                await foreach (var file in _sut.ScanDirectoryStreamAsync(_testDirectory))
+                var scan = async () =>
                 {
-                    results.Add(file);
-                }
-
-                // Assert
-                results.Should().HaveCount(2, "should skip inaccessible directory in stream");
-                results.Should().OnlyContain(f => !f.FilePath.Contains("restricted"));
+                    await foreach (var file in _sut.ScanDirectoryStreamAsync(_testDirectory)) { }
+                };
+                await scan.Should().ThrowAsync<UnauthorizedAccessException>();
             }
             finally
             {
@@ -1146,7 +1140,7 @@ public class FileSystemServiceTests : IDisposable
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task ScanDirectoryAsync_WithNestedPermissionIssues_SkipsNestedAndContinues()
+    public async Task ScanDirectoryAsync_WithNestedPermissionIssues_RejectsIncompleteScan()
     {
         // Arrange - Create deeply nested structure with permission issues at various levels
         CreateTestFile("level1/good.txt", "accessible");
@@ -1170,11 +1164,8 @@ public class FileSystemServiceTests : IDisposable
             try
             {
                 // Act
-                var result = await _sut.ScanDirectoryAsync(_testDirectory);
-
-                // Assert
-                result.Should().HaveCount(3, "should skip nested restricted directory");
-                result.Should().NotContain(f => f.FilePath.Contains("secret.txt"));
+                var scan = () => _sut.ScanDirectoryAsync(_testDirectory);
+                await scan.Should().ThrowAsync<UnauthorizedAccessException>();
             }
             finally
             {

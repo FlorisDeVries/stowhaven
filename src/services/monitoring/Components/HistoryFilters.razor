@@ -1,0 +1,33 @@
+<form class="filters" @onsubmit="ApplyAsync" @onsubmit:preventDefault>
+    <label>Status<select @bind="Status"><option value="">All statuses</option><option>Queued</option><option>Processing</option><option>Succeeded</option><option value="CompletedWithErrors">With errors</option><option>Failed</option></select></label>
+    <label>Device ID<input @bind="Device" placeholder="All devices" spellcheck="false" /></label>
+    <label>Started since (UTC)<input type="date" @bind="Since" /></label>
+    <button class="button primary" type="submit" disabled="@Busy">Apply filters</button>
+    <button class="text-button" type="button" disabled="@Busy" @onclick="ResetAsync">Reset</button>
+</form>
+@if (error is not null) { <div class="notice warning" role="alert">@error</div> }
+@code {
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public EventCallback<HistoryFilter> OnApply { get; set; }
+    private string Status { get; set; } = "";
+    private string Device { get; set; } = "";
+    private DateTime? Since { get; set; }
+    private string? error;
+    private async Task ApplyAsync()
+    {
+        error = null;
+        if (!string.IsNullOrWhiteSpace(Device) && !Guid.TryParse(Device, out _))
+        {
+            error = "Enter a complete device ID (GUID), or leave it blank for all devices.";
+            return;
+        }
+        await OnApply.InvokeAsync(new HistoryFilter(Status,
+            Guid.TryParse(Device, out var id) ? id : null,
+            Since is { } date ? new DateTimeOffset(DateTime.SpecifyKind(date, DateTimeKind.Utc)).ToString("O") : null));
+    }
+    private async Task ResetAsync()
+    {
+        Status = ""; Device = ""; Since = null;
+        await ApplyAsync();
+    }
+}

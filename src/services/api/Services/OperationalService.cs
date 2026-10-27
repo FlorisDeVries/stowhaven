@@ -70,6 +70,10 @@ public partial class OperationalService(
         }
 
         commitJob.Status = CommitJobStatus.Queued;
+        // An explicit operator retry starts a new bounded attempt sequence.
+        commitJob.AttemptCount = 0;
+        commitJob.LeaseExpiresAt = null;
+        commitJob.ClaimId = null;
         commitJob.Error = null;
         commitJob.FailureCategory = null;
         commitJob.NextRetryAt = null;

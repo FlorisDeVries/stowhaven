@@ -12,7 +12,7 @@ namespace FlorisDeV.BackupClient.Tests.Services;
 /// Integration tests for BackupStateService.
 /// Uses real SQLite database with temporary files for reliable testing.
 /// </summary>
-public class BackupStateServiceTests : IDisposable
+public partial class BackupStateServiceTests : IDisposable
 {
     private readonly string _testDatabasePath;
     private readonly BackupStateService _sut;
@@ -253,7 +253,7 @@ public class BackupStateServiceTests : IDisposable
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task ComputeDeltaAsync_IsCaseInsensitive_ForFilePaths()
+    public async Task ComputeDeltaAsync_UsesPlatformPathIdentity()
     {
         // Arrange
         var originalFiles = new List<FileMetadata>
@@ -271,9 +271,9 @@ public class BackupStateServiceTests : IDisposable
         var delta = await _deltaComputer.ComputeDeltaAsync(currentFiles);
 
         // Assert
-        delta.NewFiles.Should().BeEmpty();
+        delta.NewFiles.Should().HaveCount(OperatingSystem.IsWindows() ? 0 : 1);
         delta.ModifiedFiles.Should().BeEmpty();
-        delta.DeletedFiles.Should().BeEmpty();
+        delta.DeletedFiles.Should().HaveCount(OperatingSystem.IsWindows() ? 0 : 1);
     }
 
     #endregion
@@ -406,7 +406,7 @@ public class BackupStateServiceTests : IDisposable
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task GetFileStateAsync_IsCaseInsensitive()
+    public async Task GetFileStateAsync_UsesPlatformPathIdentity()
     {
         // Arrange
         var files = new List<FileMetadata>
@@ -419,8 +419,15 @@ public class BackupStateServiceTests : IDisposable
         var result = await _sut.GetFileStateAsync("/path/to/myfile.txt");
 
         // Assert
-        result.Should().NotBeNull();
-        result!.Sha256Hash.Should().Be("hash1");
+        if (OperatingSystem.IsWindows())
+        {
+            result.Should().NotBeNull();
+            result!.Sha256Hash.Should().Be("hash1");
+        }
+        else
+        {
+            result.Should().BeNull();
+        }
     }
 
     #endregion
@@ -774,7 +781,7 @@ public class BackupStateServiceTests : IDisposable
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task ScanDeletions_IgnoresPathCasing()
+    public async Task ScanDeletions_UsesPlatformPathIdentity()
     {
         // Arrange: matches the case-insensitive comparison the scanned-path set used previously.
         var files = CreateTestFileMetadata(1);
@@ -785,7 +792,7 @@ public class BackupStateServiceTests : IDisposable
         await _sut.AppendScannedPathsAsync([files[0].FilePath.ToUpperInvariant()]);
 
         // Assert
-        (await _sut.CountScanDeletionsAsync()).Should().Be(0);
+        (await _sut.CountScanDeletionsAsync()).Should().Be(OperatingSystem.IsWindows() ? 0 : 1);
     }
 
     [Fact]

@@ -1,0 +1,36 @@
+@page "/commits"
+@attribute [Authorize]
+@inherits MonitoringPage
+
+<PageTitle>Commit jobs · Stowhaven</PageTitle>
+<div class="page-heading"><div><p class="eyebrow">THE PROCESSING PIPELINE</p><h1>Commit jobs.</h1><p class="subtitle">Follow each backup from the queue to its final home.</p></div><button class="button" disabled="@Busy" @onclick="() => RunAsync(LoadAsync)">↻ Refresh</button></div>
+<HistoryFilters Busy="Busy" OnApply="ApplyAsync" />
+<RequestState Busy="Busy" Error="@Error" />
+@if (history is not null)
+{
+    <div class="panel"><div class="panel-heading"><h2>Job history</h2><span class="muted">@history.Commits.Count jobs on this page</span></div><CommitTable Commits="history.Commits" />
+        <Pager Cursor="cursor" NextToken="@history.NextContinuationToken" Busy="Busy" Previous="PreviousAsync" Next="NextAsync" />
+    </div>
+}
+@code {
+    private ListCommitJobsResponse? history;
+    private HistoryFilter filter = new();
+    private readonly PageCursor cursor = new();
+    protected override async Task LoadAsync() => history = await Api.CommitsAsync(filter.Status, filter.DeviceId, filter.Since, cursor.Current, Lifetime.Token);
+    private async Task ApplyAsync(HistoryFilter next)
+    {
+        filter = next; cursor.Reset(); history = null;
+        await RunAsync(LoadAsync);
+    }
+    private async Task NextAsync()
+    {
+        if (history?.NextContinuationToken is not { } token) return;
+        cursor.Next(token); history = null;
+        await RunAsync(LoadAsync);
+    }
+    private async Task PreviousAsync()
+    {
+        cursor.Back(); history = null;
+        await RunAsync(LoadAsync);
+    }
+}

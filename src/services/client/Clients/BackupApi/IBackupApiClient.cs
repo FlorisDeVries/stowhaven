@@ -48,4 +48,7 @@ public interface IBackupApiClient
     [Post("/api/devices/{deviceId}/restore/start")]
     Task<StartRestoreResponse> StartRestore(Guid deviceId, StartRestoreRequest request,
         CancellationToken cancellationToken = default);
+
+    [Post("/api/devices/{deviceId}/restore/refresh-sas")]
+    Task<RefreshRestoreSasResponse> RefreshRestoreSas(Guid deviceId, CancellationToken cancellationToken = default);
 }

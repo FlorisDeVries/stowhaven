@@ -34,19 +34,31 @@ public sealed class CosmosStateDocumentStore(Container container, JsonSerializer
         }
     }
 
+    public async Task<string?> TryCreateAsync<T>(string type, string partitionKey, string id, T data,
+        string? sortKey = null, long? sortValue = null, CancellationToken cancellationToken = default)
+    {
+        var document = CreateDocument(type, partitionKey, id, data, sortKey, sortValue);
+        await using var payload = new MemoryStream();
+        await JsonSerializer.SerializeAsync(payload, document, serializerOptions, cancellationToken);
+        payload.Position = 0;
+        using var response = await container.CreateItemStreamAsync(
+            payload, new PartitionKey(partitionKey), cancellationToken: cancellationToken);
+
+        if (response.StatusCode == HttpStatusCode.Conflict)
+        {
+            return null;
+        }
+
+        response.EnsureSuccessStatusCode();
+        return response.Headers.ETag
+               ?? throw new InvalidOperationException("Cosmos create response did not include an ETag.");
+    }
+
     public async Task<string> UpsertAsync<T>(string type, string partitionKey, string id, T data,
         string? etag = null, string? sortKey = null, long? sortValue = null,
         CancellationToken cancellationToken = default)
     {
-        var document = new CosmosStateDocument
-        {
-            Id = BuildDocumentId(type, id),
-            PartitionKey = partitionKey,
-            Type = type,
-            SortKey = sortKey,
-            SortValue = sortValue,
-            Data = JsonSerializer.SerializeToElement(data, serializerOptions)
-        };
+        var document = CreateDocument(type, partitionKey, id, data, sortKey, sortValue);
 
         try
         {
@@ -172,6 +184,17 @@ public sealed class CosmosStateDocumentStore(Container container, JsonSerializer
     // Ids are prefixed with the type so different document kinds sharing a natural key
     // (e.g. a run and its manifest) never collide within a partition.
     private static string BuildDocumentId(string type, string id) => $"{type}:{id}";
+
+    private CosmosStateDocument CreateDocument<T>(string type, string partitionKey, string id, T data,
+        string? sortKey, long? sortValue) => new()
+    {
+        Id = BuildDocumentId(type, id),
+        PartitionKey = partitionKey,
+        Type = type,
+        SortKey = sortKey,
+        SortValue = sortValue,
+        Data = JsonSerializer.SerializeToElement(data, serializerOptions)
+    };
 
     private sealed class CosmosStateDocument
     {

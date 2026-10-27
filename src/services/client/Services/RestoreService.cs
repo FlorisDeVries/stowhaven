@@ -19,7 +19,8 @@ public partial class RestoreService(
     IBackupStateService backupStateService,
     IBackupEncryptionService encryptionService,
     IOptions<BackupClientOptions> options,
-    ILogger<RestoreService> logger) : IRestoreService
+    ILogger<RestoreService> logger,
+    IRestoreBlobClientFactory? blobClients = null) : IRestoreService
 {
     private readonly BackupClientOptions _options = options.Value;
 
@@ -45,22 +46,62 @@ public partial class RestoreService(
             return true;
         }
 
-        var restore = await backupApiClient.StartRestore(deviceId, new StartRestoreRequest
+        var request = new StartRestoreRequest
         {
-            LogicalPaths = logicalPaths
-        }, cancellationToken);
-
-        var sasUrl = TranslateStorageUrlForLocalDevelopment(restore.SasUrlInfo.Url);
-        var containerClient = new BlobContainerClient(sasUrl);
-
-        foreach (var file in restore.Files)
+            LogicalPaths = logicalPaths,
+            RehydrateArchivedFiles = restoreOptions.RehydrateArchivedFiles
+        };
+        var restore = await backupApiClient.StartRestore(deviceId, request, cancellationToken);
+        var selected = restore.Files.ToArray();
+        var waitStarted = System.Diagnostics.Stopwatch.StartNew();
+        while (!restore.IsReady)
         {
-            await RestoreFileAsync(containerClient, restore.SasUrlInfo.BasePath, restore.SasUrlInfo.IsPathEmbedded, destinationRoot, file, restoreOptions.OverwriteExisting, cancellationToken);
+            var waiting = restore.Files.Count(file => file.Availability != RestoreFileAvailability.Ready);
+            logger.LogInformation("Restore is waiting for {WaitingFiles} of {TotalFiles} archived files", waiting, selected.Length);
+            if (!restoreOptions.RehydrateArchivedFiles)
+                throw new InvalidOperationException("Selected files are archived. Enable Restore:RehydrateArchivedFiles to prepare them automatically.");
+            if (waitStarted.Elapsed >= TimeSpan.FromMinutes(Math.Max(0, restoreOptions.RehydrationTimeoutMinutes)))
+                throw new TimeoutException("Restore preparation timed out. Rehydration continues in storage; retry restore later.");
+            await Task.Delay(TimeSpan.FromSeconds(Math.Max(1, restoreOptions.RehydrationPollIntervalSeconds)), cancellationToken);
+            restore = await backupApiClient.StartRestore(deviceId, request, cancellationToken);
+            if (restore.Files.Count != selected.Length || selected.Any(file => !restore.Files.Any(current =>
+                    current.LogicalPath == file.LogicalPath && current.UniqueFileId == file.UniqueFileId &&
+                    current.Sha256 == file.Sha256 && current.Size == file.Size)))
+                throw new InvalidOperationException("Selected backup versions changed while preparing restore. Restart restore to select consistent versions.");
+        }
+
+        var sas = restore.SasUrlInfo;
+        var containerClient = CreateContainer(sas.Url);
+
+        foreach (var file in selected)
+        {
+            if (sas.ExpiresAt <= DateTimeOffset.UtcNow.AddMinutes(2))
+            {
+                var renewed = await backupApiClient.RefreshRestoreSas(deviceId, cancellationToken);
+                if (renewed.DeviceId != deviceId) throw new InvalidOperationException("Restore credentials belong to a different device.");
+                sas = renewed.SasUrlInfo;
+                containerClient = CreateContainer(sas.Url);
+            }
+            try
+            {
+                await RestoreFileAsync(containerClient, sas.BasePath, sas.IsPathEmbedded, destinationRoot, file, restoreOptions.OverwriteExisting, cancellationToken);
+            }
+            catch (Azure.RequestFailedException ex) when (ex.Status == 403 && ex.ErrorCode == "AuthenticationFailed")
+            {
+                var renewed = await backupApiClient.RefreshRestoreSas(deviceId, cancellationToken);
+                if (renewed.DeviceId != deviceId) throw new InvalidOperationException("Restore credentials belong to a different device.");
+                sas = renewed.SasUrlInfo;
+                containerClient = CreateContainer(sas.Url);
+                await RestoreFileAsync(containerClient, sas.BasePath, sas.IsPathEmbedded, destinationRoot, file, restoreOptions.OverwriteExisting, cancellationToken);
+            }
         }
 
         LogRestoreCompleted(logger, restore.Files.Count, destinationRoot);
         return true;
     }
+
+    private BlobContainerClient CreateContainer(Uri url)
+        => (blobClients ?? new RestoreBlobClientFactory()).Create(TranslateStorageUrlForLocalDevelopment(url));
 
     private async Task<string[]> ListAllRestoreLogicalPathsAsync(Guid deviceId, int pageSize, CancellationToken cancellationToken)
     {
@@ -103,7 +144,18 @@ public partial class RestoreService(
 
         try
         {
-            await containerClient.GetBlobClient(blobName).DownloadToAsync(tempDownloadPath, cancellationToken);
+            var lastReported = -10;
+            var progress = new Progress<long>(bytes =>
+            {
+                var percent = file.Size == 0 ? 100 : (int)Math.Min(100, bytes * 100.0 / file.Size);
+                if (percent >= lastReported + 10)
+                {
+                    lastReported = percent;
+                    logger.LogInformation("Restoring {LogicalPath}: {Percent}% ({Bytes}/{TotalBytes} bytes)", file.LogicalPath, percent, bytes, file.Size);
+                }
+            });
+            await containerClient.GetBlobClient(blobName).DownloadToAsync(tempDownloadPath,
+                new Azure.Storage.Blobs.Models.BlobDownloadToOptions { ProgressHandler = progress }, cancellationToken);
             await VerifyDownloadedFileAsync(tempDownloadPath, file, cancellationToken);
 
             if (file.Encryption == null)

@@ -1,0 +1,15 @@
+{
+  "routes": [
+    { "route": "/appsettings.json", "headers": { "Cache-Control": "no-store" } }
+  ],
+  "navigationFallback": {
+    "rewrite": "/index.html",
+    "exclude": ["/_framework/*", "/_content/*", "/css/*", "/*.{json,svg,js,wasm,dat}"]
+  },
+  "globalHeaders": {
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "X-Frame-Options": "DENY"
+  },
+  "mimeTypes": { ".wasm": "application/wasm", ".dat": "application/octet-stream" }
+}

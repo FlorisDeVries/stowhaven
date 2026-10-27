@@ -15,7 +15,7 @@ namespace FlorisDeV.BackupApi.Tests;
 /// Concurrency and lifecycle tests for <see cref="ManifestManager"/> running against the
 /// SQLite <see cref="IStateDocumentStore"/> backend so ETag semantics are exercised for real.
 /// </summary>
-public sealed class ManifestManagerConcurrencyTests : IDisposable
+public sealed partial class ManifestManagerConcurrencyTests : IDisposable
 {
     private readonly string _databasePath;
     private readonly SqliteStateDocumentStore _store;

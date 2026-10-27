@@ -1,0 +1,16 @@
+@inject NavigationManager Navigation
+@inject MonitoringOptions Options
+
+@if (Options.IsConfigured)
+{
+    <AuthorizeView>
+        <Authorized Context="session"><div class="account"><span class="avatar" aria-hidden="true">@(Options.UseLocalAuthentication ? "L" : "A")</span><span>@(session.User.Identity?.Name ?? "Operator")</span>
+            @if (!Options.UseLocalAuthentication) { <button class="text-button" @onclick="SignOut">Sign out</button> }
+        </div></Authorized>
+        <NotAuthorized><button class="button small" @onclick="SignIn">Sign in</button></NotAuthorized>
+    </AuthorizeView>
+}
+@code {
+    private void SignIn() => Navigation.NavigateToLogin("authentication/login");
+    private void SignOut() => Navigation.NavigateToLogout("authentication/logout");
+}

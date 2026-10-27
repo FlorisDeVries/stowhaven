@@ -39,6 +39,9 @@ public partial class BackupProcessingService(
     /// only alongside the provisioned throughput, or the extra concurrency just produces throttling.
     /// </summary>
     private readonly int _maxParallelFiles = Math.Max(1, configuration.GetValue("CommitProcessing:MaxParallelFiles", 8));
+    private readonly TimeSpan _heartbeatInterval = TimeSpan.FromSeconds(
+        Math.Min(Math.Clamp(configuration.GetValue("CommitProcessing:HeartbeatIntervalSeconds", 30), 1, 60),
+            Math.Clamp(configuration.GetValue("CommitProcessing:LeaseDurationSeconds", 120), 5, 3600) / 3.0));
 
     public async Task ProcessBackupRunAsync(BackupRunCommittedEvent backupEvent, CancellationToken cancellationToken = default)
     {
@@ -50,20 +53,36 @@ public partial class BackupProcessingService(
 
         var stopwatch = Stopwatch.StartNew();
         var metricTags = new TagList { { "operation", "process_backup" } };
+        using var processingCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        cancellationToken = processingCts.Token;
+        CommitJobCheckpoint? checkpoint = null;
 
         try
         {
             LogProcessingStarted(logger, backupEvent.DeviceId, backupEvent.RunId, backupEvent.StagingPath);
 
-            // Atomically claim the queued commit job before doing any work. If another worker
-            // claimed it first, skip this delivery and let that worker finish.
+            // Expiring claims allow redelivery to recover a process that stopped mid-commit.
             var (claimed, commitJob) = await manifestManager.TryClaimCommitJobAsync(backupEvent.CommitId, cancellationToken);
             if (!claimed)
             {
                 LogAlreadyProcessed(logger, backupEvent.DeviceId, backupEvent.RunId, commitJob.Status);
                 activity?.SetTag(ActivityAttributes.OperationStatus, "skipped");
                 activity?.SetTag("skip_reason", commitJob.Status.ToString());
+                if (commitJob.Status is CommitJobStatus.Queued or CommitJobStatus.Processing ||
+                    commitJob.Status == CommitJobStatus.Failed && commitJob.NextRetryAt != null && commitJob.DeadLetteredAt == null)
+                {
+                    // Keep the message available. A successful response here would acknowledge
+                    // the only delivery capable of recovering an abandoned or retryable job.
+                    throw new InvalidOperationException("Commit is still active or awaiting its retry window.");
+                }
                 return;
+            }
+
+            checkpoint = new CommitJobCheckpoint(commitJob, manifestManager);
+            checkpoint.StartHeartbeat(processingCts, _heartbeatInterval);
+            if (commitJob.AttemptCount > _maxCommitAttempts)
+            {
+                throw new InvalidOperationException("Commit processing attempt limit exceeded.");
             }
 
             // Update BackupRun status to Processing
@@ -95,12 +114,10 @@ public partial class BackupProcessingService(
             LogManifestLoaded(logger, backupEvent.DeviceId, backupEvent.RunId, fileCount, deletedCount);
 
             // Record the total up front so commit-status polling can report progress.
-            commitJob.TotalFiles = fileCount + deletedCount;
-            commitJob = await manifestManager.UpdateCommitJobAsync(commitJob, cancellationToken);
+            await checkpoint.UpdateAsync(job => job.TotalFiles = fileCount + deletedCount, cancellationToken);
 
             var containerClient = await blobStorageService.GetContainerClientAsync(cancellationToken);
             var counters = new ProcessingCounters();
-            var checkpoint = new CommitJobCheckpoint(commitJob, manifestManager);
 
             // Second streamed pass: entries are processed as they are read, so the manifest is never
             // held in memory even for a run with hundreds of thousands of files.
@@ -151,7 +168,6 @@ public partial class BackupProcessingService(
             var processedCount = counters.Processed;
             var skippedFiles = counters.Skipped;
             var filesSeen = counters.FilesSeen;
-            commitJob = checkpoint.Current;
 
             // Too many skipped files means the run is not trustworthy - fail it loudly so it is retried
             // (and surfaced) rather than silently recording a mostly-empty backup.
@@ -178,14 +194,18 @@ public partial class BackupProcessingService(
                 cancellationToken);
 
             // Update CommitJob terminal status
-            commitJob.Status = skippedFiles > 0 ? CommitJobStatus.CompletedWithErrors : CommitJobStatus.Succeeded;
-            commitJob.FilesProcessed = processedCount;
-            commitJob.FilesFailed = skippedFiles;
-            commitJob.Error = skippedFiles > 0
-                ? $"{skippedFiles} file(s) skipped: staged content did not match the manifest (source changed during backup)."
-                : null;
-            commitJob.CompletedAt = DateTimeOffset.UtcNow;
-            await manifestManager.UpdateCommitJobAsync(commitJob, cancellationToken);
+            await checkpoint.UpdateAsync(job =>
+            {
+                job.Status = skippedFiles > 0 ? CommitJobStatus.CompletedWithErrors : CommitJobStatus.Succeeded;
+                job.FilesProcessed = processedCount;
+                job.FilesFailed = skippedFiles;
+                job.Error = skippedFiles > 0
+                    ? $"{skippedFiles} file(s) skipped: staged content did not match the manifest (source changed during backup)."
+                    : null;
+                job.CompletedAt = DateTimeOffset.UtcNow;
+                job.NextRetryAt = null;
+                job.DeadLetteredAt = null;
+            }, cancellationToken);
 
             await TryCleanupRunTemporaryBlobsAsync(
                 backupEvent.DeviceId,
@@ -221,31 +241,39 @@ public partial class BackupProcessingService(
 
             LogProcessingFailed(logger, backupEvent.DeviceId, backupEvent.RunId, ex);
 
-            // Update run status to Failed
+            if (checkpoint == null)
+            {
+                // No claim means this delivery must not change another worker's state.
+                throw;
+            }
+
+            // Stop the heartbeat before recording a failure. Use our last ETag, rather than
+            // reloading another owner's job after a lease loss, and allow cancellation to persist
+            // a retryable outcome using a separate, bounded cleanup token.
             try
             {
+                await checkpoint.StopHeartbeatAsync();
+                using var cleanupCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+                var failure = checkpoint.HeartbeatError ?? ex;
+                await checkpoint.UpdateAsync(job =>
+                {
+                    job.Status = CommitJobStatus.Failed;
+                    job.FilesFailed++;
+                    job.Error = failure.Message;
+                    job.FailureCategory = ClassifyFailure(failure);
+                    job.LastErrorAt = DateTimeOffset.UtcNow;
+                    job.NextRetryAt = job.AttemptCount < _maxCommitAttempts
+                        ? DateTimeOffset.UtcNow.AddMinutes(Math.Min(60, Math.Pow(2, Math.Max(0, job.AttemptCount))))
+                        : null;
+                    job.DeadLetteredAt = job.AttemptCount >= _maxCommitAttempts ? DateTimeOffset.UtcNow : null;
+                    job.CompletedAt = DateTimeOffset.UtcNow;
+                }, cleanupCts.Token);
                 await UpdateBackupRunStatusAsync(
                     backupEvent.DeviceId,
                     backupEvent.RunId,
                     BackupRunStatus.Failed,
                     0,
-                    cancellationToken);
-
-                // Update CommitJob status to Failed
-                var commitJob = await manifestManager.GetCommitJobAsync(backupEvent.CommitId, cancellationToken);
-                commitJob.Status = CommitJobStatus.Failed;
-                commitJob.FilesFailed++;
-                commitJob.Error = ex.Message;
-                commitJob.FailureCategory = ClassifyFailure(ex);
-                commitJob.LastErrorAt = DateTimeOffset.UtcNow;
-                commitJob.NextRetryAt = commitJob.AttemptCount < _maxCommitAttempts
-                    ? DateTimeOffset.UtcNow.AddMinutes(Math.Min(60, Math.Pow(2, Math.Max(0, commitJob.AttemptCount))))
-                    : null;
-                commitJob.DeadLetteredAt = commitJob.AttemptCount >= _maxCommitAttempts
-                    ? DateTimeOffset.UtcNow
-                    : null;
-                commitJob.CompletedAt = DateTimeOffset.UtcNow;
-                await manifestManager.UpdateCommitJobAsync(commitJob, cancellationToken);
+                    cleanupCts.Token);
             }
             catch (Exception updateEx)
             {
@@ -253,6 +281,14 @@ public partial class BackupProcessingService(
             }
 
             throw;
+        }
+        finally
+        {
+            if (checkpoint != null)
+            {
+                await checkpoint.StopHeartbeatAsync();
+                checkpoint.Dispose();
+            }
         }
     }
 
@@ -282,13 +318,60 @@ public partial class BackupProcessingService(
     /// a write is in progress skips its own, which is harmless because progress reporting is advisory
     /// and the terminal status update writes the final counts.
     /// </summary>
-    private sealed class CommitJobCheckpoint(CommitJob commitJob, IManifestManager manifestManager)
+    private sealed class CommitJobCheckpoint(CommitJob commitJob, IManifestManager manifestManager) : IDisposable
     {
         private readonly SemaphoreSlim _gate = new(1, 1);
         private CommitJob _current = commitJob;
         private int _lastPublishedTotal;
 
-        public CommitJob Current => _current;
+        private readonly CancellationTokenSource _stopHeartbeat = new();
+        private Task _heartbeat = Task.CompletedTask;
+        public Exception? HeartbeatError { get; private set; }
+
+        public void StartHeartbeat(CancellationTokenSource processingCts, TimeSpan interval)
+            => _heartbeat = RenewLeaseAsync(processingCts, interval);
+
+        public async Task StopHeartbeatAsync()
+        {
+            await _stopHeartbeat.CancelAsync();
+            await _heartbeat;
+        }
+
+        public void Dispose()
+        {
+            _stopHeartbeat.Dispose();
+            _gate.Dispose();
+        }
+
+        private async Task RenewLeaseAsync(CancellationTokenSource processingCts, TimeSpan interval)
+        {
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(processingCts.Token, _stopHeartbeat.Token);
+            using var timer = new PeriodicTimer(interval);
+            try
+            {
+                while (await timer.WaitForNextTickAsync(linked.Token))
+                {
+                    await UpdateAsync(_ => { }, linked.Token);
+                }
+            }
+            catch (OperationCanceledException) when (linked.IsCancellationRequested) { }
+            catch (Exception ex)
+            {
+                HeartbeatError = ex;
+                await processingCts.CancelAsync();
+            }
+        }
+
+        public async Task UpdateAsync(Action<CommitJob> update, CancellationToken cancellationToken)
+        {
+            await _gate.WaitAsync(cancellationToken);
+            try
+            {
+                update(_current);
+                _current = await manifestManager.UpdateCommitJobAsync(_current, cancellationToken);
+            }
+            finally { _gate.Release(); }
+        }
 
         public async Task RecordAsync(int processedCount, int skippedFiles, CancellationToken cancellationToken)
         {
@@ -385,6 +468,20 @@ public partial class BackupProcessingService(
 
         try
         {
+            var existingFile = await manifestManager.GetFileEntryAsync(deviceId, logicalPath, cancellationToken);
+            if (existingFile is { IsDeleted: false } && existingFile.CurrentVersionId != fileEntry.UniqueFileId && progress?.PreviousVersionId == null)
+            {
+                // Save the old identity before any catalog mutation. After a crash the catalog may
+                // already point at the incoming version, but retirement must still target the old one.
+                progress = new CommitFileProgress
+                {
+                    CommitId = commitId, DeviceId = deviceId, RunId = runId,
+                    UniqueFileId = fileEntry.UniqueFileId, LogicalPath = logicalPath,
+                    PreviousVersionId = existingFile.CurrentVersionId,
+                    Status = CommitFileStatus.Pending, ETag = progress?.ETag
+                };
+                await manifestManager.SaveCommitFileProgressAsync(progress, cancellationToken);
+            }
             await ValidateStagedBlobAsync(containerClient, sourceBlobName, destinationBlobName, fileEntry, cancellationToken);
             try
             {
@@ -401,9 +498,6 @@ public partial class BackupProcessingService(
                 LogSourceMissingDestinationPresent(logger, sourceBlobName, destinationBlobName, ex);
             }
 
-            // Check if file already exists
-            var existingFile = await manifestManager.GetFileEntryAsync(deviceId, logicalPath, cancellationToken);
-
             // Create new FileVersion (Active)
             var newVersion = new FileVersion
             {
@@ -418,16 +512,6 @@ public partial class BackupProcessingService(
             };
             await manifestManager.SaveFileVersionAsync(newVersion, cancellationToken);
 
-            // If file existed before, retire the old version
-            if (existingFile != null && !existingFile.IsDeleted)
-            {
-                await RetireFileVersionAsync(
-                    deviceId,
-                    existingFile.CurrentVersionId,
-                    containerClient,
-                    cancellationToken);
-            }
-
             // Update/create FileEntry
             var fileEntryRecord = new FileEntry
             {
@@ -441,6 +525,13 @@ public partial class BackupProcessingService(
                 ETag = existingFile?.ETag // Preserve ETag if updating
             };
             await manifestManager.SaveFileEntryAsync(fileEntryRecord, cancellationToken);
+
+            // Publish the replacement before retiring the superseded blob. Never retire the
+            // incoming version, including when replay finds its catalog write already applied.
+            if (progress?.PreviousVersionId is { } previousVersionId && previousVersionId != fileEntry.UniqueFileId)
+            {
+                await RetireFileVersionAsync(deviceId, previousVersionId, containerClient, cancellationToken);
+            }
 
             await SaveTerminalProgressAsync(
                 progress, commitId, deviceId, runId, fileEntry, logicalPath,

@@ -1,0 +1,16 @@
+<Router AppAssembly="typeof(App).Assembly">
+    <Found Context="routeData">
+        <AuthorizeRouteView @key="routeData" RouteData="routeData" DefaultLayout="typeof(MainLayout)">
+            <NotAuthorized><SignInPrompt /></NotAuthorized>
+            <Authorizing><p class="empty-state" role="status">Checking your session…</p></Authorizing>
+        </AuthorizeRouteView>
+        <FocusOnNavigate RouteData="routeData" Selector="h1" />
+    </Found>
+    <NotFound>
+        <LayoutView Layout="typeof(MainLayout)">
+            <PageTitle>Page not found · Stowhaven</PageTitle>
+            <h1>Page not found</h1>
+            <p>This monitoring page doesn’t exist. <a href="">Return to the overview.</a></p>
+        </LayoutView>
+    </NotFound>
+</Router>

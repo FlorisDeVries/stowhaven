@@ -16,6 +16,21 @@ namespace FlorisDeV.BackupApi.Tests;
 
 public class RestoreControllerTests
 {
+    [Fact]
+    public async Task RefreshCredentials_AuthorizesBeforeIssuingReadAccess()
+    {
+        var device = Guid.NewGuid();
+        var order = new List<string>();
+        _authorizationService.Setup(x => x.AuthorizeDeviceAsync(It.IsAny<ClaimsPrincipal>(), device, It.IsAny<CancellationToken>()))
+            .Callback(() => order.Add("authorize")).Returns(Task.CompletedTask);
+        _restoreService.Setup(x => x.RefreshSasAsync(device, null, It.IsAny<CancellationToken>()))
+            .Callback(() => order.Add("issue")).ReturnsAsync(new RefreshRestoreSasResponse
+                { DeviceId = device, SasUrlInfo = new SasUrlInfo { Url = new Uri("https://storage.test/backups"), ExpiresAt = DateTimeOffset.UtcNow.AddHours(1), TtlMinutes = 60 } });
+        var response = await _sut.RefreshSas(device, CancellationToken.None);
+        Assert.IsType<OkObjectResult>(response.Result);
+        Assert.Equal(new[] { "authorize", "issue" }, order);
+    }
+
     private readonly Mock<IRestoreService> _restoreService = new();
     private readonly Mock<IDeviceAuthorizationService> _authorizationService = new();
     private readonly SasSecurityOptions _sasSecurityOptions = new();

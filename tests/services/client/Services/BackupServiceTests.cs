@@ -19,7 +19,7 @@ namespace FlorisDeV.BackupClient.Tests.Services;
 /// <summary>
 /// Unit tests for BackupService using mocked dependencies.
 /// </summary>
-public class BackupServiceTests : IDisposable
+public partial class BackupServiceTests : IDisposable
 {
     private readonly Mock<ILogger<BackupService>> _mockLogger = new();
     private readonly TelemetryProvider _telemetryProvider = new();

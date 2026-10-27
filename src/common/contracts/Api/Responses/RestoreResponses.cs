@@ -11,7 +11,10 @@ public sealed record RestoreFileItem
     public required long Size { get; init; }
     public required DateTimeOffset LastWriteUtc { get; init; }
     public FileEncryptionMetadata? Encryption { get; init; }
+    public RestoreFileAvailability Availability { get; init; } = RestoreFileAvailability.Ready;
 }
+
+public enum RestoreFileAvailability { Ready, Archived, Rehydrating }
 
 public sealed record ListRestoreFilesResponse
 {
@@ -30,4 +33,11 @@ public sealed record StartRestoreResponse
     public required DateTimeOffset ExpiresAt { get; init; }
     public required SasUrlInfo SasUrlInfo { get; init; }
     public required IReadOnlyList<RestoreFileItem> Files { get; init; }
+    public bool IsReady => Files.All(file => file.Availability == RestoreFileAvailability.Ready);
+}
+
+public sealed record RefreshRestoreSasResponse
+{
+    public required Guid DeviceId { get; init; }
+    public required SasUrlInfo SasUrlInfo { get; init; }
 }

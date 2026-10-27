@@ -55,6 +55,7 @@ public partial class BackupEncryptionService(
         ? FileShare.ReadWrite | FileShare.Delete
         : FileShare.Read;
     private RecoveryMaterial? _recoveryMaterial;
+    private readonly SemaphoreSlim _recoveryMaterialLock = new(1, 1);
 
     public async Task<PreparedUpload> PrepareUploadAsync(TaggedFile file, CancellationToken cancellationToken = default)
     {
@@ -161,6 +162,18 @@ public partial class BackupEncryptionService(
     }
 
     private async Task<RecoveryMaterial> GetRecoveryMaterialAsync(CancellationToken cancellationToken)
+    {
+        await _recoveryMaterialLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            // Parallel uploads share one recovery file. Publish it completely before another
+            // upload opens it, so first-use encryption preparation does not race file creation.
+            return await LoadOrCreateRecoveryMaterialAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally { _recoveryMaterialLock.Release(); }
+    }
+
+    private async Task<RecoveryMaterial> LoadOrCreateRecoveryMaterialAsync(CancellationToken cancellationToken)
     {
         if (_recoveryMaterial != null)
         {

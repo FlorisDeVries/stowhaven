@@ -21,6 +21,7 @@ The API issues short-lived, least-privilege SAS URLs so backup clients can uploa
 - **Stowhaven API**: internal HTTP API for device registration, backup run orchestration, SAS issuance, commit status, restore metadata, health checks, and operational endpoints.
 - **Stowhaven Worker**: internal background Container App that consumes Azure Storage Queue messages through a Dapr input binding and finalizes staged backup runs.
 - **Stowhaven Client**: .NET console/Windows-service-friendly client that scans configured targets, applies `.backupignore` rules, uploads changed files, and commits runs.
+- **Stowhaven Monitoring**: standalone Blazor WebAssembly admin UI for run history, commit progress, failures, and confirmed retries, hosted on Azure Static Web Apps Free.
 - **Shared libraries**: contracts, core services, health checks, logging, feature flags, and security helpers.
 - **Infrastructure-as-Code**: Bicep deployment for Blob and Queue Storage, Cosmos DB containers, Key Vault, Container Apps, monitoring, Dapr components, and managed-identity RBAC.
 - **CI/CD**: GitHub Actions workflow using Azure OIDC and a multi-phase deployment.
@@ -124,6 +125,7 @@ The production storage account is configured for long-term, low-cost backup rete
 │   │   ├── api/                 # Stowhaven API Container App
 │   │   ├── worker/              # Commit worker Container App
 │   │   ├── gateway/             # Public auth/proxy Container App
+│   │   ├── monitoring/          # Static Blazor WebAssembly admin UI
 │   │   └── client/              # Stowhaven client executable
 │   └── common/
 │       ├── contracts/           # Shared API/application/state contracts
@@ -170,6 +172,7 @@ Useful local URLs:
 | Service | URL |
 | --- | --- |
 | Stowhaven Gateway | `http://localhost:8200` |
+| Monitoring UI (`dotnet run --project src/services/monitoring`) | `http://localhost:8300` |
 | Stowhaven API | `http://localhost:8210` |
 | Stowhaven Worker | `http://localhost:8220` |
 | Zipkin container | `http://localhost:9411` |
@@ -276,7 +279,7 @@ Infrastructure lives in `deploy/bicep/` and is orchestrated by `deploy/bicep/mai
 
 The GitHub Actions workflow uses five phases:
 
-1. Build and test the solution, plus a separate Gateway build.
+1. Build and test the solution, including the Gateway and monitoring UI.
 2. Validate Bicep.
 3. Deploy foundation resources with `deployContainerApps=false`.
 4. Build and push the API, worker, and Gateway images to GitHub Container Registry (GHCR).
@@ -315,6 +318,7 @@ The Bicep deployment provisions or references:
 - [Authentication](doc/AUTHENTICATION.md) - Entra ID authentication and authorization model.
 - [App Registrations](doc/APP_REGISTRATIONS.md) - Entra application roles, scopes, credentials, and configuration locations.
 - [Monitoring](doc/MONITORING.md) - logs, metrics, health checks, and diagnostics.
+- [Admin monitoring UI](doc/MONITORING_UI.md) - local UI, Entra operator access, and Free static hosting deployment.
 - [Advanced Configuration](doc/ADVANCED_CONFIGURATION.md) - performance tuning, resilience, encryption, and advanced client scenarios.
 - [Testing Guide](doc/TESTING.md) - test strategy and client testing instructions.
 

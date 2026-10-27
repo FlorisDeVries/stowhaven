@@ -12,6 +12,13 @@ public interface IStateDocumentStore
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Atomically creates an absent document and returns its ETag. Returns null if the document
+    /// already exists, preserving its payload, sort fields, and ETag. Other errors propagate.
+    /// </summary>
+    Task<string?> TryCreateAsync<T>(string type, string partitionKey, string id, T data,
+        string? sortKey = null, long? sortValue = null, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Creates or replaces a document and returns the new ETag. When <paramref name="etag"/>
     /// is provided the write is conditional and throws <see cref="StateConcurrencyException"/>
     /// if the stored document has changed.

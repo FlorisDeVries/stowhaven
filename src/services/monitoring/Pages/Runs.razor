@@ -1,0 +1,43 @@
+@page "/runs"
+@attribute [Authorize]
+@inherits MonitoringPage
+
+<PageTitle>Backup runs · Stowhaven</PageTitle>
+<div class="page-heading"><div><p class="eyebrow">THE BACKUP TIMELINE</p><h1>Backup runs.</h1><p class="subtitle">Explore run history and the files submitted by each device.</p></div><button class="button" disabled="@Busy" @onclick="() => RunAsync(LoadAsync)">↻ Refresh</button></div>
+<HistoryFilters Busy="Busy" OnApply="ApplyAsync" />
+<RequestState Busy="Busy" Error="@Error" />
+@if (history is not null)
+{
+    <div class="panel"><div class="panel-heading"><h2>Run history</h2><span class="muted">@history.Manifests.Count runs on this page</span></div>
+        <div class="table-scroll"><table><thead><tr><th>Run / device</th><th>Status</th><th>Files backed up</th><th>Started</th><th>Commit</th></tr></thead><tbody>
+        @foreach (var run in history.Manifests)
+        {
+            <tr @key="run.RunId"><td><a class="record-link mono" href="@($"runs/{run.DeviceId}/{run.RunId}")" title="@run.RunId">@Display.Short(run.RunId)</a><span class="cell-secondary mono" title="@run.DeviceId">Device @Display.Short(run.DeviceId)</span></td><td><StatusBadge Value="run.Status" /></td><td>@Display.Number(run.FilesBackedUp)</td><td class="timestamp">@Display.Time(run.StartedAt)</td><td>@if (run.CommitId is { } commitId) { <a class="mono" href="@($"commits/{commitId}")">@Display.Short(commitId) ↗</a> } else { <span class="muted">Not submitted</span> }</td></tr>
+        }
+        </tbody></table></div>
+        @if (history.Manifests.Count == 0) { <div class="empty-state">No backup runs match these filters.</div> }
+        <Pager Cursor="cursor" NextToken="@history.NextContinuationToken" Busy="Busy" Previous="PreviousAsync" Next="NextAsync" />
+    </div>
+}
+@code {
+    private ListManifestsResponse? history;
+    private HistoryFilter filter = new();
+    private readonly PageCursor cursor = new();
+    protected override async Task LoadAsync() => history = await Api.RunsAsync(filter.Status, filter.DeviceId, filter.Since, cursor.Current, Lifetime.Token);
+    private async Task ApplyAsync(HistoryFilter next)
+    {
+        filter = next; cursor.Reset(); history = null;
+        await RunAsync(LoadAsync);
+    }
+    private async Task NextAsync()
+    {
+        if (history?.NextContinuationToken is not { } token) return;
+        cursor.Next(token); history = null;
+        await RunAsync(LoadAsync);
+    }
+    private async Task PreviousAsync()
+    {
+        cursor.Back(); history = null;
+        await RunAsync(LoadAsync);
+    }
+}

@@ -1,0 +1,17 @@
+<div class="table-scroll"><table>
+    <thead><tr><th>Commit / device</th><th>Status</th><th>Files processed</th><th>Started</th><th><span class="sr-only">Details</span></th></tr></thead>
+    <tbody>
+        @foreach (var commit in Commits)
+        {
+            <tr @key="commit.CommitId">
+                <td><a class="record-link mono" href="@($"commits/{commit.CommitId}")" title="@commit.CommitId">@Display.Short(commit.CommitId)</a><span class="cell-secondary mono" title="@commit.DeviceId">Device @Display.Short(commit.DeviceId)</span></td>
+                <td><StatusBadge Value="commit.Status" /></td>
+                <td><span>@Display.Number(commit.FilesProcessed) <span class="muted">/ @Display.Number(commit.TotalFiles)</span></span><progress value="@(commit.FilesProcessed ?? 0)" max="@Math.Max(1, commit.TotalFiles)" aria-label="Files processed"></progress></td>
+                <td class="timestamp">@Display.Time(commit.CreatedAt)</td>
+                <td><a class="row-action" href="@($"commits/{commit.CommitId}")" aria-label="@($"View commit {Display.Short(commit.CommitId)}")">↗</a></td>
+            </tr>
+        }
+    </tbody>
+</table></div>
+@if (Commits.Count == 0) { <div class="empty-state">No commit jobs match this view.</div> }
+@code { [Parameter, EditorRequired] public IReadOnlyList<CommitStatusResponse> Commits { get; set; } = []; }

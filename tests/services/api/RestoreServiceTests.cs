@@ -9,6 +9,24 @@ namespace FlorisDeV.BackupApi.Tests;
 
 public class RestoreServiceTests
 {
+    [Fact]
+    public async Task StartRestoreAsync_PreservesCaseDistinctLogicalPaths()
+    {
+        var device = Guid.NewGuid();
+        var paths = new[] { "documents/Readme.txt", "documents/README.txt" };
+        foreach (var path in paths)
+        {
+            _manifestManager.Setup(x => x.GetFileEntryAsync(device, path, It.IsAny<CancellationToken>()))
+                .ReturnsAsync(CreateFileEntry(device, path, path, false));
+            _manifestManager.Setup(x => x.GetFileVersionAsync(device, path, It.IsAny<CancellationToken>()))
+                .ReturnsAsync(CreateFileVersion(device, path, path, FileVersionState.Active));
+        }
+        _sasUrlService.Setup(x => x.GenerateReadSasUrlAsync(It.IsAny<string>(), It.IsAny<string?>(),
+            It.IsAny<int?>(), It.IsAny<CancellationToken>())).ReturnsAsync(new SasUrlInfo
+            { Url = new Uri("https://storage.example/backups"), ExpiresAt = DateTimeOffset.UtcNow.AddHours(1), TtlMinutes = 60 });
+        var response = await _sut.StartRestoreAsync(device, new StartRestoreRequest { LogicalPaths = paths });
+        response.Files.Select(f => f.LogicalPath).Should().BeEquivalentTo(paths);
+    }
     private readonly Mock<IManifestManager> _manifestManager = new();
     private readonly Mock<ISasUrlService> _sasUrlService = new();
     private readonly RestoreService _sut;

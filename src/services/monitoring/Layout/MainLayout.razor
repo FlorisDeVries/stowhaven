@@ -1,0 +1,37 @@
+@inherits LayoutComponentBase
+@inject MonitoringOptions Options
+
+<div class="app-shell">
+    <aside class="sidebar">
+        <a class="brand" href="" aria-label="Stowhaven overview"><span class="brand-mark" aria-hidden="true">s</span>stowhaven<span class="brand-dot">.</span></a>
+        <span class="sidebar-label">CONTROL ROOM</span>
+        <nav aria-label="Main navigation">
+            <NavLink href="" Match="NavLinkMatch.All"><span aria-hidden="true">◫</span> Overview</NavLink>
+            <NavLink href="runs"><span aria-hidden="true">▤</span> Backup runs</NavLink>
+            <NavLink href="commits"><span aria-hidden="true">⇄</span> Commit jobs</NavLink>
+        </nav>
+        <div class="sidebar-note"><span class="small-dot"></span> Private backups.<br /><span class="muted">Safely tucked away.</span></div>
+    </aside>
+    <div class="workspace">
+        <header class="topbar"><span>Stowhaven <span class="breadcrumb-separator">/</span> <strong>Monitoring</strong></span><LoginDisplay /></header>
+        <main id="main-content">
+            @if (!Options.IsConfigured)
+            {
+                <PageTitle>Configure monitoring · Stowhaven</PageTitle>
+                <p class="eyebrow">GETTING STARTED</p>
+                <h1>Connect your control room.</h1>
+                <div class="panel setup-panel"><h2>Monitoring isn’t configured yet</h2><p>Add your deployment’s public connection settings to the UI configuration.</p>
+                    <ul>@foreach (var error in Options.Errors) { <li>@error</li> }</ul>
+                    <p class="muted">See doc/MONITORING_UI.md in the repository for local setup and Azure deployment.</p>
+                </div>
+            }
+            else
+            {
+                @if (Options.UseLocalAuthentication) { <div class="notice warning">Local development · Authentication is bypassed for this loopback gateway.</div> }
+                @Body
+            }
+        </main>
+        <footer>STOWHAVEN <span>Monitoring refreshes on demand. All timestamps are UTC.</span></footer>
+    </div>
+</div>
+<div id="blazor-error-ui" role="alert">Something went wrong. <a href="" class="reload">Reload monitoring</a><button class="dismiss" aria-label="Dismiss">×</button></div>

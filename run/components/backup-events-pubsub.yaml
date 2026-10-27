@@ -10,15 +10,19 @@ spec:
         - name: accountName
           value: devstoreaccount1
         - name: accountKey
-          value: Eby8vdM02xNo8CmXUq4u0xHa1S5gN7xjzq6pJxB5E4kG/5GPxM7C4F2q6C3H4mJ7E7sQ8wN5c1mC2rV7f9g==
+          secretKeyRef:
+              name: DATA_STORAGE_ACCOUNT_KEY
+              key: DATA_STORAGE_ACCOUNT_KEY
         - name: queueName
           value: backup-events
         - name: endpoint
-          value: http://azurite:10001/devstoreaccount1
+          value: http://azurite:10001
         - name: direction
           value: output
         - name: ttlInSeconds
           value: "604800"
+auth:
+    secretStore: secret-store
 scopes:
     - backup-api
 ---
@@ -33,11 +37,13 @@ spec:
         - name: accountName
           value: devstoreaccount1
         - name: accountKey
-          value: Eby8vdM02xNo8CmXUq4u0xHa1S5gN7xjzq6pJxB5E4kG/5GPxM7C4F2q6C3H4mJ7E7sQ8wN5c1mC2rV7f9g==
+          secretKeyRef:
+              name: DATA_STORAGE_ACCOUNT_KEY
+              key: DATA_STORAGE_ACCOUNT_KEY
         - name: queueName
           value: backup-events
         - name: endpoint
-          value: http://azurite:10001/devstoreaccount1
+          value: http://azurite:10001
         - name: direction
           value: input
         - name: route
@@ -46,6 +52,8 @@ spec:
           value: 10s
         - name: visibilityTimeout
           value: 10m
+auth:
+    secretStore: secret-store
 scopes:
     - backup-worker
 

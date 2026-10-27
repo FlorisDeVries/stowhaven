@@ -9,6 +9,7 @@ public class BackupClientOptions
     /// Configuration section name in appsettings.json.
     /// </summary>
     public const string SectionName = "BackupClient";
+    public string? ResultFilePath { get; init; }
 
     /// <summary>
     /// Named backup targets. Each target has a name (used as prefix in storage) and a directory path.
@@ -136,6 +137,9 @@ public class BackupClientOptions
 
 public sealed class BackupRestoreOptions
 {
+    public bool RehydrateArchivedFiles { get; init; } = true;
+    public int RehydrationPollIntervalSeconds { get; init; } = 30;
+    public int RehydrationTimeoutMinutes { get; init; } = 1440;
     public Guid? DeviceId { get; init; }
     public string? DestinationPath { get; init; }
     public string[] LogicalPaths { get; init; } = [];

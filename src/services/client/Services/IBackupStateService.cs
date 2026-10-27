@@ -52,6 +52,12 @@ public interface IBackupStateService
     Task ClearPendingBackupRunAsync(Guid deviceId, Guid runId, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Discards a terminally failed run and invalidates local state for all paths it could have
+    /// changed remotely. The next scan uploads them again, including files reverted to old content.
+    /// </summary>
+    Task RecoverFailedRunAsync(Guid deviceId, Guid runId, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Appends a batch of successfully staged files to the in-flight run's journal. Idempotent per
     /// storage path, so retrying a batch does not duplicate entries.
     /// </summary>

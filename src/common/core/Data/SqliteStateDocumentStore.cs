@@ -68,6 +68,29 @@ public sealed class SqliteStateDocumentStore : IStateDocumentStore
         return new StateDocument<T>(data, reader.GetString(1));
     }
 
+    public async Task<string?> TryCreateAsync<T>(string type, string partitionKey, string id, T data,
+        string? sortKey = null, long? sortValue = null, CancellationToken cancellationToken = default)
+    {
+        var newETag = Guid.NewGuid().ToString("N");
+        await using var connection = OpenConnection();
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            INSERT INTO documents(type, partition, id, sort_key, sort_value, etag, json)
+            VALUES(@type, @partition, @id, @sortKey, @sortValue, @etag, @json)
+            ON CONFLICT(type, partition, id) DO NOTHING
+            """;
+        command.Parameters.AddWithValue("@type", type);
+        command.Parameters.AddWithValue("@partition", partitionKey);
+        command.Parameters.AddWithValue("@id", id);
+        command.Parameters.AddWithValue("@sortKey", (object?)sortKey ?? DBNull.Value);
+        command.Parameters.AddWithValue("@sortValue", (object?)sortValue ?? DBNull.Value);
+        command.Parameters.AddWithValue("@etag", newETag);
+        command.Parameters.AddWithValue("@json", JsonSerializer.Serialize(data, _serializerOptions));
+
+        return await command.ExecuteNonQueryAsync(cancellationToken) == 1 ? newETag : null;
+    }
+
     public async Task<string> UpsertAsync<T>(string type, string partitionKey, string id, T data,
         string? etag = null, string? sortKey = null, long? sortValue = null,
         CancellationToken cancellationToken = default)

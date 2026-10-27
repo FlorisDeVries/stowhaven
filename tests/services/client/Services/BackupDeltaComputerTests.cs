@@ -255,7 +255,7 @@ public class BackupDeltaComputerTests
 
     [Fact]
     [Trait("Category", "Unit")]
-    public async Task ComputeDeltaAsync_CaseInsensitivePaths_ShouldMatchCorrectly()
+    public async Task ComputeDeltaAsync_UsesPlatformPathIdentity()
     {
         // Arrange - Different case in paths
         var currentFiles = new List<FileMetadata>
@@ -274,10 +274,10 @@ public class BackupDeltaComputerTests
         // Act
         var result = await _sut.ComputeDeltaAsync(currentFiles, CancellationToken.None);
 
-        // Assert - Should match case-insensitively (not treat as new file)
-        result.NewFiles.Should().BeEmpty();
+        // Windows paths fold case; Linux paths identify separate files.
+        result.NewFiles.Should().HaveCount(OperatingSystem.IsWindows() ? 0 : 1);
         result.ModifiedFiles.Should().BeEmpty();
-        result.DeletedFiles.Should().BeEmpty();
+        result.DeletedFiles.Should().HaveCount(OperatingSystem.IsWindows() ? 0 : 1);
     }
 
     [Fact]

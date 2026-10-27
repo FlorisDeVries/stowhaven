@@ -1,10 +1,9 @@
 using System.Net.Http.Headers;
-using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Azure.Core;
 using Azure.Identity;
-using Microsoft.Extensions.Caching.Memory;
+using Gateway;
 
 const string EasyAuthAccessTokenHeader = "X-MS-TOKEN-AAD-ACCESS-TOKEN";
 
@@ -12,11 +11,16 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddHttpClient("gateway-proxy", client =>
 {
-    client.Timeout = TimeSpan.FromSeconds(30);
+    client.Timeout = TimeSpan.FromSeconds(Math.Clamp(builder.Configuration.GetValue("Gateway:ProxyTimeoutSeconds", 30.0), 0.1, 300));
 });
 builder.Services.AddMemoryCache();
+builder.Services.AddSingleton<IOboTokenExchange, OboTokenExchange>();
+builder.AddMonitoringAccess();
 
 var app = builder.Build();
+app.UseCors();
+app.UseAuthentication();
+app.UseAuthorization();
 
 var configuration = app.Services.GetRequiredService<IConfiguration>();
 var apiBaseUrl = RequireAbsoluteUri(configuration["Gateway:ApiBaseUrl"], "Gateway:ApiBaseUrl");
@@ -38,7 +42,7 @@ var oboTenantId = configuration["Gateway:OboTenantId"];
 // Only request backup.client: Azure AD returns AADSTS65001 (consent_required) if any
 // listed scope has NO consent for the user (AllPrincipals covers backup.client only).
 // Clipping only happens when the user has partial consent — not when the scope is absent.
-// Override with Gateway:OboApiScopes for deployments where backup.admin is also required.
+// Admin operations use a separate, authorized route and request backup.admin there.
 var oboApiScopesRaw = configuration["Gateway:OboApiScopes"]
     ?? (string.IsNullOrWhiteSpace(apiTokenScope) ? null
         : apiTokenScope!.Replace("/.default", "/backup.client", StringComparison.OrdinalIgnoreCase));
@@ -72,6 +76,27 @@ app.Map("/api/{**path}", async context =>
     await ProxyAsync(context, apiBaseUrl, "/api", "/api", "/", gatewayHeaderName, gatewayHeaderValue, apiTokenCredential, apiTokenScope, oboOptions);
 });
 
+// Route specificity makes this policy apply before the general /api proxy.
+// An ordinary backup client never requests downstream admin consent.
+app.Map("/api/ops/{**path}", async context =>
+{
+    var adminScope = apiTokenScope?.Replace("/.default", "/backup.admin", StringComparison.OrdinalIgnoreCase);
+    var adminObo = oboOptions is not null && !string.IsNullOrWhiteSpace(adminScope)
+        ? oboOptions with { ApiScopes = [adminScope] }
+        : null;
+
+    if (!app.Environment.IsDevelopment() && adminObo is null)
+    {
+        context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+        await context.Response.WriteAsJsonAsync(new { title = "Monitoring token exchange is not configured." });
+        return;
+    }
+
+    context.Response.Headers.CacheControl = "no-store";
+    await ProxyAsync(context, apiBaseUrl, "/api/ops", "/api/ops", "/", gatewayHeaderName, gatewayHeaderValue,
+        tokenCredential: null, tokenScope: null, oboOptions: adminObo, requireBearerAssertion: true);
+}).RequireAuthorization(MonitoringAccess.Policy);
+
 app.Map("/worker/{**path}", async context =>
 {
     await ProxyAsync(context, workerBaseUrl, "/worker", string.Empty, "/worker", gatewayHeaderName, gatewayHeaderValue, tokenCredential: null, tokenScope: null);
@@ -99,7 +124,48 @@ static async Task ProxyAsync(
     string gatewayHeaderValue,
     TokenCredential? tokenCredential,
     string? tokenScope,
-    OboOptions? oboOptions = null)
+    OboOptions? oboOptions = null,
+    bool requireBearerAssertion = false)
+{
+    try
+    {
+        await ProxyCoreAsync(context, baseUri, proxyPrefix, upstreamPathPrefix, swaggerServerUrl,
+            gatewayHeaderName, gatewayHeaderValue, tokenCredential, tokenScope, oboOptions, requireBearerAssertion);
+    }
+    catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
+    {
+        context.Abort();
+    }
+    catch (OperationCanceledException)
+    {
+        await ProxyErrorAsync(context, StatusCodes.Status504GatewayTimeout, "The upstream service timed out.");
+    }
+    catch (HttpRequestException)
+    {
+        await ProxyErrorAsync(context, StatusCodes.Status502BadGateway, "The upstream service is unavailable.");
+    }
+}
+
+static async Task ProxyErrorAsync(HttpContext context, int status, string title)
+{
+    if (context.Response.HasStarted) { context.Abort(); return; }
+    context.Response.Clear();
+    context.Response.StatusCode = status;
+    await context.Response.WriteAsJsonAsync(new { status, title }, context.RequestAborted);
+}
+
+static async Task ProxyCoreAsync(
+    HttpContext context,
+    Uri baseUri,
+    string proxyPrefix,
+    string upstreamPathPrefix,
+    string swaggerServerUrl,
+    string gatewayHeaderName,
+    string gatewayHeaderValue,
+    TokenCredential? tokenCredential,
+    string? tokenScope,
+    OboOptions? oboOptions = null,
+    bool requireBearerAssertion = false)
 {
     var httpClientFactory = context.RequestServices.GetRequiredService<IHttpClientFactory>();
     var logger = context.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("GatewayProxy");
@@ -126,7 +192,7 @@ static async Task ProxyAsync(
 
     // Easy Auth only populates X-MS-TOKEN-AAD-ACCESS-TOKEN in session/cookie flows.
     // For direct Bearer token calls the original Authorization header is the user assertion.
-    var userAssertionToken = hasEasyAuthToken
+    var userAssertionToken = hasEasyAuthToken && !requireBearerAssertion
         ? easyAuthToken.ToString()
         : ExtractBearerToken(context.Request.Headers.Authorization.ToString());
     var canUseObo = !isSwaggerDocument && oboOptions is not null && !string.IsNullOrWhiteSpace(userAssertionToken);
@@ -136,11 +202,12 @@ static async Task ProxyAsync(
         // Exchange the user's gateway-scoped token for an API-scoped delegated token.
         // OBO preserves user identity claims (tid, oid) that app-only managed identity
         // tokens lack, which is required by user-specific API endpoints.
-        var oboToken = await GetOboTokenAsync(context, oboOptions!, userAssertionToken!, logger);
+        var oboToken = await context.RequestServices.GetRequiredService<IOboTokenExchange>()
+            .ExchangeAsync(oboOptions!, userAssertionToken!, context.RequestAborted);
         requestMessage.Headers.Authorization = new AuthenticationHeaderValue("Bearer", oboToken);
         logger.LogInformation("Proxying {Method} {Path} with OBO token (source: {Source})",
             context.Request.Method, context.Request.Path,
-            hasEasyAuthToken ? "EasyAuth" : "Authorization");
+            hasEasyAuthToken && !requireBearerAssertion ? "EasyAuth" : "Authorization");
     }
     else if (useManagedIdentity)
     {
@@ -335,54 +402,9 @@ static bool IsHopByHopHeader(string headerName)
            string.Equals(headerName, "Upgrade", StringComparison.OrdinalIgnoreCase);
 }
 
-static async Task<string> GetOboTokenAsync(HttpContext context, OboOptions oboOptions, string userAssertionToken, ILogger logger)
-{
-    // Cache exchanged tokens per user assertion — without this every proxied
-    // request costs an Entra round-trip and risks AADSTS throttling.
-    var cache = context.RequestServices.GetRequiredService<IMemoryCache>();
-    var cacheKey = "obo:" + Convert.ToBase64String(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(userAssertionToken)));
-
-    if (cache.TryGetValue(cacheKey, out AccessToken cached) &&
-        cached.ExpiresOn > DateTimeOffset.UtcNow.AddMinutes(5))
-    {
-        return cached.Token;
-    }
-
-    var oboCredential = new OnBehalfOfCredential(oboOptions.TenantId, oboOptions.ClientId, oboOptions.ClientSecret, userAssertionToken);
-    var oboResult = await oboCredential.GetTokenAsync(
-        new TokenRequestContext(oboOptions.ApiScopes),
-        context.RequestAborted);
-
-    cache.Set(cacheKey, oboResult, oboResult.ExpiresOn - TimeSpan.FromMinutes(5));
-    LogJwtClaims(logger, oboResult.Token, "OBO");
-
-    return oboResult.Token;
-}
-
 static string? ExtractBearerToken(string? authorizationHeader) =>
     authorizationHeader?.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) == true
         ? authorizationHeader[7..].Trim()
         : null;
 
-static void LogJwtClaims(ILogger logger, string token, string label)
-{
-    try
-    {
-        var parts = token.Split('.');
-        if (parts.Length < 2) return;
-        var padding = (4 - parts[1].Length % 4) % 4;
-        var payload = System.Text.Encoding.UTF8.GetString(
-            Convert.FromBase64String(parts[1] + new string('=', padding)));
-        using var doc = JsonDocument.Parse(payload);
-        var root = doc.RootElement;
-        logger.LogInformation("{Label} token claims — aud: {Aud}, scp: {Scp}, roles: {Roles}, oid: {Oid}",
-            label,
-            root.TryGetProperty("aud", out var aud) ? aud.ToString() : "<missing>",
-            root.TryGetProperty("scp", out var scp) ? scp.ToString() : "<missing>",
-            root.TryGetProperty("roles", out var roles) ? roles.ToString() : "<missing>",
-            root.TryGetProperty("oid", out var oid) ? oid.GetString()?[..8] + "..." : "<missing>");
-    }
-    catch { /* best-effort */ }
-}
-
-record OboOptions(string ClientId, string ClientSecret, string TenantId, string[] ApiScopes);
+public partial class Program;
