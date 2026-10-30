@@ -677,14 +677,14 @@ public partial class BackupService(
                 RunId = runId.Value
             };
             var commitResponse = await backupApiClient.CommitBackupRun(deviceId, commitRequest, cancellationToken);
-            commitId = commitResponse.CommitId;
+            commitId = GetValidatedCommitId(deviceId, runId.Value, commitResponse);
 
             await SavePendingRunAsync(deviceId, runId.Value, startedAt, uploadSasUrlInfo!, manifestSasUrlInfo!, true, commitId, cancellationToken);
         }
 
         LogBackupRunCommitted(runId.Value);
 
-        var commitStatus = await WaitForCommitCompletionAsync(deviceId, commitId.Value, cancellationToken);
+        var commitStatus = await WaitForCommitCompletionAsync(deviceId, runId.Value, commitId.Value, cancellationToken);
         if (commitStatus == null)
         {
             // Commit still processing server-side; leave the pending run so a later run finalizes it.
@@ -702,8 +702,7 @@ public partial class BackupService(
 
     /// <summary>
     /// Promotes a committed run's journal into tracked file state, applies its deletions, and clears
-    /// the journal. Every step is set-based inside SQLite, so finalizing a run with hundreds of
-    /// thousands of files costs no managed memory.
+    /// the journal atomically after bounded-memory rejection preprocessing has finished.
     /// </summary>
     private async Task FinalizeRunStateAsync(
         Guid deviceId,
@@ -711,6 +710,8 @@ public partial class BackupService(
         CommitStatusResponse commitStatus,
         CancellationToken cancellationToken)
     {
+        if (commitStatus.Status is not (CommitJobStatus.Succeeded or CommitJobStatus.CompletedWithErrors))
+            throw new InvalidOperationException("Only a server-finished run can complete locally.");
         if (commitStatus.Status == CommitJobStatus.CompletedWithErrors)
         {
             await RemoveServerRejectedFilesFromJournalAsync(
@@ -721,16 +722,7 @@ public partial class BackupService(
                 cancellationToken);
         }
 
-        await backupStateService.PromotePendingRunFilesToStateAsync(deviceId, runId, cancellationToken);
-        await backupStateService.ApplyPendingRunDeletionsAsync(deviceId, runId, cancellationToken);
-
-        await backupStateService.SaveBackupSuccessAsync(
-            runId,
-            commitStatus.CommitId.ToString("N"),
-            [],
-            cancellationToken);
-
-        await backupStateService.ClearPendingBackupRunAsync(deviceId, runId, cancellationToken);
+        await backupStateService.CompletePendingRunAsync(deviceId, runId, commitStatus.CommitId, cancellationToken);
     }
 
     private async Task RemoveServerRejectedFilesFromJournalAsync(
@@ -768,6 +760,7 @@ public partial class BackupService(
             return;
         }
 
+        ValidateCommitStatus(deviceState.DeviceId, deviceState.LastRunId.Value, commitId, commitStatus);
         if (commitStatus.Status != CommitJobStatus.CompletedWithErrors)
         {
             return;
@@ -856,6 +849,8 @@ public partial class BackupService(
     private async Task<PendingBackupRun?> LoadUsablePendingRunAsync(Guid deviceId, CancellationToken cancellationToken)
     {
         var pendingRun = await backupStateService.GetPendingBackupRunAsync(deviceId, cancellationToken);
+        if (pendingRun != null && pendingRun.DeviceId != deviceId)
+            throw new InvalidOperationException("Pending run device did not match the local device.");
         if (pendingRun == null)
         {
             return null;
@@ -883,7 +878,7 @@ public partial class BackupService(
             {
                 RunId = pendingRun.RunId
             }, cancellationToken);
-            commitId = commitResponse.CommitId;
+            commitId = GetValidatedCommitId(pendingRun.DeviceId, pendingRun.RunId, commitResponse);
 
             await backupStateService.SavePendingBackupRunAsync(pendingRun with
             {
@@ -892,7 +887,7 @@ public partial class BackupService(
             }, cancellationToken);
         }
 
-        var commitStatus = await WaitForCommitCompletionAsync(pendingRun.DeviceId, commitId.Value, cancellationToken);
+        var commitStatus = await WaitForCommitCompletionAsync(pendingRun.DeviceId, pendingRun.RunId, commitId.Value, cancellationToken);
         if (commitStatus == null)
         {
             // Still processing server-side; keep the pending run so a later run finalizes it.
@@ -940,6 +935,7 @@ public partial class BackupService(
     /// </summary>
     private async Task<CommitStatusResponse?> WaitForCommitCompletionAsync(
         Guid deviceId,
+        Guid runId,
         Guid commitId,
         CancellationToken cancellationToken)
     {
@@ -952,6 +948,7 @@ public partial class BackupService(
             cancellationToken.ThrowIfCancellationRequested();
 
             var status = await backupApiClient.GetCommitStatus(deviceId, commitId, cancellationToken);
+            ValidateCommitStatus(deviceId, runId, commitId, status);
 
             switch (status.Status)
             {
@@ -982,6 +979,19 @@ public partial class BackupService(
 
             await Task.Delay(pollInterval, cancellationToken);
         }
+    }
+
+    private static Guid GetValidatedCommitId(Guid deviceId, Guid runId, CommitBackupRunResponse response)
+    {
+        if (response.DeviceId != deviceId || response.RunId != runId || response.CommitId == Guid.Empty)
+            throw new InvalidOperationException("Commit response identity did not match the requested run.");
+        return response.CommitId;
+    }
+
+    private static void ValidateCommitStatus(Guid deviceId, Guid runId, Guid commitId, CommitStatusResponse status)
+    {
+        if (status.DeviceId != deviceId || status.RunId != runId || status.CommitId != commitId)
+            throw new InvalidOperationException("Commit status identity did not match the requested run.");
     }
 
     private static string GenerateUniqueFileId(string? sha256)

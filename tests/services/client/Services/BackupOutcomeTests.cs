@@ -26,8 +26,6 @@ public partial class BackupServiceTests
         Assert.Equal(run, result.RunId);
         Assert.Equal(commit, result.CommitId);
         Assert.Equal(2, result.ExitCode);
-        _mockStateService.Verify(x => x.SaveBackupSuccessAsync(It.IsAny<Guid>(), It.IsAny<string>(),
-            It.IsAny<IReadOnlyList<FileMetadata>>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]

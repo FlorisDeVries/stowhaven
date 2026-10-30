@@ -34,8 +34,6 @@ public partial class BackupServiceTests
         _mockStateService.Verify(x => x.SavePendingBackupRunAsync(
             It.Is<PendingBackupRun>(pending => pending.RunId == run && pending.CommitId == commit && pending.ManifestUploaded),
             It.IsAny<CancellationToken>()), Times.Once);
-        _mockStateService.Verify(x => x.PromotePendingRunFilesToStateAsync(device, run, It.IsAny<CancellationToken>()), Times.Once);
-        _mockStateService.Verify(x => x.ClearPendingBackupRunAsync(device, run, It.IsAny<CancellationToken>()), Times.Once);
         _mockApiClient.Verify(x => x.StartBackupRun(It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
         _mockScanner.Verify(x => x.ScanAllTargetsAsync(It.IsAny<IReadOnlyDictionary<string, string>>(),
             It.IsAny<string[]?>(), It.IsAny<CancellationToken>()), Times.Once);
@@ -52,8 +50,6 @@ public partial class BackupServiceTests
         });
         Assert.True(await _sut.Backup(CancellationToken.None));
         _mockStateService.Verify(x => x.RecoverFailedRunAsync(device, run, It.IsAny<CancellationToken>()), Times.Once);
-        _mockStateService.Verify(x => x.PromotePendingRunFilesToStateAsync(
-            It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
         _mockScanner.Verify(x => x.ScanAllTargetsAsync(It.IsAny<IReadOnlyDictionary<string, string>>(),
             It.IsAny<string[]?>(), It.IsAny<CancellationToken>()), Times.Once);
     }

@@ -84,6 +84,9 @@ public partial class BackupServiceTests : IDisposable
             .ReturnsAsync((Guid deviceId, Guid commitId, CancellationToken ct) => new CommitStatusResponse
             {
                 DeviceId = deviceId,
+                RunId = _mockApiClient.Invocations
+                    .Where(call => call.Method.Name == nameof(IBackupApiClient.CommitBackupRun))
+                    .Select(call => call.Arguments[1]).OfType<CommitBackupRunRequest>().LastOrDefault()?.RunId ?? Guid.Empty,
                 CommitId = commitId,
                 Status = CommitJobStatus.Succeeded,
                 CreatedAt = DateTimeOffset.UtcNow,
@@ -181,13 +184,6 @@ public partial class BackupServiceTests : IDisposable
         _mockScanner.Setup(x => x.AnalyzeFileAsync(It.IsAny<TaggedFile>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((TaggedFile f, CancellationToken _) => (f, true, FileChangeType.New));
 
-        _mockStateService.Setup(x => x.SaveBackupSuccessAsync(
-                It.IsAny<Guid>(),
-                It.IsAny<string>(),
-                It.IsAny<IReadOnlyList<FileMetadata>>(),
-                It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
-
         _mockApiClient.Setup(x => x.StartBackupRun(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new StartBackupRunResponse 
             { 
@@ -235,15 +231,6 @@ public partial class BackupServiceTests : IDisposable
             It.Is<Guid>(id => id == runId),
             It.Is<IReadOnlyList<TaggedFile>>(files => files.Count == 1),
             It.IsAny<CancellationToken>()), Times.Once);
-        _mockStateService.Verify(x => x.PromotePendingRunFilesToStateAsync(
-            It.IsAny<Guid>(),
-            It.Is<Guid>(id => id == runId),
-            It.IsAny<CancellationToken>()), Times.Once);
-        _mockStateService.Verify(x => x.SaveBackupSuccessAsync(
-            It.Is<Guid>(id => id == runId),
-            It.IsAny<string>(),
-            It.IsAny<IReadOnlyList<FileMetadata>>(),
-            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -278,10 +265,6 @@ public partial class BackupServiceTests : IDisposable
 
         _mockScanner.Setup(x => x.AnalyzeFileAsync(It.IsAny<TaggedFile>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((TaggedFile f, CancellationToken _) => (f, true, FileChangeType.New));
-
-        _mockStateService.Setup(x => x.SaveBackupSuccessAsync(
-                It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<FileMetadata>>(), It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
 
         _mockApiClient.Setup(x => x.StartBackupRun(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new StartBackupRunResponse
@@ -360,6 +343,7 @@ public partial class BackupServiceTests : IDisposable
             .ReturnsAsync((Guid d, Guid c, CancellationToken _) => new CommitStatusResponse
             {
                 DeviceId = d,
+                RunId = runId,
                 CommitId = c,
                 Status = CommitJobStatus.Processing,
                 CreatedAt = DateTimeOffset.UtcNow,
@@ -373,8 +357,6 @@ public partial class BackupServiceTests : IDisposable
         result.Should().BeTrue();
         _mockStateService.Verify(x => x.ClearPendingBackupRunAsync(
             It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
-        _mockStateService.Verify(x => x.SaveBackupSuccessAsync(
-            It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<FileMetadata>>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -468,13 +450,6 @@ public partial class BackupServiceTests : IDisposable
 
         _mockScanner.Setup(x => x.AnalyzeFileAsync(It.IsAny<TaggedFile>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((TaggedFile f, CancellationToken _) => (f, true, FileChangeType.Modified));
-
-        _mockStateService.Setup(x => x.SaveBackupSuccessAsync(
-                It.IsAny<Guid>(),
-                It.IsAny<string>(),
-                It.IsAny<IReadOnlyList<FileMetadata>>(),
-                It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
 
         var newRunId = Guid.NewGuid();
         _mockApiClient.Setup(x => x.StartBackupRun(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
@@ -570,13 +545,6 @@ public partial class BackupServiceTests : IDisposable
                 It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(2);
 
-        _mockStateService.Setup(x => x.SaveBackupSuccessAsync(
-                It.IsAny<Guid>(),
-                It.IsAny<string>(),
-                It.IsAny<IReadOnlyList<FileMetadata>>(),
-                It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
-
         _mockApiClient.Setup(x => x.StartBackupRun(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new StartBackupRunResponse
             {
@@ -600,10 +568,6 @@ public partial class BackupServiceTests : IDisposable
             It.IsAny<CommitBackupRunRequest>(),
             It.IsAny<CancellationToken>()), Times.Once);
         _mockStateService.Verify(x => x.RecordScanDeletionsAsync(
-            It.Is<Guid>(id => id == deviceId),
-            It.IsAny<Guid>(),
-            It.IsAny<CancellationToken>()), Times.Once);
-        _mockStateService.Verify(x => x.ApplyPendingRunDeletionsAsync(
             It.Is<Guid>(id => id == deviceId),
             It.IsAny<Guid>(),
             It.IsAny<CancellationToken>()), Times.Once);
@@ -681,13 +645,6 @@ public partial class BackupServiceTests : IDisposable
         _mockScanner.Setup(x => x.AnalyzeFileAsync(It.IsAny<TaggedFile>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((TaggedFile f, CancellationToken _) => (f, true, FileChangeType.New));
 
-        _mockStateService.Setup(x => x.SaveBackupSuccessAsync(
-                It.IsAny<Guid>(),
-                It.IsAny<string>(),
-                It.IsAny<IReadOnlyList<FileMetadata>>(),
-                It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
-
         _mockApiClient.Setup(x => x.StartBackupRun(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new StartBackupRunResponse 
             { 
@@ -729,10 +686,6 @@ public partial class BackupServiceTests : IDisposable
             It.IsAny<Guid>(),
             It.Is<Guid>(id => id == runId),
             It.Is<IReadOnlyList<TaggedFile>>(f => f.Count == 10),
-            It.IsAny<CancellationToken>()), Times.Once);
-        _mockStateService.Verify(x => x.PromotePendingRunFilesToStateAsync(
-            It.IsAny<Guid>(),
-            It.Is<Guid>(id => id == runId),
             It.IsAny<CancellationToken>()), Times.Once);
     }
 
@@ -871,13 +824,6 @@ public partial class BackupServiceTests : IDisposable
             _mockScanner.Setup(x => x.AnalyzeFileAsync(It.IsAny<TaggedFile>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync((TaggedFile f, CancellationToken _) => (f, true, FileChangeType.New));
 
-            _mockStateService.Setup(x => x.SaveBackupSuccessAsync(
-                    It.IsAny<Guid>(),
-                    It.IsAny<string>(),
-                    It.IsAny<IReadOnlyList<FileMetadata>>(),
-                    It.IsAny<CancellationToken>()))
-                .Returns(Task.CompletedTask);
-
             _mockApiClient.Setup(x => x.StartBackupRun(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(new StartBackupRunResponse 
                 { 
@@ -957,13 +903,6 @@ public partial class BackupServiceTests : IDisposable
 
         _mockScanner.Setup(x => x.AnalyzeFileAsync(It.Is<TaggedFile>(f => f.Metadata.Hash == "hash3"), It.IsAny<CancellationToken>()))
             .ReturnsAsync((TaggedFile f, CancellationToken _) => (f, false, FileChangeType.Unchanged));
-
-        _mockStateService.Setup(x => x.SaveBackupSuccessAsync(
-                It.IsAny<Guid>(),
-                It.IsAny<string>(),
-                It.IsAny<IReadOnlyList<FileMetadata>>(),
-                It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
 
         _mockApiClient.Setup(x => x.StartBackupRun(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new StartBackupRunResponse 
@@ -1112,11 +1051,6 @@ public partial class BackupServiceTests : IDisposable
             It.IsAny<Azure.Storage.Blobs.BlobContainerClient>(),
             It.IsAny<IReadOnlyList<TaggedFile>>(),
             It.IsAny<CancellationToken>()), Times.Exactly(2));
-        _mockStateService.Verify(x => x.SaveBackupSuccessAsync(
-            It.Is<Guid>(id => id == runId),
-            It.IsAny<string>(),
-            It.IsAny<IReadOnlyList<FileMetadata>>(),
-            It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -1270,8 +1204,6 @@ public partial class BackupServiceTests : IDisposable
             It.Is<IReadOnlyList<string>>(paths =>
                 paths.SequenceEqual(new[] { "data/a.txt", "projects/b.txt" })),
             It.IsAny<CancellationToken>()), Times.Once);
-        _mockStateService.Verify(x => x.PromotePendingRunFilesToStateAsync(
-            deviceId, pendingRunId, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
@@ -1312,8 +1244,6 @@ public partial class BackupServiceTests : IDisposable
 
         await act.Should().ThrowAsync<InvalidOperationException>()
             .WithMessage("*reported 2 failed file(s)*returned 1*");
-        _mockStateService.Verify(x => x.PromotePendingRunFilesToStateAsync(
-            It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
         _mockStateService.Verify(x => x.ClearPendingBackupRunAsync(
             It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()), Times.Never);
     }
@@ -1434,9 +1364,6 @@ public partial class BackupServiceTests : IDisposable
             .Returns(ToAsync(file));
         _mockScanner.Setup(x => x.AnalyzeFileAsync(It.IsAny<TaggedFile>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((TaggedFile f, CancellationToken _) => (f, true, FileChangeType.New));
-        _mockStateService.Setup(x => x.SaveBackupSuccessAsync(
-                It.IsAny<Guid>(), It.IsAny<string>(), It.IsAny<IReadOnlyList<FileMetadata>>(), It.IsAny<CancellationToken>()))
-            .Returns(Task.CompletedTask);
 
         _mockApiClient.Setup(x => x.StartBackupRun(It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new StartBackupRunResponse

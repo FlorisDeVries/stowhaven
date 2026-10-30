@@ -14,17 +14,20 @@ public partial class BackupStateServiceTests
     public async Task CaseDistinctPaths_SurviveJournalPromotionAndDeletionDetection()
     {
         if (OperatingSystem.IsWindows()) return;
-        var device = Guid.NewGuid(); var run = Guid.NewGuid();
+        var device = (await _sut.GetOrCreateDeviceStateAsync()).DeviceId; var run = Guid.NewGuid();
         var first = CreateJournalFile("Readme.txt", "hash-first", 1, "first");
         var second = CreateJournalFile("README.txt", "hash-second", 2, "second");
+        await _sut.SavePendingBackupRunAsync(CreatePendingRun(device, run));
         await _sut.AppendPendingRunFilesAsync(device, run, [first, second]);
-        await _sut.PromotePendingRunFilesToStateAsync(device, run);
+        await CompleteJournalAsync(device, run);
         Assert.Equal("hash-first", (await _sut.GetFileStateAsync(first.GetStoragePath()))!.Sha256Hash);
         Assert.Equal("hash-second", (await _sut.GetFileStateAsync(second.GetStoragePath()))!.Sha256Hash);
         await _sut.BeginScanAsync();
         await _sut.AppendScannedPathsAsync([first.GetStoragePath()]);
+        run = Guid.NewGuid();
+        await _sut.SavePendingBackupRunAsync(CreatePendingRun(device, run));
         Assert.Equal(1, await _sut.RecordScanDeletionsAsync(device, run));
-        await _sut.ApplyPendingRunDeletionsAsync(device, run);
+        await CompleteJournalAsync(device, run);
         Assert.NotNull(await _sut.GetFileStateAsync(first.GetStoragePath()));
         Assert.Null(await _sut.GetFileStateAsync(second.GetStoragePath()));
     }
@@ -32,10 +35,12 @@ public partial class BackupStateServiceTests
     [Fact]
     public async Task VersionTwoMigration_PreservesSubmittedRunAndChangesPathCollation()
     {
-        var device = Guid.NewGuid(); var run = Guid.NewGuid(); var commit = Guid.NewGuid();
+        var device = (await _sut.GetOrCreateDeviceStateAsync()).DeviceId; var run = Guid.NewGuid(); var commit = Guid.NewGuid();
+        var tracked = CreateJournalFile("Readme.txt");
+        await SeedTrackedStateAsync(Guid.NewGuid(), Guid.NewGuid().ToString("N"),
+            [tracked.Metadata with { FilePath = tracked.GetStoragePath() }]);
         await _sut.SavePendingBackupRunAsync(CreatePendingRun(device, run) with { ManifestUploaded = true, CommitId = commit });
         await _sut.AppendPendingRunFilesAsync(device, run, [CreateJournalFile("Readme.txt")]);
-        await _sut.PromotePendingRunFilesToStateAsync(device, run);
         await using (var connection = new SqliteConnection($"Data Source={_testDatabasePath}"))
         {
             await connection.OpenAsync();
@@ -70,12 +75,12 @@ public partial class BackupStateServiceTests
     [Fact]
     public async Task RecoverFailedRun_InvalidatesOnlyAffectedPathsAndClearsJournal()
     {
-        var device = Guid.NewGuid(); var run = Guid.NewGuid();
+        var device = (await _sut.GetOrCreateDeviceStateAsync()).DeviceId; var run = Guid.NewGuid();
         var changed = CreateJournalFile("changed.txt");
         var deleted = CreateJournalFile("deleted.txt");
         var newlyPublished = CreateJournalFile("newly-published.txt");
         var untouched = CreateJournalFile("untouched.txt");
-        await _sut.SaveBackupSuccessAsync(Guid.NewGuid(), "previous", [
+        await SeedTrackedStateAsync(Guid.NewGuid(), Guid.NewGuid().ToString("N"), [
             changed.Metadata with { FilePath = changed.GetStoragePath() },
             deleted.Metadata with { FilePath = deleted.GetStoragePath() },
             untouched.Metadata with { FilePath = untouched.GetStoragePath() }]);

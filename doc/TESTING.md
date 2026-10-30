@@ -58,6 +58,8 @@ Recovery regressions cover expired claims, retry eligibility and attempt limits,
 
 Several tests labelled Integration use temporary local files or SQLite. They do not require the Docker Compose stack or production Azure resources.
 
+Local completion tests exercise the state interface with real SQLite files and reopen them to inspect durable outcomes. Coverage includes rollback after a later SQL failure, exact replay, stale or mismatched identities, empty/deletion-only runs, cancellation while waiting or before commit, and cancellation during commit. Private-database native hooks coordinate cancellation deterministically without adding a production test port. Client integration tests cover normal/resumed completion, rejection paging interruptions, partial success with zero accepted files, and invalid server identities.
+
 Commit-request regressions exercise a lost response after completion, retries after failed queue publication, and a stale concurrent creator racing a worker that has already claimed and checkpointed the winning job. SQLite insert-if-absent tests use the real provider; Cosmos tests verify the create request and conflict/error handling with mocked SDK responses, without a live Cosmos account.
 
 Device coordination tests cover competing jobs, independent devices, expired owners, and rejection of stale runs after a newer completion. Restore tests cover archived preparation, already-pending rehydration, preparation timeouts, renewed credentials, and integrity rejection. Archive tier behavior uses mocked storage responses because Azurite does not implement the archive service.

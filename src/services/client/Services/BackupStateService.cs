@@ -26,6 +26,86 @@ public partial class BackupStateService : IBackupStateService, IDisposable
     private readonly SemaphoreSlim _dbLock = new(1, 1);
     private bool _initialized;
 
+    public async Task<LocalCompletionResult> CompletePendingRunAsync(
+        Guid deviceId, Guid runId, Guid commitId, CancellationToken cancellationToken = default)
+    {
+        if (deviceId == Guid.Empty || runId == Guid.Empty || commitId == Guid.Empty)
+            throw new InvalidOperationException("Local completion requires nonempty device, run and commit identifiers.");
+        await EnsureInitializedAsync(cancellationToken);
+        await _dbLock.WaitAsync(cancellationToken);
+        try
+        {
+            await using var connection = new SqliteConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken);
+            await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
+            long totalFiles;
+            long totalBytes;
+            try
+            {
+                await using (var current = new SqliteCommand(BackupStateSql.SelectDeviceStateQuery, connection, transaction))
+                await using (var reader = await current.ExecuteReaderAsync(cancellationToken))
+                {
+                    if (!await reader.ReadAsync(cancellationToken) ||
+                        !Guid.TryParse(reader.GetString(0), out var currentDevice) || currentDevice != deviceId)
+                        throw new InvalidOperationException("Completion device did not match local device state.");
+
+                    var pending = await ReadPendingRunAsync(connection, transaction, deviceId, cancellationToken);
+                    if (pending?.RunId != runId)
+                    {
+                        if (!reader.IsDBNull(2) && Guid.TryParse(reader.GetString(2), out var lastRun) && lastRun == runId &&
+                            !reader.IsDBNull(3) && Guid.TryParse(reader.GetString(3), out var lastCommit) && lastCommit == commitId)
+                            return LocalCompletionResult.AlreadyCompleted;
+                        throw new InvalidOperationException("No matching pending run or latest completed identity was found.");
+                    }
+                    if (pending.CommitId != commitId || !pending.ManifestUploaded)
+                        throw new InvalidOperationException("Completion identity did not match the submitted pending run.");
+                }
+
+                var now = DateTimeOffset.UtcNow;
+                await using var command = new SqliteCommand(
+                    BackupStateSql.UpsertBackupFilesFromPendingRunQuery + ";" +
+                    BackupStateSql.DeleteBackupFilesForRunDeletionsQuery + ";" +
+                    BackupStateSql.UpdateDeviceStateQuery + ";" +
+                    BackupStateSql.DeletePendingRunFilesQuery + ";" +
+                    BackupStateSql.DeletePendingRunDeletionsQuery + ";" +
+                    BackupStateSql.DeletePendingBackupRunQuery, connection, transaction);
+                command.Parameters.AddWithValue("@DeviceId", deviceId.ToString());
+                command.Parameters.AddWithValue("@RunId", runId.ToString());
+                command.Parameters.AddWithValue("@BackedUpAt", now.ToString("O"));
+                command.Parameters.AddWithValue("@LastSuccessfulBackup", now.ToString("O"));
+                command.Parameters.AddWithValue("@LastRunId", runId.ToString());
+                command.Parameters.AddWithValue("@LastCommitId", commitId.ToString("N"));
+                await command.ExecuteNonQueryAsync(cancellationToken);
+
+                await using (var totals = new SqliteCommand(BackupStateSql.SelectDeviceStateTotalsQuery, connection, transaction))
+                await using (var reader = await totals.ExecuteReaderAsync(cancellationToken))
+                {
+                    if (!await reader.ReadAsync(cancellationToken))
+                        throw new InvalidOperationException("Device state was missing during local completion.");
+                    totalFiles = reader.GetInt64(0);
+                    totalBytes = reader.GetInt64(1);
+                }
+
+                // Cancellation can still roll everything back until commit starts. Once it starts,
+                // settle the database outcome even if the caller cancels during commit.
+                cancellationToken.ThrowIfCancellationRequested();
+                await transaction.CommitAsync(CancellationToken.None);
+            }
+            catch
+            {
+                if (transaction.Connection is not null)
+                    await transaction.RollbackAsync(CancellationToken.None);
+                throw;
+            }
+            LogBackupStateSaved(runId, totalFiles, totalBytes);
+            return LocalCompletionResult.Completed;
+        }
+        finally
+        {
+            _dbLock.Release();
+        }
+    }
+
     public BackupStateService(
         IOptions<DatabaseOptions> options,
         ILogger<BackupStateService> logger)
@@ -86,82 +166,6 @@ public partial class BackupStateService : IBackupStateService, IDisposable
 
             LogDeviceStateCreated(newDeviceId);
             return newState;
-        }
-        finally
-        {
-            _dbLock.Release();
-        }
-    }
-
-    public async Task SaveBackupSuccessAsync(
-        Guid runId,
-        string commitId,
-        IReadOnlyList<FileMetadata> backedUpFiles,
-        CancellationToken cancellationToken = default)
-    {
-        await EnsureInitializedAsync(cancellationToken);
-
-        // Ensure device state exists before updating it
-        await GetOrCreateDeviceStateAsync(cancellationToken);
-
-        await _dbLock.WaitAsync(cancellationToken);
-        try
-        {
-            await using var connection = new SqliteConnection(_connectionString);
-            await connection.OpenAsync(cancellationToken);
-
-            await using var transaction = (SqliteTransaction)await connection.BeginTransactionAsync(cancellationToken);
-
-            try
-            {
-                var now = DateTimeOffset.UtcNow;
-                foreach (var file in backedUpFiles)
-                {
-                    await using var command = new SqliteCommand(BackupStateSql.UpsertBackupFileQuery, connection, transaction);
-                    command.Parameters.AddWithValue("@RelativePath", file.FilePath);
-                    command.Parameters.AddWithValue("@Sha256Hash", file.Hash ?? string.Empty);
-                    command.Parameters.AddWithValue("@SizeBytes", file.SizeBytes);
-                    command.Parameters.AddWithValue("@LastModifiedUtc", file.LastModified.ToString("O"));
-                    command.Parameters.AddWithValue("@BackedUpAt", now.ToString("O"));
-                    command.Parameters.AddWithValue("@BackupRunId", runId.ToString());
-                    command.Parameters.AddWithValue("@UniqueFileId", file.Hash != null ? $"{file.Hash}_{now:yyyyMMddTHHmmssZ}" : DBNull.Value);
-
-                    await command.ExecuteNonQueryAsync(cancellationToken);
-                }
-
-                await using var updateCommand = new SqliteCommand(BackupStateSql.UpdateDeviceStateQuery, connection, transaction);
-                updateCommand.Parameters.AddWithValue("@LastSuccessfulBackup", now.ToString("O"));
-                updateCommand.Parameters.AddWithValue("@LastRunId", runId.ToString());
-                updateCommand.Parameters.AddWithValue("@LastCommitId", commitId);
-
-                await updateCommand.ExecuteNonQueryAsync(cancellationToken);
-
-                long totalFiles;
-                long totalBytes;
-                await using (var totalsCommand = new SqliteCommand(
-                                 BackupStateSql.SelectDeviceStateTotalsQuery,
-                                 connection,
-                                 transaction))
-                await using (var totalsReader = await totalsCommand.ExecuteReaderAsync(cancellationToken))
-                {
-                    if (!await totalsReader.ReadAsync(cancellationToken))
-                    {
-                        throw new InvalidOperationException("Device state was missing after a successful backup");
-                    }
-
-                    totalFiles = totalsReader.GetInt64(0);
-                    totalBytes = totalsReader.GetInt64(1);
-                }
-
-                await transaction.CommitAsync(cancellationToken);
-
-                LogBackupStateSaved(runId, totalFiles, totalBytes);
-            }
-            catch
-            {
-                await transaction.RollbackAsync(cancellationToken);
-                throw;
-            }
         }
         finally
         {
@@ -249,16 +253,7 @@ public partial class BackupStateService : IBackupStateService, IDisposable
             await using var connection = new SqliteConnection(_connectionString);
             await connection.OpenAsync(cancellationToken);
 
-            await using var command = new SqliteCommand(BackupStateSql.SelectPendingBackupRunQuery, connection);
-            command.Parameters.AddWithValue("@DeviceId", deviceId.ToString());
-
-            var payload = (string?)await command.ExecuteScalarAsync(cancellationToken);
-            if (string.IsNullOrWhiteSpace(payload))
-            {
-                return null;
-            }
-
-            var header = JsonSerializer.Deserialize<PendingBackupRun>(payload, PendingRunJsonOptions);
+            var header = await ReadPendingRunAsync(connection, null, deviceId, cancellationToken);
             if (header == null)
             {
                 return null;
@@ -277,6 +272,21 @@ public partial class BackupStateService : IBackupStateService, IDisposable
         {
             _dbLock.Release();
         }
+    }
+
+    private static async Task<PendingBackupRun?> ReadPendingRunAsync(
+        SqliteConnection connection, SqliteTransaction? transaction, Guid deviceId, CancellationToken cancellationToken)
+    {
+        await using var command = new SqliteCommand(BackupStateSql.SelectPendingBackupRunQuery, connection, transaction);
+        command.Parameters.AddWithValue("@DeviceId", deviceId.ToString());
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken)) return null;
+        var header = JsonSerializer.Deserialize<PendingBackupRun>(reader.GetString(2), PendingRunJsonOptions);
+        if (header is null || header.DeviceId != deviceId || header.RunId == Guid.Empty || header.CommitId == Guid.Empty ||
+            !Guid.TryParse(reader.GetString(0), out var storedDevice) || storedDevice != header.DeviceId ||
+            !Guid.TryParse(reader.GetString(1), out var storedRun) || storedRun != header.RunId)
+            throw new InvalidOperationException("Stored pending run identifiers did not match its payload.");
+        return header;
     }
 
     private static async Task<int> CountAsync(
@@ -486,33 +496,6 @@ public partial class BackupStateService : IBackupStateService, IDisposable
                     yield return file;
                 }
             }
-        }
-        finally
-        {
-            _dbLock.Release();
-        }
-    }
-
-    public async Task PromotePendingRunFilesToStateAsync(
-        Guid deviceId,
-        Guid runId,
-        CancellationToken cancellationToken = default)
-    {
-        await EnsureInitializedAsync(cancellationToken);
-
-        await _dbLock.WaitAsync(cancellationToken);
-        try
-        {
-            await using var connection = new SqliteConnection(_connectionString);
-            await connection.OpenAsync(cancellationToken);
-
-            await using var command = new SqliteCommand(BackupStateSql.UpsertBackupFilesFromPendingRunQuery, connection);
-            command.Parameters.AddWithValue("@DeviceId", deviceId.ToString());
-            command.Parameters.AddWithValue("@RunId", runId.ToString());
-            command.Parameters.AddWithValue("@BackedUpAt", DateTimeOffset.UtcNow.ToString("O"));
-
-            var promoted = await command.ExecuteNonQueryAsync(cancellationToken);
-            LogFileStatesBatchUpserted(promoted, runId);
         }
         finally
         {
@@ -766,32 +749,6 @@ public partial class BackupStateService : IBackupStateService, IDisposable
             while (await reader.ReadAsync(cancellationToken))
             {
                 yield return reader.GetString(0);
-            }
-        }
-        finally
-        {
-            _dbLock.Release();
-        }
-    }
-
-    public async Task ApplyPendingRunDeletionsAsync(Guid deviceId, Guid runId, CancellationToken cancellationToken = default)
-    {
-        await EnsureInitializedAsync(cancellationToken);
-
-        await _dbLock.WaitAsync(cancellationToken);
-        try
-        {
-            await using var connection = new SqliteConnection(_connectionString);
-            await connection.OpenAsync(cancellationToken);
-
-            await using var command = new SqliteCommand(BackupStateSql.DeleteBackupFilesForRunDeletionsQuery, connection);
-            command.Parameters.AddWithValue("@DeviceId", deviceId.ToString());
-            command.Parameters.AddWithValue("@RunId", runId.ToString());
-
-            var removed = await command.ExecuteNonQueryAsync(cancellationToken);
-            if (removed > 0)
-            {
-                LogDeletedFilesRemoved(removed);
             }
         }
         finally
