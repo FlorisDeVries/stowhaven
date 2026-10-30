@@ -1,0 +1,26 @@
+<div class="table-scroll">
+    <table>
+        <thead><tr><th>Run / device</th><th>Status</th><th>Files backed up</th><th>Started</th><th>Commit</th></tr></thead>
+        <tbody>
+            @foreach (var run in Runs)
+            {
+                <tr @key="run.RunId">
+                    <td>
+                        <a class="record-link mono" href="@($"runs/{run.DeviceId}/{run.RunId}")" title="@run.RunId">@Display.Short(run.RunId)</a>
+                        <a class="cell-secondary mono" href="@($"devices/{run.DeviceId}")" title="@run.DeviceId">Device @Display.Short(run.DeviceId)</a>
+                    </td>
+                    <td><StatusBadge Value="run.Status" /></td>
+                    <td>@Display.Number(run.FilesBackedUp)</td>
+                    <td class="timestamp">@Display.Time(run.StartedAt)</td>
+                    <td>
+                        @if (run.CommitId is { } commitId)
+                        { <a class="mono" href="@($"commits/{commitId}")">@Display.Short(commitId) ↗</a> }
+                        else { <span class="muted">Not submitted</span> }
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+</div>
+@if (Runs.Count == 0) { <div class="empty-state">No backup runs match this view.</div> }
+@code { [Parameter, EditorRequired] public IReadOnlyList<ManifestSummaryResponse> Runs { get; set; } = []; }

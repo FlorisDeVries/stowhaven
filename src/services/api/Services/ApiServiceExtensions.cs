@@ -19,6 +19,7 @@ public static class ApiServiceExtensions
             builder.Services.AddScoped<IDeviceRegistryService, DeviceRegistryService>();
             builder.Services.AddScoped<IDeviceAuthorizationService, DeviceAuthorizationService>();
             builder.Services.AddScoped<IOperationalService, OperationalService>();
+            builder.Services.AddScoped<IInvestigationService, InvestigationService>();
         }
     }
 }

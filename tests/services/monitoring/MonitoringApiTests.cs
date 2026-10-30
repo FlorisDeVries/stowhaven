@@ -23,6 +23,29 @@ public class MonitoringApiTests
         Assert.Equal(HttpMethod.Get, handler.Method);
     }
 
+    [Fact]
+    public async Task InvestigationQueriesEncodeOwnerIdsPathsAndContinuationTokens()
+    {
+        var handler = new RecordingHandler("""{"devices":[],"tenantId":"tenant-a","pageSize":25}""");
+        var api = CreateApi(handler);
+        await api.DevicesAsync(userId: "owner+a&b", continuation: "opaque+/=&?");
+        Assert.Equal("/api/ops/devices", handler.RequestUri!.AbsolutePath);
+        Assert.Contains("userId=owner%2Ba%26b", handler.RequestUri.Query);
+        Assert.Contains("continuationToken=opaque%2B%2F%3D%26%3F", handler.RequestUri.Query);
+        Assert.Contains("pageSize=25", handler.RequestUri.Query);
+    }
+
+    [Fact]
+    public async Task FileInspectionUsesAnEncodedExactLogicalPath()
+    {
+        var handler = new RecordingHandler("""{"deviceId":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa","entry":{"logicalPath":"home/a.txt","currentVersionId":"v1","size":1,"lastWriteUtc":"2026-01-01T00:00:00Z","lastBackupRunId":"run","isDeleted":false},"versionAvailable":false}""");
+        const string logicalPath = "home/folder a&b/#file.txt";
+        await CreateApi(handler).DeviceFileAsync(Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"), logicalPath, default);
+        Assert.Contains("logicalPath=" + Uri.EscapeDataString(logicalPath), handler.RequestUri!.Query);
+        Assert.Equal("", handler.RequestUri.Fragment);
+        Assert.Equal(HttpMethod.Get, handler.Method);
+    }
+
     [Theory]
     [InlineData("\"Processing\"")]
     [InlineData("1")]

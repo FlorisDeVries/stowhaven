@@ -15,7 +15,7 @@ public static class Display
     };
     public static string Tone(object value) => value.ToString() switch
     {
-        "Succeeded" => "success", "Failed" => "danger", "CompletedWithErrors" => "warning",
+        "Succeeded" or "Active" => "success", "Failed" => "danger", "CompletedWithErrors" or "Revoked" or "Deleted" => "warning",
         "Processing" => "info", _ => "neutral"
     };
     public static int Percent(int? processed, int total) => total <= 0 ? 0 : (int)Math.Clamp((processed ?? 0) * 100L / total, 0, 100);

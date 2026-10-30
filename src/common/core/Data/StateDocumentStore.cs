@@ -32,11 +32,17 @@ public interface IStateDocumentStore
 
     Task<StateDocumentPage<T>> QueryAsync<T>(DocumentQuery query,
         CancellationToken cancellationToken = default);
+
+    /// <summary>Pages distinct string values in field order, with filters applied before deduplication.</summary>
+    Task<StateValuePage> QueryDistinctValuesAsync(DocumentQuery query, string fieldName,
+        CancellationToken cancellationToken = default);
 }
 
 public sealed record StateDocument<T>(T Data, string ETag);
 
 public sealed record StateDocumentPage<T>(IReadOnlyList<StateDocument<T>> Items, string? NextContinuationToken);
+
+public sealed record StateValuePage(IReadOnlyList<string> Values, string? NextContinuationToken);
 
 /// <summary>
 /// A paged document query. Field equality filters address top-level properties of

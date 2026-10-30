@@ -8,11 +8,13 @@
 @if (error is not null) { <div class="notice warning" role="alert">@error</div> }
 @code {
     [Parameter] public bool Busy { get; set; }
+    [Parameter] public Guid? InitialDeviceId { get; set; }
     [Parameter] public EventCallback<HistoryFilter> OnApply { get; set; }
     private string Status { get; set; } = "";
     private string Device { get; set; } = "";
     private DateTime? Since { get; set; }
     private string? error;
+    protected override void OnInitialized() => Device = InitialDeviceId?.ToString() ?? "";
     private async Task ApplyAsync()
     {
         error = null;

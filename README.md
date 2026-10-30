@@ -21,7 +21,7 @@ The API issues short-lived, least-privilege SAS URLs so backup clients can uploa
 - **Stowhaven API**: internal HTTP API for device registration, backup run orchestration, SAS issuance, commit status, restore metadata, health checks, and operational endpoints.
 - **Stowhaven Worker**: internal background Container App that consumes Azure Storage Queue messages through a Dapr input binding and finalizes staged backup runs.
 - **Stowhaven Client**: .NET console/Windows-service-friendly client that scans configured targets, applies `.backupignore` rules, uploads changed files, and commits runs.
-- **Stowhaven Monitoring**: standalone Blazor WebAssembly admin UI for run history, commit progress, failures, and confirmed retries, hosted on Azure Static Web Apps Free.
+- **Stowhaven Monitoring**: standalone Blazor WebAssembly admin UI for device/user investigation, file catalog inspection, run history, commit progress, failures, and confirmed retries, hosted on Azure Static Web Apps Free.
 - **Shared libraries**: contracts, core services, health checks, logging, feature flags, and security helpers.
 - **Infrastructure-as-Code**: Bicep deployment for Blob and Queue Storage, Cosmos DB containers, Key Vault, Container Apps, monitoring, Dapr components, and managed-identity RBAC.
 - **CI/CD**: GitHub Actions workflow using Azure OIDC and a multi-phase deployment.

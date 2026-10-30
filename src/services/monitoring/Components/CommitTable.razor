@@ -4,7 +4,7 @@
         @foreach (var commit in Commits)
         {
             <tr @key="commit.CommitId">
-                <td><a class="record-link mono" href="@($"commits/{commit.CommitId}")" title="@commit.CommitId">@Display.Short(commit.CommitId)</a><span class="cell-secondary mono" title="@commit.DeviceId">Device @Display.Short(commit.DeviceId)</span></td>
+                <td><a class="record-link mono" href="@($"commits/{commit.CommitId}")" title="@commit.CommitId">@Display.Short(commit.CommitId)</a><a class="cell-secondary mono" href="@($"devices/{commit.DeviceId}")" title="@commit.DeviceId">Device @Display.Short(commit.DeviceId)</a></td>
                 <td><StatusBadge Value="commit.Status" /></td>
                 <td><span>@Display.Number(commit.FilesProcessed) <span class="muted">/ @Display.Number(commit.TotalFiles)</span></span><progress value="@(commit.FilesProcessed ?? 0)" max="@Math.Max(1, commit.TotalFiles)" aria-label="Files processed"></progress></td>
                 <td class="timestamp">@Display.Time(commit.CreatedAt)</td>

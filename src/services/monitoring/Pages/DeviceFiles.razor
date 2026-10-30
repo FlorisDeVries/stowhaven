@@ -1,0 +1,99 @@
+@page "/devices/{DeviceId:guid}/files"
+@attribute [Authorize]
+@inherits MonitoringPage
+
+<PageTitle>Device file catalog · Stowhaven</PageTitle>
+<a class="back-link" href="@($"devices/{DeviceId}")">← Device investigation</a>
+<div class="page-heading">
+    <div><p class="eyebrow">CURRENT CATALOG</p><h1>@(device?.DisplayName ?? "Device") files.</h1><p class="subtitle mono identity-id">@DeviceId</p></div>
+    <button class="button" disabled="@Busy" @onclick="() => RunAsync(LoadAsync)">↻ Refresh</button>
+</div>
+<form class="filters" @onsubmit="SearchAsync" @onsubmit:preventDefault>
+    <label class="path-filter">Exact logical path<input @bind="logicalPath" placeholder="TargetName/folder/file.ext" required maxlength="4096" spellcheck="false" /></label>
+    <button class="button primary" disabled="@Busy" type="submit">Inspect file</button>
+    @if (lookedUp) { <button class="text-button" disabled="@Busy" type="button" @onclick="ClearSearch">Clear inspection</button> }
+</form>
+<RequestState Busy="Busy" Error="@Error" />
+@if (lookedUp)
+{
+    @if (file is null)
+    { <div class="notice neutral">No catalog entry matched that exact logical path.</div> }
+    else
+    {
+        <div class="panel file-inspection">
+            <div class="panel-heading"><h2>File inspection</h2><StatusBadge Value="@(file.Entry.IsDeleted ? "Deleted" : "Active")" /></div>
+            <dl class="detail-grid">
+                <div class="wide-detail"><dt>Logical path</dt><dd class="file-path">@file.Entry.LogicalPath</dd></div>
+                <div><dt>Current version ID</dt><dd class="mono">@file.Entry.CurrentVersionId</dd></div>
+                <div><dt>Catalog size</dt><dd>@Display.Bytes(file.Entry.Size)</dd></div>
+                <div><dt>Source last modified</dt><dd>@Display.Time(file.Entry.LastWriteUtc)</dd></div>
+                <div><dt>Last backup run</dt><dd>@if (Guid.TryParse(file.Entry.LastBackupRunId, out var runId)) { <a class="mono" href="@($"runs/{DeviceId}/{runId}")">@runId ↗</a> } else { <span class="mono">@file.Entry.LastBackupRunId</span> }</dd></div>
+                <div><dt>Version state</dt><dd>@(file.VersionState?.ToString() ?? "Not recorded")</dd></div>
+                <div><dt>Encryption mode</dt><dd>@(file.VersionAvailable ? file.EncryptionMode ?? "None recorded" : "Unknown")</dd></div>
+                <div><dt>Version created</dt><dd>@Display.Time(file.VersionCreatedAt)</dd></div>
+                <div><dt>Version retired</dt><dd>@Display.Time(file.VersionRetiredAt)</dd></div>
+                <div class="wide-detail"><dt>SHA-256</dt><dd class="mono">@(file.Sha256 ?? "Not recorded")</dd></div>
+            </dl>
+            @if (!file.VersionAvailable) { <div class="inset-notice notice warning">The catalog mapping exists, but its current version metadata was not found.</div> }
+        </div>
+    }
+}
+@if (files is not null)
+{
+    <div class="panel">
+        <div class="panel-heading"><h2>Catalog entries</h2><span class="muted">@files.Files.Count entries on this page</span></div>
+        <div class="table-scroll"><table>
+            <thead><tr><th>Logical path</th><th>State</th><th>Size</th><th>Source modified</th><th>Inspect</th></tr></thead>
+            <tbody>
+                @foreach (var entry in files.Files)
+                {
+                    <tr @key="entry.LogicalPath">
+                        <td class="file-path">@entry.LogicalPath</td>
+                        <td><StatusBadge Value="@(entry.IsDeleted ? "Deleted" : "Active")" /></td>
+                        <td>@Display.Bytes(entry.Size)</td><td class="timestamp">@Display.Time(entry.LastWriteUtc)</td>
+                        <td><button class="text-button" disabled="@Busy" @onclick="() => InspectAsync(entry.LogicalPath)">Inspect →</button></td>
+                    </tr>
+                }
+            </tbody>
+        </table></div>
+        @if (files.Files.Count == 0) { <div class="empty-state">No catalog entries have been recorded for this device.</div> }
+        <Pager Cursor="cursor" NextToken="@files.NextContinuationToken" Busy="Busy" Previous="PreviousAsync" Next="NextAsync" />
+    </div>
+    <p class="investigation-note">Catalog and version metadata only. Blob existence, archive tier, and restore readiness are not checked by this view. An in-progress commit can temporarily change catalog mappings.</p>
+}
+@code {
+    [Parameter] public Guid DeviceId { get; set; }
+    private DeviceRegistrationResponse? device;
+    private ListDeviceFilesResponse? files;
+    private DeviceFileDetailsResponse? file;
+    private readonly PageCursor cursor = new();
+    private string logicalPath = "";
+    private bool lookedUp;
+    protected override async Task LoadAsync()
+    {
+        device = await Api.DeviceAsync(DeviceId, Lifetime.Token);
+        await LoadFilesAsync();
+        if (lookedUp) await LookupAsync();
+    }
+    private async Task LoadFilesAsync() => files = await Api.DeviceFilesAsync(DeviceId, cursor.Current, Lifetime.Token);
+    private async Task SearchAsync()
+    {
+        if (string.IsNullOrWhiteSpace(logicalPath)) return;
+        await RunAsync(LookupAsync);
+    }
+    private async Task LookupAsync()
+    {
+        lookedUp = false; file = null;
+        try { file = await Api.DeviceFileAsync(DeviceId, logicalPath, Lifetime.Token); }
+        catch (MonitoringApiException error) when (error.StatusCode == System.Net.HttpStatusCode.NotFound) { }
+        lookedUp = true;
+    }
+    private async Task InspectAsync(string path) { logicalPath = path; await SearchAsync(); }
+    private void ClearSearch() { lookedUp = false; file = null; logicalPath = ""; }
+    private async Task NextAsync()
+    {
+        if (files?.NextContinuationToken is not { } token) return;
+        cursor.Next(token); files = null; await RunAsync(LoadFilesAsync);
+    }
+    private async Task PreviousAsync() { cursor.Back(); files = null; await RunAsync(LoadFilesAsync); }
+}

@@ -1,0 +1,120 @@
+@page "/devices/{DeviceId:guid}"
+@attribute [Authorize]
+@inherits MonitoringPage
+
+<PageTitle>Device investigation · Stowhaven</PageTitle>
+<a class="back-link" href="devices">← Devices</a>
+<div class="page-heading">
+    <div><p class="eyebrow">DEVICE INVESTIGATION</p><h1>@(state?.Device.DisplayName ?? "Device")</h1><p class="subtitle mono identity-id">@DeviceId</p></div>
+    <button class="button" disabled="@Busy" @onclick="() => RunAsync(LoadAsync)">↻ Refresh</button>
+</div>
+<div class="investigation-tabs" role="group" aria-label="Device investigation views">
+    <button class="@(tab == "state" ? "selected" : "")" aria-pressed="@(tab == "state")" disabled="@Busy" @onclick='() => SelectTabAsync("state")'>Recorded state</button>
+    <button class="@(tab == "runs" ? "selected" : "")" aria-pressed="@(tab == "runs")" disabled="@Busy" @onclick='() => SelectTabAsync("runs")'>Backup history</button>
+    <button class="@(tab == "commits" ? "selected" : "")" aria-pressed="@(tab == "commits")" disabled="@Busy" @onclick='() => SelectTabAsync("commits")'>Commit history</button>
+    <a href="@($"devices/{DeviceId}/files")">File catalog ↗</a>
+</div>
+<RequestState Busy="Busy" Error="@Error" />
+@if (state is not null)
+{
+    @if (tab == "state")
+    {
+        <div class="panel">
+            <div class="panel-heading"><h2>Device registration</h2><StatusBadge Value="state.Device.Status" /></div>
+            <dl class="detail-grid">
+                <div><dt>Device ID</dt><dd class="mono">@state.Device.DeviceId</dd></div>
+                <div><dt>Owner object ID</dt><dd><a class="mono" href="@($"users/{Uri.EscapeDataString(state.Device.UserId)}")">@state.Device.UserId ↗</a></dd></div>
+                <div><dt>Tenant ID</dt><dd class="mono">@state.Device.TenantId</dd></div>
+                <div><dt>Registered</dt><dd>@Display.Time(state.Device.CreatedAt)</dd></div>
+                <div><dt>Last contact</dt><dd>@Display.Time(state.Device.LastSeenAt)</dd></div>
+                <div><dt>Revoked</dt><dd>@Display.Time(state.RevokedAt)</dd></div>
+            </dl>
+        </div>
+        <div class="run-state-grid">
+            <RecordedRun Label="Latest backup run" Run="state.LatestRun" />
+            <RecordedRun Label="Latest successful run" Run="state.LatestSuccessfulRun" />
+            <RecordedRun Label="Latest run with errors" Run="state.LatestRunWithErrors" />
+        </div>
+        <div class="panel">
+            <div class="panel-heading"><h2>Latest commit job</h2>@if (state.LatestCommit is { } job) { <a href="@($"commits/{job.CommitId}")">Investigate job →</a> }</div>
+            @if (state.LatestCommit is { } commit)
+            {
+                <dl class="detail-grid">
+                    <div><dt>Commit ID</dt><dd><a class="mono" href="@($"commits/{commit.CommitId}")">@commit.CommitId ↗</a></dd></div>
+                    <div><dt>Status</dt><dd><StatusBadge Value="commit.Status" /></dd></div>
+                    <div><dt>Last update</dt><dd>@Display.Time(commit.UpdatedAt)</dd></div>
+                    <div><dt>Files processed</dt><dd>@Display.Number(commit.FilesProcessed) / @Display.Number(commit.TotalFiles)</dd></div>
+                    <div><dt>Files failed</dt><dd>@Display.Number(commit.FilesFailed)</dd></div>
+                    <div><dt>Attempts</dt><dd>@commit.AttemptCount</dd></div>
+                    <div><dt>Next retry</dt><dd>@Display.Time(commit.NextRetryAt)</dd></div>
+                    <div><dt>Dead-lettered</dt><dd>@Display.Time(commit.DeadLetteredAt)</dd></div>
+                </dl>
+                @if (commit.Error is { Length: > 0 })
+                { <div class="inset-notice notice danger"><strong>@(commit.FailureCategory ?? "Commit error")</strong><p class="error-detail">@commit.Error</p></div> }
+            }
+            else { <div class="empty-state">No commit job has been recorded for this device.</div> }
+        </div>
+        <div class="panel">
+            <div class="panel-heading"><h2>Catalog coordination</h2><span class="muted">Commit lease recorded by the worker</span></div>
+            @if (state.CommitState is { } lease)
+            {
+                <dl class="detail-grid">
+                    <div><dt>Lease state</dt><dd>@(lease.IsHeld ? "Held at observation time" : "No unexpired lease held")</dd></div>
+                    <div><dt>Lease expiry</dt><dd>@Display.Time(lease.ExpiresAt)</dd></div>
+                    <div><dt>Associated commit</dt><dd><a class="mono" href="@($"commits/{lease.CommitId}")">@lease.CommitId ↗</a></dd></div>
+                    <div><dt>Latest coordinated run</dt><dd>@if (lease.LatestCompletedRunId is { } id) { <a class="mono" href="@($"runs/{DeviceId}/{id}")">@id ↗</a> } else { <span>Not recorded</span> }</dd></div>
+                    <div><dt>Coordinated run started</dt><dd>@Display.Time(lease.LatestCompletedRunStartedAt)</dd></div>
+                </dl>
+            }
+            else { <div class="empty-state">No coordination record is available. Older runs may predate commit leases.</div> }
+        </div>
+        <p class="investigation-note">Observed @Display.Time(state.ObservedAt). These are persisted server records. Client installation version, local scheduler state, and local logs are not reported by the client. A recorded successful run is not a verified restore.</p>
+    }
+    else if (tab == "runs" && runs is not null)
+    {
+        <div class="panel">
+            <div class="panel-heading"><h2>Device backup history</h2><a href="@($"runs?deviceId={DeviceId}")">Open with filters →</a></div>
+            <RunTable Runs="runs.Manifests" />
+            <Pager Cursor="runCursor" NextToken="@runs.NextContinuationToken" Busy="Busy" Previous="PreviousRunsAsync" Next="NextRunsAsync" />
+        </div>
+    }
+    else if (tab == "commits" && commits is not null)
+    {
+        <div class="panel">
+            <div class="panel-heading"><h2>Device commit history</h2><a href="@($"commits?deviceId={DeviceId}")">Open with filters →</a></div>
+            <CommitTable Commits="commits.Commits" />
+            <Pager Cursor="commitCursor" NextToken="@commits.NextContinuationToken" Busy="Busy" Previous="PreviousCommitsAsync" Next="NextCommitsAsync" />
+        </div>
+    }
+}
+@code {
+    [Parameter] public Guid DeviceId { get; set; }
+    private DeviceStateResponse? state;
+    private ListManifestsResponse? runs;
+    private ListCommitJobsResponse? commits;
+    private readonly PageCursor runCursor = new(), commitCursor = new();
+    private string tab = "state";
+    protected override async Task LoadAsync()
+    {
+        state = await Api.DeviceStateAsync(DeviceId, Lifetime.Token);
+        await LoadTabAsync();
+    }
+    private async Task LoadTabAsync()
+    {
+        if (tab == "runs") runs = await Api.RunsAsync(deviceId: DeviceId, continuation: runCursor.Current, cancellationToken: Lifetime.Token);
+        if (tab == "commits") commits = await Api.CommitsAsync(deviceId: DeviceId, continuation: commitCursor.Current, cancellationToken: Lifetime.Token);
+    }
+    private async Task SelectTabAsync(string next) { tab = next; await RunAsync(LoadTabAsync); }
+    private async Task NextRunsAsync()
+    {
+        if (runs?.NextContinuationToken is not { } token) return;
+        runCursor.Next(token); runs = null; await RunAsync(LoadTabAsync);
+    }
+    private async Task PreviousRunsAsync() { runCursor.Back(); runs = null; await RunAsync(LoadTabAsync); }
+    private async Task NextCommitsAsync()
+    {
+        if (commits?.NextContinuationToken is not { } token) return;
+        commitCursor.Next(token); commits = null; await RunAsync(LoadTabAsync);
+    }
+    private async Task PreviousCommitsAsync() { commitCursor.Back(); commits = null; await RunAsync(LoadTabAsync); }
+}

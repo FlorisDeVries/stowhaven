@@ -221,6 +221,52 @@ public sealed class SqliteStateDocumentStore : IStateDocumentStore
             hasMore ? EncodeContinuationToken(offset + items.Count) : null);
     }
 
+    public async Task<StateValuePage> QueryDistinctValuesAsync(DocumentQuery query, string fieldName,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateFieldName(fieldName);
+        var offset = DecodeContinuationToken(query.ContinuationToken);
+        await using var connection = OpenConnection();
+        await using var command = connection.CreateCommand();
+        var sql = new StringBuilder($"SELECT DISTINCT json_extract(json, '$.{fieldName}') AS value FROM documents WHERE type=@type AND json_type(json, '$.{fieldName}')='text'");
+        command.Parameters.AddWithValue("@type", query.Type);
+        if (!string.IsNullOrEmpty(query.PartitionKey))
+        {
+            sql.Append(" AND partition=@partition");
+            command.Parameters.AddWithValue("@partition", query.PartitionKey);
+        }
+        for (var i = 0; i < query.FieldEquals.Count; i++)
+        {
+            var filter = query.FieldEquals[i];
+            ValidateFieldName(filter.FieldName);
+            sql.Append($" AND json_extract(json, '$.{filter.FieldName}') = @f{i}");
+            command.Parameters.AddWithValue($"@f{i}", filter.Value);
+        }
+        if (query.SortValueFrom.HasValue)
+        {
+            sql.Append(" AND sort_value>=@from");
+            command.Parameters.AddWithValue("@from", query.SortValueFrom.Value);
+        }
+        if (query.SortValueTo.HasValue)
+        {
+            sql.Append(" AND sort_value<=@to");
+            command.Parameters.AddWithValue("@to", query.SortValueTo.Value);
+        }
+        sql.Append(" ORDER BY value ASC LIMIT @limit OFFSET @offset");
+        command.Parameters.AddWithValue("@limit", query.PageSize + 1);
+        command.Parameters.AddWithValue("@offset", offset);
+        command.CommandText = sql.ToString();
+        var values = new List<string>(query.PageSize);
+        var hasMore = false;
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            if (values.Count == query.PageSize) { hasMore = true; break; }
+            values.Add(reader.GetString(0));
+        }
+        return new StateValuePage(values, hasMore ? EncodeContinuationToken(offset + values.Count) : null);
+    }
+
     private SqliteConnection OpenConnection()
     {
         var connection = new SqliteConnection(_connectionString);
