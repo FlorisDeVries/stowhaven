@@ -4,6 +4,7 @@ Thanks for helping improve Stowhaven.
 
 ## Before opening a change
 
+- Create a feature branch for every change and open a pull request targeting `main`. Treat `main` as protected; do not commit or push changes directly to it.
 - Use a GitHub issue for a substantial feature or behavior change so the design can be discussed first.
 - Follow [SECURITY.md](SECURITY.md) for vulnerabilities; never disclose them in a public issue.
 - Keep deployment-specific IDs and local filesystem paths out of tracked files.
