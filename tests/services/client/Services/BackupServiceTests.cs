@@ -23,6 +23,7 @@ public partial class BackupServiceTests : IDisposable
 {
     private readonly Mock<ILogger<BackupService>> _mockLogger = new();
     private readonly TelemetryProvider _telemetryProvider = new();
+    private readonly Dictionary<Guid, Guid> _committedRuns = new();
     private readonly Mock<IBackupApiClient> _mockApiClient = new();
     private readonly Mock<IBackupStateService> _mockStateService = new();
     private readonly Mock<IBackupScanner> _mockScanner = new();
@@ -70,29 +71,33 @@ public partial class BackupServiceTests : IDisposable
 
         _mockApiClient
             .Setup(x => x.CommitBackupRun(It.IsAny<Guid>(), It.IsAny<CommitBackupRunRequest>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((Guid deviceId, CommitBackupRunRequest req, CancellationToken ct) => new CommitBackupRunResponse
+            .ReturnsAsync((Guid deviceId, CommitBackupRunRequest req, CancellationToken ct) => RecordCommit(new CommitBackupRunResponse
             {
                 CommitId = Guid.NewGuid(),
                 DeviceId = deviceId,
                 RunId = req.RunId,
                 Status = CommitJobStatus.Queued,
                 CreatedAt = DateTimeOffset.UtcNow
-            });
+            }));
 
         _mockApiClient
             .Setup(x => x.GetCommitStatus(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((Guid deviceId, Guid commitId, CancellationToken ct) => new CommitStatusResponse
             {
                 DeviceId = deviceId,
-                RunId = _mockApiClient.Invocations
-                    .Where(call => call.Method.Name == nameof(IBackupApiClient.CommitBackupRun))
-                    .Select(call => call.Arguments[1]).OfType<CommitBackupRunRequest>().LastOrDefault()?.RunId ?? Guid.Empty,
+                RunId = _committedRuns.GetValueOrDefault(commitId),
                 CommitId = commitId,
                 Status = CommitJobStatus.Succeeded,
                 CreatedAt = DateTimeOffset.UtcNow,
                 UpdatedAt = DateTimeOffset.UtcNow,
                 CompletedAt = DateTimeOffset.UtcNow
             });
+    }
+
+    private CommitBackupRunResponse RecordCommit(CommitBackupRunResponse response)
+    {
+        _committedRuns[response.CommitId] = response.RunId;
+        return response;
     }
 
     // Helper method to create async enumerable from array
@@ -195,14 +200,14 @@ public partial class BackupServiceTests : IDisposable
             });
 
         _mockApiClient.Setup(x => x.CommitBackupRun(It.IsAny<Guid>(), It.IsAny<CommitBackupRunRequest>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((Guid committedDeviceId, CommitBackupRunRequest req, CancellationToken ct) => new CommitBackupRunResponse
+            .ReturnsAsync((Guid committedDeviceId, CommitBackupRunRequest req, CancellationToken ct) => RecordCommit(new CommitBackupRunResponse
             {
                 CommitId = Guid.NewGuid(),
                 DeviceId = committedDeviceId,
                 RunId = req.RunId,
                 Status = CommitJobStatus.Queued,
                 CreatedAt = DateTimeOffset.UtcNow
-            });
+            }));
 
         _mockUploader.Setup(x => x.UploadFilesAsync(
                 It.IsAny<Azure.Storage.Blobs.BlobContainerClient>(),
@@ -463,14 +468,14 @@ public partial class BackupServiceTests : IDisposable
             });
 
         _mockApiClient.Setup(x => x.CommitBackupRun(It.IsAny<Guid>(), It.IsAny<CommitBackupRunRequest>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((Guid committedDeviceId, CommitBackupRunRequest req, CancellationToken ct) => new CommitBackupRunResponse
+            .ReturnsAsync((Guid committedDeviceId, CommitBackupRunRequest req, CancellationToken ct) => RecordCommit(new CommitBackupRunResponse
             {
                 CommitId = Guid.NewGuid(),
                 DeviceId = committedDeviceId,
                 RunId = req.RunId,
                 Status = CommitJobStatus.Queued,
                 CreatedAt = DateTimeOffset.UtcNow
-            });
+            }));
 
         _mockUploader.Setup(x => x.UploadFilesAsync(
                 It.IsAny<Azure.Storage.Blobs.BlobContainerClient>(),
@@ -656,14 +661,14 @@ public partial class BackupServiceTests : IDisposable
             });
 
         _mockApiClient.Setup(x => x.CommitBackupRun(It.IsAny<Guid>(), It.IsAny<CommitBackupRunRequest>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((Guid committedDeviceId, CommitBackupRunRequest req, CancellationToken ct) => new CommitBackupRunResponse
+            .ReturnsAsync((Guid committedDeviceId, CommitBackupRunRequest req, CancellationToken ct) => RecordCommit(new CommitBackupRunResponse
             {
                 CommitId = Guid.NewGuid(),
                 DeviceId = committedDeviceId,
                 RunId = req.RunId,
                 Status = CommitJobStatus.Queued,
                 CreatedAt = DateTimeOffset.UtcNow
-            });
+            }));
 
         // Simulate partial failure: 10 out of 11 files succeed (9% failure rate, within 10% threshold)
         _mockUploader.Setup(x => x.UploadFilesAsync(
@@ -835,14 +840,14 @@ public partial class BackupServiceTests : IDisposable
                 });
 
             _mockApiClient.Setup(x => x.CommitBackupRun(It.IsAny<Guid>(), It.IsAny<CommitBackupRunRequest>(), It.IsAny<CancellationToken>()))
-                .ReturnsAsync((Guid committedDeviceId, CommitBackupRunRequest req, CancellationToken ct) => new CommitBackupRunResponse
+                .ReturnsAsync((Guid committedDeviceId, CommitBackupRunRequest req, CancellationToken ct) => RecordCommit(new CommitBackupRunResponse
                 {
                     CommitId = Guid.NewGuid(),
                     DeviceId = committedDeviceId,
                     RunId = req.RunId,
                     Status = CommitJobStatus.Queued,
                     CreatedAt = DateTimeOffset.UtcNow
-                });
+                }));
 
             _mockUploader.Setup(x => x.UploadFilesAsync(
                     It.IsAny<Azure.Storage.Blobs.BlobContainerClient>(),
@@ -915,14 +920,14 @@ public partial class BackupServiceTests : IDisposable
             });
 
         _mockApiClient.Setup(x => x.CommitBackupRun(It.IsAny<Guid>(), It.IsAny<CommitBackupRunRequest>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((Guid committedDeviceId, CommitBackupRunRequest req, CancellationToken ct) => new CommitBackupRunResponse
+            .ReturnsAsync((Guid committedDeviceId, CommitBackupRunRequest req, CancellationToken ct) => RecordCommit(new CommitBackupRunResponse
             {
                 CommitId = Guid.NewGuid(),
                 DeviceId = committedDeviceId,
                 RunId = req.RunId,
                 Status = CommitJobStatus.Queued,
                 CreatedAt = DateTimeOffset.UtcNow
-            });
+            }));
 
         _mockUploader.Setup(x => x.UploadFilesAsync(
                 It.IsAny<Azure.Storage.Blobs.BlobContainerClient>(),

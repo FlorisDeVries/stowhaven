@@ -805,6 +805,11 @@ public partial class BackupService(
                 throw new InvalidOperationException($"Failed-file results for commit {commitId} contained a non-failed entry");
             }
 
+            if (page.Files.Any(file => file.DeviceId != deviceId || file.RunId != runId || file.CommitId != commitId))
+            {
+                throw new InvalidOperationException($"Failed-file results for commit {commitId} contained an unrelated entry");
+            }
+
             await removeFiles(
                 page.Files.Select(file => file.LogicalPath).ToArray(),
                 cancellationToken);

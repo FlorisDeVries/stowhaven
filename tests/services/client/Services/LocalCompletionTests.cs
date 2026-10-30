@@ -73,8 +73,10 @@ public partial class BackupStateServiceTests
         return commit;
     }
 
-    [Fact]
-    public async Task LocalCompletion_FailureRollsBackEveryChangeAndCanBeRetried()
+    [Theory]
+    [InlineData("metadata")]
+    [InlineData("cleanup")]
+    public async Task LocalCompletion_FailureRollsBackEveryChangeAndCanBeRetried(string failurePoint)
     {
         var device = (await _sut.GetOrCreateDeviceStateAsync()).DeviceId;
         var previousRun = Guid.NewGuid();
@@ -87,8 +89,10 @@ public partial class BackupStateServiceTests
         await _sut.BeginScanAsync();
         await _sut.AppendScannedPathsAsync(["documents/changed.txt"]);
         Assert.Equal(1, await _sut.RecordScanDeletionsAsync(device, run));
-        await ExecuteDatabaseAsync("""
-            CREATE TRIGGER fail_completion BEFORE UPDATE OF LastRunId ON DeviceState
+        var triggerEvent = failurePoint == "metadata"
+            ? "BEFORE UPDATE OF LastRunId ON DeviceState" : "BEFORE DELETE ON PendingBackupRuns";
+        await ExecuteDatabaseAsync($"""
+            CREATE TRIGGER fail_completion {triggerEvent}
             BEGIN SELECT RAISE(ABORT, 'test completion failure'); END;
             """);
 

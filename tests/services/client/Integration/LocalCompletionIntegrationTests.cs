@@ -15,6 +15,42 @@ namespace FlorisDeV.BackupClient.Tests.Integration;
 public partial class BackupServiceIntegrationTests
 {
     [Theory]
+    [InlineData("device")]
+    [InlineData("run")]
+    [InlineData("commit")]
+    public async Task LocalCompletion_UnrelatedRejectedEntryCannotPrunePendingJournal(string mismatch)
+    {
+        var path = Path.Combine(_testRoot, "state.db");
+        using var state = OpenState(path);
+        var device = (await state.GetOrCreateDeviceStateAsync()).DeviceId;
+        var run = Guid.NewGuid();
+        var commit = Guid.NewGuid();
+        _committedRuns[commit] = run;
+        await StageRunAsync(state, device, run, commit);
+        await state.AppendPendingRunFilesAsync(device, run,
+            [new TaggedFile("default", "/synthetic", new FileMetadata("/synthetic/rejected.txt", 5,
+                DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, "hash")) { UniqueFileId = "rejected" }]);
+        ConfigurePartialStatus();
+        var page = FailedPage(device, run, commit);
+        var unrelated = page.Files[0] with
+        {
+            DeviceId = mismatch == "device" ? Guid.NewGuid() : device,
+            RunId = mismatch == "run" ? Guid.NewGuid() : run,
+            CommitId = mismatch == "commit" ? Guid.NewGuid() : commit
+        };
+        _mockApiClient.Setup(x => x.ListFailedCommitFiles(device, commit, 500,
+                It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(page with { Files = [unrelated] });
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => CreateServiceWithState(state).RunAsync(CancellationToken.None));
+
+        using var reopened = OpenState(path);
+        Assert.Equal(1, (await reopened.GetPendingBackupRunAsync(device))!.UploadedFileCount);
+        Assert.Empty(await reopened.GetAllFileStatesAsync());
+        Assert.Null((await reopened.GetOrCreateDeviceStateAsync()).LastRunId);
+    }
+
+    [Theory]
     [InlineData(CommitJobStatus.Queued)]
     [InlineData(CommitJobStatus.Processing)]
     [InlineData(CommitJobStatus.Failed)]
