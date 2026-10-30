@@ -1,0 +1,18 @@
+<div class="recorded-run">
+    <h2>@Label</h2>
+    @if (Run is null)
+    {
+        <p class="muted">No matching run recorded.</p>
+    }
+    else
+    {
+        <StatusBadge Value="Run.Status" />
+        <a class="mono record-link" href="@($"runs/{Run.DeviceId}/{Run.RunId}")">@Run.RunId ↗</a>
+        <p>@(Run.CompletedAt.HasValue ? "Completed" : "Started") @Display.Time(Run.CompletedAt ?? Run.StartedAt)</p>
+        <p class="muted">@Display.Number(Run.FilesBackedUp) files backed up</p>
+    }
+</div>
+@code {
+    [Parameter, EditorRequired] public string Label { get; set; } = "";
+    [Parameter] public ManifestSummaryResponse? Run { get; set; }
+}

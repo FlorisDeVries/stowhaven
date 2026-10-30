@@ -1,0 +1,22 @@
+<div class="table-scroll">
+    <table>
+        <thead><tr><th>Device</th><th>Owner</th><th>Registration</th><th>Last seen</th><th>Registered</th></tr></thead>
+        <tbody>
+            @foreach (var device in Devices)
+            {
+                <tr @key="device.DeviceId">
+                    <td>
+                        <a class="record-link" href="@($"devices/{device.DeviceId}")">@(device.DisplayName ?? "Unnamed device")</a>
+                        <span class="cell-secondary mono" title="@device.DeviceId">@device.DeviceId</span>
+                    </td>
+                    <td><a class="mono identity-id" href="@($"users/{Uri.EscapeDataString(device.UserId)}")">@device.UserId</a></td>
+                    <td><StatusBadge Value="device.Status" /></td>
+                    <td class="timestamp">@Display.Time(device.LastSeenAt)</td>
+                    <td class="timestamp">@Display.Time(device.CreatedAt)</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+</div>
+@if (Devices.Count == 0) { <div class="empty-state">No registered devices match this view.</div> }
+@code { [Parameter, EditorRequired] public IReadOnlyList<DeviceRegistrationResponse> Devices { get; set; } = []; }

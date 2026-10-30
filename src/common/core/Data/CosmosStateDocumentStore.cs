@@ -132,9 +132,33 @@ public sealed class CosmosStateDocumentStore(Container container, JsonSerializer
         return new StateDocumentPage<T>(items, nextContinuation);
     }
 
-    private static QueryDefinition BuildQueryDefinition(DocumentQuery query)
+    public async Task<StateValuePage> QueryDistinctValuesAsync(DocumentQuery query, string fieldName,
+        CancellationToken cancellationToken = default)
     {
-        var sql = new StringBuilder("SELECT * FROM c WHERE c.type = @type");
+        ValidateFieldName(fieldName);
+        var requestOptions = new QueryRequestOptions { MaxItemCount = query.PageSize };
+        if (!string.IsNullOrEmpty(query.PartitionKey))
+            requestOptions.PartitionKey = new PartitionKey(query.PartitionKey);
+        using var iterator = container.GetItemQueryIterator<string>(
+            BuildQueryDefinition(query, fieldName),
+            string.IsNullOrWhiteSpace(query.ContinuationToken) ? null : query.ContinuationToken,
+            requestOptions);
+        var values = new List<string>(query.PageSize);
+        string? next = null;
+        while (iterator.HasMoreResults && values.Count == 0)
+        {
+            var response = await iterator.ReadNextAsync(cancellationToken);
+            values.AddRange(response);
+            next = response.ContinuationToken;
+        }
+        return new StateValuePage(values, next);
+    }
+
+    private static QueryDefinition BuildQueryDefinition(DocumentQuery query, string? distinctField = null)
+    {
+        var sql = new StringBuilder(distinctField is null
+            ? "SELECT * FROM c WHERE c.type = @type"
+            : $"SELECT DISTINCT VALUE c.data.{distinctField} FROM c WHERE c.type = @type AND IS_STRING(c.data.{distinctField})");
         var parameters = new List<(string Name, object Value)> { ("@type", query.Type) };
 
         for (var i = 0; i < query.FieldEquals.Count; i++)
@@ -157,7 +181,9 @@ public sealed class CosmosStateDocumentStore(Container container, JsonSerializer
             parameters.Add(("@sortTo", query.SortValueTo.Value));
         }
 
-        sql.Append(query.Order switch
+        // Ordered DISTINCT supports native continuation tokens and uses the
+        // existing single-property range index. No owner-index backfill is needed.
+        sql.Append(distinctField is not null ? $" ORDER BY c.data.{distinctField} ASC" : query.Order switch
         {
             DocumentOrder.SortKeyAscending => " ORDER BY c.sortKey ASC",
             DocumentOrder.SortValueDescending => " ORDER BY c.sortValue DESC",

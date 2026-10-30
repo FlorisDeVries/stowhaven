@@ -1,0 +1,57 @@
+@page "/devices"
+@attribute [Authorize]
+@inherits MonitoringPage
+@inject NavigationManager Navigation
+
+<PageTitle>Devices · Stowhaven</PageTitle>
+<div class="page-heading">
+    <div><p class="eyebrow">INVESTIGATE YOUR FLEET</p><h1>Devices.</h1><p class="subtitle">Find registered devices and follow their backup activity.</p></div>
+    <button class="button" disabled="@Busy" @onclick="() => RunAsync(LoadAsync)">↻ Refresh</button>
+</div>
+<form class="filters" @onsubmit="ApplyAsync" @onsubmit:preventDefault>
+    <label>Owner object ID<input @bind="ownerInput" placeholder="All owners" spellcheck="false" maxlength="256" /></label>
+    <label>Registration<select @bind="statusInput"><option value="">All registrations</option><option>Active</option><option>Revoked</option></select></label>
+    <label>Device ID<input @bind="deviceInput" placeholder="All devices" spellcheck="false" /></label>
+    <button class="button primary" type="submit" disabled="@Busy">Apply filters</button>
+    <button class="text-button" type="button" disabled="@Busy" @onclick="ResetAsync">Reset</button>
+</form>
+@if (validation is not null) { <div class="notice warning" role="alert">@validation</div> }
+<RequestState Busy="Busy" Error="@Error" />
+@if (devices is not null)
+{
+    <div class="panel">
+        <div class="panel-heading"><h2>Device registry</h2><span class="muted">@devices.Devices.Count devices on this page</span></div>
+        <DeviceTable Devices="devices.Devices" />
+        <Pager Cursor="cursor" NextToken="@devices.NextContinuationToken" Busy="Busy" Previous="PreviousAsync" Next="NextAsync" />
+    </div>
+    <p class="investigation-note">Last seen records client contact with Stowhaven. An active registration permits access; it does not indicate that the machine is online or its backups are current.</p>
+}
+@code {
+    private ListDevicesResponse? devices;
+    private readonly PageCursor cursor = new();
+    private string ownerInput = "", statusInput = "", deviceInput = "";
+    private string? owner, status, validation;
+    private Guid? deviceId;
+    protected override async Task LoadAsync() => devices = await Api.DevicesAsync(owner, status, deviceId, cursor.Current, Lifetime.Token);
+    private async Task ApplyAsync()
+    {
+        validation = null;
+        if (!string.IsNullOrWhiteSpace(deviceInput) && !Guid.TryParse(deviceInput, out _))
+        { validation = "Enter a complete device ID, or leave it blank for all devices."; return; }
+        owner = ownerInput.Trim(); status = statusInput;
+        deviceId = Guid.TryParse(deviceInput, out var id) ? id : null;
+        cursor.Reset(); devices = null;
+        await RunAsync(LoadAsync);
+    }
+    private async Task ResetAsync()
+    {
+        ownerInput = statusInput = deviceInput = "";
+        await ApplyAsync();
+    }
+    private async Task NextAsync()
+    {
+        if (devices?.NextContinuationToken is not { } token) return;
+        cursor.Next(token); devices = null; await RunAsync(LoadAsync);
+    }
+    private async Task PreviousAsync() { cursor.Back(); devices = null; await RunAsync(LoadAsync); }
+}

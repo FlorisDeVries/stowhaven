@@ -13,6 +13,26 @@ public sealed class MonitoringApi(HttpClient http)
         Converters = { new JsonStringEnumConverter() }
     };
 
+    public Task<ListDevicesResponse> DevicesAsync(string? userId = null, string? status = null, Guid? deviceId = null,
+        string? continuation = null, CancellationToken cancellationToken = default)
+        => GetAsync<ListDevicesResponse>(Query("devices", ("userId", userId), ("status", status),
+            ("deviceId", deviceId?.ToString()), ("continuationToken", continuation)), cancellationToken);
+
+    public Task<ListBackupUsersResponse> UsersAsync(string? continuation = null, CancellationToken cancellationToken = default)
+        => GetAsync<ListBackupUsersResponse>(Query("users", ("continuationToken", continuation)), cancellationToken);
+
+    public Task<DeviceRegistrationResponse> DeviceAsync(Guid deviceId, CancellationToken cancellationToken)
+        => GetAsync<DeviceRegistrationResponse>($"devices/{deviceId}", cancellationToken);
+
+    public Task<DeviceStateResponse> DeviceStateAsync(Guid deviceId, CancellationToken cancellationToken)
+        => GetAsync<DeviceStateResponse>($"devices/{deviceId}/state", cancellationToken);
+
+    public Task<ListDeviceFilesResponse> DeviceFilesAsync(Guid deviceId, string? continuation, CancellationToken cancellationToken)
+        => GetAsync<ListDeviceFilesResponse>(Query($"devices/{deviceId}/files", ("continuationToken", continuation)), cancellationToken);
+
+    public Task<DeviceFileDetailsResponse> DeviceFileAsync(Guid deviceId, string logicalPath, CancellationToken cancellationToken)
+        => GetAsync<DeviceFileDetailsResponse>(Query($"devices/{deviceId}/file", ("logicalPath", logicalPath)), cancellationToken);
+
     public Task<ListCommitJobsResponse> CommitsAsync(string? status = null, Guid? deviceId = null,
         string? since = null, string? continuation = null, CancellationToken cancellationToken = default)
         => GetAsync<ListCommitJobsResponse>(Query("commits", ("status", status), ("deviceId", deviceId?.ToString()),

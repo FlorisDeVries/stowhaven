@@ -25,13 +25,18 @@ public class GatewayMonitoringTests
     private const string Origin = "https://monitoring.example.com";
     private static readonly SymmetricSecurityKey SigningKey = new(Encoding.UTF8.GetBytes("stowhaven-test-signing-key-at-least-32-bytes-long"));
 
-    [Fact]
-    public async Task AnonymousAdminRequestIsRejectedEvenWithSpoofedEasyAuthHeaders()
+    [Theory]
+    [InlineData("/api/ops/commits")]
+    [InlineData("/api/ops/devices")]
+    [InlineData("/api/ops/users")]
+    [InlineData("/api/ops/devices/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/state")]
+    [InlineData("/api/ops/devices/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/files")]
+    public async Task AnonymousAdminRequestIsRejectedEvenWithSpoofedEasyAuthHeaders(string path)
     {
         await using var factory = CreateFactory();
         using var client = factory.CreateClient();
         client.DefaultRequestHeaders.Add("X-MS-CLIENT-PRINCIPAL", "forged-principal");
-        using var response = await client.GetAsync("/api/ops/commits");
+        using var response = await client.GetAsync(path);
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }
 

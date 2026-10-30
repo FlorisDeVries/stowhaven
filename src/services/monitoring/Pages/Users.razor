@@ -1,0 +1,51 @@
+@page "/users"
+@attribute [Authorize]
+@inherits MonitoringPage
+@inject NavigationManager Navigation
+
+<PageTitle>Users · Stowhaven</PageTitle>
+<div class="page-heading">
+    <div><p class="eyebrow">FOLLOW THE OWNERSHIP TRAIL</p><h1>Users.</h1><p class="subtitle">Accounts with registered backup devices in this tenant.</p></div>
+    <button class="button" disabled="@Busy" @onclick="() => RunAsync(LoadAsync)">↻ Refresh</button>
+</div>
+<form class="filters" @onsubmit="OpenUser" @onsubmit:preventDefault>
+    <label>Owner object ID<input @bind="userInput" placeholder="Enter an owner ID" maxlength="256" required spellcheck="false" /></label>
+    <button class="button primary" type="submit">Find devices →</button>
+</form>
+<RequestState Busy="Busy" Error="@Error" />
+@if (users is not null)
+{
+    <div class="panel">
+        <div class="panel-heading"><h2>Registered backup users</h2><span class="muted">@users.Users.Count users on this page</span></div>
+        <div class="table-scroll"><table>
+            <thead><tr><th>Owner object ID</th><th>Tenant ID</th><th>Investigate</th></tr></thead>
+            <tbody>
+                @foreach (var user in users.Users)
+                {
+                    <tr @key="user.UserId">
+                        <td><a class="record-link mono identity-id" href="@UserLink(user.UserId)">@user.UserId</a></td>
+                        <td class="mono identity-id">@user.TenantId</td>
+                        <td><a href="@UserLink(user.UserId)">View devices →</a></td>
+                    </tr>
+                }
+            </tbody>
+        </table></div>
+        @if (users.Users.Count == 0) { <div class="empty-state">No backup users have registered devices in this tenant.</div> }
+        <Pager Cursor="cursor" NextToken="@users.NextContinuationToken" Busy="Busy" Previous="PreviousAsync" Next="NextAsync" />
+    </div>
+    <p class="investigation-note">Owners are identified by their Entra object IDs. This list is derived from the device registry, including revoked registrations; directory profile names and email addresses are not collected.</p>
+}
+@code {
+    private ListBackupUsersResponse? users;
+    private string userInput = "";
+    private readonly PageCursor cursor = new();
+    protected override async Task LoadAsync() => users = await Api.UsersAsync(cursor.Current, Lifetime.Token);
+    private static string UserLink(string id) => $"users/{Uri.EscapeDataString(id)}";
+    private void OpenUser() { if (!string.IsNullOrWhiteSpace(userInput)) Navigation.NavigateTo(UserLink(userInput.Trim())); }
+    private async Task NextAsync()
+    {
+        if (users?.NextContinuationToken is not { } token) return;
+        cursor.Next(token); users = null; await RunAsync(LoadAsync);
+    }
+    private async Task PreviousAsync() { cursor.Back(); users = null; await RunAsync(LoadAsync); }
+}

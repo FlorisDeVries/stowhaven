@@ -10,7 +10,7 @@
 {
     var run = details.Summary;
     <div class="panel detail-panel"><div class="panel-heading"><h2>Run summary</h2><StatusBadge Value="run.Status" /></div><dl class="detail-grid">
-        <div><dt>Run ID</dt><dd class="mono">@run.RunId</dd></div><div><dt>Device ID</dt><dd class="mono">@run.DeviceId</dd></div><div><dt>Commit job</dt><dd>@if (run.CommitId is { } commitId) { <a class="mono" href="@($"commits/{commitId}")">@commitId ↗</a> } else { <span>Not submitted</span> }</dd></div>
+        <div><dt>Run ID</dt><dd class="mono">@run.RunId</dd></div><div><dt>Device ID</dt><dd><a class="mono" href="@($"devices/{run.DeviceId}")">@run.DeviceId ↗</a></dd></div><div><dt>Commit job</dt><dd>@if (run.CommitId is { } commitId) { <a class="mono" href="@($"commits/{commitId}")">@commitId ↗</a> } else { <span>Not submitted</span> }</dd></div>
         <div><dt>Started</dt><dd>@Display.Time(run.StartedAt)</dd></div><div><dt>Completed</dt><dd>@Display.Time(run.CompletedAt)</dd></div><div><dt>Files backed up</dt><dd>@Display.Number(run.FilesBackedUp)</dd></div>
         <div><dt>Manifest entries</dt><dd>@Display.Number(details.FileCount)</dd></div><div><dt>Deletions</dt><dd>@Display.Number(details.DeletedCount)</dd></div>
     </dl></div>

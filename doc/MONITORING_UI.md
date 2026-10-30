@@ -9,6 +9,11 @@ Functions app, or linked Static Web Apps backend is needed.
 ## Features
 
 - Overview of the latest 25 commit jobs, with counts explicitly scoped to that page.
+- Paginated device registry and unique registered-user lists, scoped to the operator's tenant.
+- Device investigation: registration/contact timestamps, latest run and successful run,
+  latest run with errors, latest commit failure/retry details, and commit-lease state.
+- Per-device run/commit histories and paginated current file-catalog inspection,
+  including exact-path lookup, version IDs, checksums, and recorded encryption mode.
 - Backup run and commit history, filtered by status, device GUID, and start date.
 - Continuation-token pagination throughout, including manifest entries and file progress.
 - Run details, commit progress, file errors, attempt counts, and retry/dead-letter timestamps.
@@ -20,6 +25,57 @@ Refresh is manual. Leaving a dashboard tab open does not poll the API or prevent
 scale-to-zero. The overview reflects persisted commit state, not a guarantee of
 service availability or a verified restore. It does not scan all history to
 produce global totals. Infrastructure logs and alerts remain in Azure Monitor.
+
+## Investigation workflow
+
+Open **Devices** to browse registrations or filter by owner object ID, registration
+status, and device GUID. **Users** lists unique owners of devices registered in the
+current operator's tenant, including revoked registrations. Select an owner to see
+their devices, then select a device to investigate it. Owners are identified by
+their Entra object IDs; this uses the existing backup registry rather than reading
+the tenant's directory profiles. Historical registrations appear immediately.
+
+A device's **Recorded state** view distinguishes the latest run from its latest
+fully successful run and latest run completed with errors. These are ordered by
+run start time. It also displays the latest commit's error, attempts, retry and
+dead-letter timestamps, plus the worker's recorded catalog lease and newest
+coordinated run. Missing records are shown as unknown/unrecorded. An active
+registration permits access; it does not imply the machine is online or its
+backups are current. Last contact is the last device-registration refresh.
+
+The **Backup history** and **Commit history** views load on selection and paginate
+independently. Links into the main history pages prefill the device filter. Run
+and commit detail pages link back to their device investigation page.
+
+**File catalog** reads the current path-to-version mappings, including deleted
+entries. Use an exact logical path (including its configured target name and
+original casing) to inspect its version record, checksum, encryption mode, and
+last recorded backup run. Encryption keys, wrapped-key metadata, SAS URLs, and
+claim tokens are excluded. These views do not probe Blob Storage or rehydrate
+archived data; catalog presence alone is not proof of restore readiness. A running
+commit can temporarily change catalog mappings between reads.
+
+Client installation version, local scheduler state, and local client logs are not
+currently reported to the server and therefore remain local-machine checks.
+
+The investigation routes use the same Gateway `monitoring.admin` and API
+`backup.admin` authorization. They take the tenant from the validated API token
+and check device ownership against that tenant before reading device state or
+catalog data. All listings default to 25 records and accept at most 100 per request.
+Distinct-owner paging uses the existing single-property index in Cosmos DB; no
+new resources or owner-index backfill are needed.
+
+| Investigation | Admin endpoint |
+| --- | --- |
+| Registered devices | `GET /api/ops/devices` |
+| Registered backup users | `GET /api/ops/users` |
+| Device registration | `GET /api/ops/devices/{deviceId}` |
+| Recorded device state | `GET /api/ops/devices/{deviceId}/state` |
+| Current catalog page | `GET /api/ops/devices/{deviceId}/files` |
+| Exact-path metadata | `GET /api/ops/devices/{deviceId}/file?logicalPath=...` |
+
+Deploy the API and static UI together through the existing workflow to enable
+these views. Existing Entra scopes, operator settings, and hosting are reused.
 
 ## Local development
 

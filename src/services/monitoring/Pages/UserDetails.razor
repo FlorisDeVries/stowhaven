@@ -1,0 +1,32 @@
+@page "/users/{UserId}"
+@attribute [Authorize]
+@inherits MonitoringPage
+
+<PageTitle>User devices · Stowhaven</PageTitle>
+<a class="back-link" href="users">← Backup users</a>
+<div class="page-heading">
+    <div><p class="eyebrow">USER INVESTIGATION</p><h1>This user’s devices.</h1><p class="subtitle mono identity-id">@UserId</p></div>
+    <button class="button" disabled="@Busy" @onclick="() => RunAsync(LoadAsync)">↻ Refresh</button>
+</div>
+<RequestState Busy="Busy" Error="@Error" />
+@if (devices is not null)
+{
+    <div class="panel">
+        <div class="panel-heading"><h2>Registered devices</h2><span class="muted">@devices.Devices.Count on this page</span></div>
+        <DeviceTable Devices="devices.Devices" />
+        <Pager Cursor="cursor" NextToken="@devices.NextContinuationToken" Busy="Busy" Previous="PreviousAsync" Next="NextAsync" />
+    </div>
+    <p class="investigation-note">Select a device to inspect its recorded state, backup history, and current file catalog. Tenant: <span class="mono identity-id">@devices.TenantId</span>.</p>
+}
+@code {
+    [Parameter] public string UserId { get; set; } = "";
+    private ListDevicesResponse? devices;
+    private readonly PageCursor cursor = new();
+    protected override async Task LoadAsync() => devices = await Api.DevicesAsync(userId: UserId, continuation: cursor.Current, cancellationToken: Lifetime.Token);
+    private async Task NextAsync()
+    {
+        if (devices?.NextContinuationToken is not { } token) return;
+        cursor.Next(token); devices = null; await RunAsync(LoadAsync);
+    }
+    private async Task PreviousAsync() { cursor.Back(); devices = null; await RunAsync(LoadAsync); }
+}
