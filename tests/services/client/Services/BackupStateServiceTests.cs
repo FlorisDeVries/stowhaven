@@ -79,10 +79,10 @@ public partial class BackupStateServiceTests : IDisposable
         // Arrange
         var initialState = await _sut.GetOrCreateDeviceStateAsync();
         var runId = Guid.NewGuid();
-        var commitId = "commit-abc123";
+        var commitId = Guid.NewGuid().ToString("N");
         var files = CreateTestFileMetadata(3);
 
-        await _sut.SaveBackupSuccessAsync(runId, commitId, files);
+        await SeedTrackedStateAsync(runId, commitId, files);
 
         // Act
         var updatedState = await _sut.GetOrCreateDeviceStateAsync();
@@ -278,96 +278,6 @@ public partial class BackupStateServiceTests : IDisposable
 
     #endregion
 
-    #region SaveBackupSuccessAsync Tests
-
-    [Fact]
-    [Trait("Category", "Integration")]
-    public async Task SaveBackupSuccessAsync_SavesAllFiles()
-    {
-        // Arrange
-        var runId = Guid.NewGuid();
-        var commitId = "commit-xyz789";
-        var files = CreateTestFileMetadata(3);
-
-        // Act
-        await _sut.SaveBackupSuccessAsync(runId, commitId, files);
-
-        // Assert
-        var allFiles = await _sut.GetAllFileStatesAsync();
-        allFiles.Should().HaveCount(3);
-        allFiles.Should().OnlyContain(f => f.BackupRunId == runId);
-    }
-
-    [Fact]
-    [Trait("Category", "Integration")]
-    public async Task SaveBackupSuccessAsync_UpdatesDeviceState()
-    {
-        // Arrange
-        var runId = Guid.NewGuid();
-        var commitId = "commit-abc123";
-        var files = CreateTestFileMetadata(5);
-
-        // Act
-        await _sut.SaveBackupSuccessAsync(runId, commitId, files);
-
-        // Assert
-        var deviceState = await _sut.GetOrCreateDeviceStateAsync();
-        deviceState.LastRunId.Should().Be(runId);
-        deviceState.LastCommitId.Should().Be(commitId);
-        deviceState.LastSuccessfulBackup.Should().NotBeNull()
-            .And.BeCloseTo(DateTimeOffset.UtcNow, TimeSpan.FromSeconds(5));
-        deviceState.TotalFilesTracked.Should().Be(5);
-        deviceState.TotalBytesTracked.Should().Be(files.Sum(f => f.SizeBytes));
-    }
-
-    [Fact]
-    [Trait("Category", "Integration")]
-    public async Task SaveBackupSuccessAsync_OverwritesExistingFiles()
-    {
-        // Arrange
-        var initialFiles = CreateTestFileMetadata(2);
-        await SaveBackupState(initialFiles);
-
-        var runId = Guid.NewGuid();
-        var commitId = "new-commit";
-        var updatedFiles = new List<FileMetadata>
-        {
-            initialFiles[0] with { Hash = "updated-hash", SizeBytes = 999 },
-            initialFiles[1]
-        };
-
-        // Act
-        await _sut.SaveBackupSuccessAsync(runId, commitId, updatedFiles);
-
-        // Assert
-        var fileState = await _sut.GetFileStateAsync(initialFiles[0].FilePath);
-        fileState.Should().NotBeNull();
-        fileState!.Sha256Hash.Should().Be("updated-hash");
-        fileState.SizeBytes.Should().Be(999);
-        fileState.BackupRunId.Should().Be(runId);
-    }
-
-    [Fact]
-    [Trait("Category", "Integration")]
-    public async Task SaveBackupSuccessAsync_WithEmptyFileList_UpdatesDeviceStateOnly()
-    {
-        // Arrange
-        var runId = Guid.NewGuid();
-        var commitId = "empty-commit";
-
-        // Act
-        await _sut.SaveBackupSuccessAsync(runId, commitId, new List<FileMetadata>());
-
-        // Assert
-        var deviceState = await _sut.GetOrCreateDeviceStateAsync();
-        deviceState.LastRunId.Should().Be(runId);
-        deviceState.LastCommitId.Should().Be(commitId);
-
-        var allFiles = await _sut.GetAllFileStatesAsync();
-        allFiles.Should().BeEmpty();
-    }
-
-    #endregion
 
     #region GetFileStateAsync Tests
 
@@ -477,7 +387,7 @@ public partial class BackupStateServiceTests : IDisposable
             initialFiles[1] with { Hash = "new-hash-2" },
             CreateTestFileMetadata(1, startIndex: 10)[0] // New file
         };
-        await _sut.SaveBackupSuccessAsync(runId, "new-commit", updatedFiles);
+        await SeedTrackedStateAsync(runId, Guid.NewGuid().ToString("N"), updatedFiles);
 
         // Act
         var result = await _sut.GetAllFileStatesAsync();
@@ -642,7 +552,7 @@ public partial class BackupStateServiceTests : IDisposable
         await _sut.SavePendingBackupRunAsync(CreatePendingRun(deviceId, runId));
         await _sut.AppendPendingRunFilesAsync(deviceId, runId, [CreateJournalFile()]);
 
-        await _sut.SaveBackupSuccessAsync(Guid.NewGuid(), "commit", CreateTestFileMetadata(1));
+        await SeedTrackedStateAsync(Guid.NewGuid(), Guid.NewGuid().ToString("N"), CreateTestFileMetadata(1));
         await _sut.BeginScanAsync();
         await _sut.RecordScanDeletionsAsync(deviceId, runId);
 
@@ -671,31 +581,9 @@ public partial class BackupStateServiceTests : IDisposable
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task PromotePendingRunFilesToState_MakesJournalTheTrackedState()
-    {
-        // Arrange
-        var deviceId = Guid.NewGuid();
-        var runId = Guid.NewGuid();
-        await _sut.SavePendingBackupRunAsync(CreatePendingRun(deviceId, runId));
-        await _sut.AppendPendingRunFilesAsync(deviceId, runId,
-            [CreateJournalFile("a.txt", "hash-a", 11, "uid-a")]);
-
-        // Act
-        await _sut.PromotePendingRunFilesToStateAsync(deviceId, runId);
-
-        // Assert
-        var tracked = await _sut.GetFileStateAsync("documents/a.txt");
-        tracked.Should().NotBeNull();
-        tracked!.Sha256Hash.Should().Be("hash-a");
-        tracked.SizeBytes.Should().Be(11);
-        tracked.BackupRunId.Should().Be(runId);
-    }
-
-    [Fact]
-    [Trait("Category", "Integration")]
     public async Task RemovePendingRunFiles_LeavesRejectedEntriesUntracked()
     {
-        var deviceId = Guid.NewGuid();
+        var deviceId = (await _sut.GetOrCreateDeviceStateAsync()).DeviceId;
         var runId = Guid.NewGuid();
         await _sut.SavePendingBackupRunAsync(CreatePendingRun(deviceId, runId));
         await _sut.AppendPendingRunFilesAsync(deviceId, runId,
@@ -705,7 +593,7 @@ public partial class BackupStateServiceTests : IDisposable
         ]);
 
         await _sut.RemovePendingRunFilesAsync(deviceId, runId, ["documents/rejected.txt"]);
-        await _sut.PromotePendingRunFilesToStateAsync(deviceId, runId);
+        await CompleteJournalAsync(deviceId, runId);
 
         (await _sut.GetFileStateAsync("documents/accepted.txt")).Should().NotBeNull();
         (await _sut.GetFileStateAsync("documents/rejected.txt")).Should().BeNull();
@@ -716,7 +604,7 @@ public partial class BackupStateServiceTests : IDisposable
     public async Task RemoveTrackedFiles_DeletesRejectedStateAndRefreshesTotals()
     {
         var files = CreateTestFileMetadata(2);
-        await _sut.SaveBackupSuccessAsync(Guid.NewGuid(), Guid.NewGuid().ToString("N"), files);
+        await SeedTrackedStateAsync(Guid.NewGuid(), Guid.NewGuid().ToString("N"), files);
 
         await _sut.RemoveTrackedFilesAsync([files[1].FilePath]);
 
@@ -841,13 +729,13 @@ public partial class BackupStateServiceTests : IDisposable
 
     [Fact]
     [Trait("Category", "Integration")]
-    public async Task ApplyPendingRunDeletions_DropsTrackedStateForDeletedFiles()
+    public async Task LocalCompletion_DropsTrackedStateForDeletedFiles()
     {
         // Arrange
         var files = CreateTestFileMetadata(2);
         await SaveBackupState(files);
 
-        var deviceId = Guid.NewGuid();
+        var deviceId = (await _sut.GetOrCreateDeviceStateAsync()).DeviceId;
         var runId = Guid.NewGuid();
         await _sut.SavePendingBackupRunAsync(CreatePendingRun(deviceId, runId));
 
@@ -856,7 +744,7 @@ public partial class BackupStateServiceTests : IDisposable
         await _sut.RecordScanDeletionsAsync(deviceId, runId);
 
         // Act
-        await _sut.ApplyPendingRunDeletionsAsync(deviceId, runId);
+        await CompleteJournalAsync(deviceId, runId);
 
         // Assert
         var remaining = await _sut.GetAllFileStatesAsync();
@@ -895,8 +783,8 @@ public partial class BackupStateServiceTests : IDisposable
     private async Task SaveBackupState(List<FileMetadata> files)
     {
         var runId = Guid.NewGuid();
-        var commitId = $"commit-{runId:N}";
-        await _sut.SaveBackupSuccessAsync(runId, commitId, files);
+        var commitId = Guid.NewGuid().ToString("N");
+        await SeedTrackedStateAsync(runId, commitId, files);
     }
 
     private static PendingBackupRun CreatePendingRun(Guid deviceId, Guid runId)

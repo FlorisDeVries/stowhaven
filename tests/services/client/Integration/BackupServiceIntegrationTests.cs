@@ -20,12 +20,13 @@ namespace FlorisDeV.BackupClient.Tests.Integration;
 /// Integration tests for BackupService that test the full backup flow with real components.
 /// Uses temporary file system directories and in-memory SQLite for state management.
 /// </summary>
-public class BackupServiceIntegrationTests : IDisposable
+public partial class BackupServiceIntegrationTests : IDisposable
 {
     private readonly string _testRoot;
     private readonly Mock<IBackupApiClient> _mockApiClient;
     private readonly TestFileUploader _testUploader;
     private readonly TelemetryProvider _telemetry;
+    private readonly Dictionary<Guid, Guid> _committedRuns = new();
 
     public BackupServiceIntegrationTests()
     {
@@ -85,13 +86,15 @@ public class BackupServiceIntegrationTests : IDisposable
         // Mock CommitBackupRun
         _mockApiClient
             .Setup(x => x.CommitBackupRun(It.IsAny<Guid>(), It.IsAny<CommitBackupRunRequest>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((Guid deviceId, CommitBackupRunRequest req, CancellationToken ct) => new CommitBackupRunResponse
+            .ReturnsAsync((Guid deviceId, CommitBackupRunRequest req, CancellationToken ct) =>
             {
-                CommitId = Guid.NewGuid(),
-                DeviceId = deviceId,
-                RunId = req.RunId,
-                Status = CommitJobStatus.Queued,
-                CreatedAt = DateTimeOffset.UtcNow
+                var commitId = Guid.NewGuid();
+                _committedRuns[commitId] = req.RunId;
+                return new CommitBackupRunResponse
+                {
+                    CommitId = commitId, DeviceId = deviceId, RunId = req.RunId,
+                    Status = CommitJobStatus.Queued, CreatedAt = DateTimeOffset.UtcNow
+                };
             });
 
         _mockApiClient
@@ -99,6 +102,7 @@ public class BackupServiceIntegrationTests : IDisposable
             .ReturnsAsync((Guid deviceId, Guid commitId, CancellationToken ct) => new CommitStatusResponse
             {
                 DeviceId = deviceId,
+                RunId = _committedRuns.GetValueOrDefault(commitId),
                 CommitId = commitId,
                 Status = CommitJobStatus.Succeeded,
                 CreatedAt = DateTimeOffset.UtcNow,

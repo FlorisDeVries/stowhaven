@@ -9,19 +9,18 @@ namespace FlorisDeV.BackupClient.Services;
 public interface IBackupStateService
 {
     /// <summary>
+    /// Atomically promotes accepted files, applies deletions, records completion and clears the journal.
+    /// The caller must first validate the server's successful outcome and finish rejected-file pruning.
+    /// An exact replay of the latest completed identity returns AlreadyCompleted without writes;
+    /// missing or inconsistent pending state otherwise fails. Cancellation is honored until commit starts.
+    /// </summary>
+    Task<LocalCompletionResult> CompletePendingRunAsync(
+        Guid deviceId, Guid runId, Guid commitId, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Gets or creates the device state record. Initializes database if needed.
     /// </summary>
     Task<DeviceState> GetOrCreateDeviceStateAsync(CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Persists backup success state after a successful backup run.
-    /// Updates device state and file tracking records.
-    /// </summary>
-    Task SaveBackupSuccessAsync(
-        Guid runId,
-        string commitId,
-        IReadOnlyList<FileMetadata> backedUpFiles,
-        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Gets the state of a specific file from the last backup.
@@ -91,14 +90,6 @@ public interface IBackupStateService
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Promotes the run's journal into tracked file state in a single set-based statement.
-    /// </summary>
-    Task PromotePendingRunFilesToStateAsync(
-        Guid deviceId,
-        Guid runId,
-        CancellationToken cancellationToken = default);
-
-    /// <summary>
     /// Removes server-rejected files from an in-flight journal before the remaining successful
     /// entries are promoted. The removed paths remain absent from tracked state and are therefore
     /// detected again by the next scan.
@@ -148,8 +139,4 @@ public interface IBackupStateService
         Guid runId,
         CancellationToken cancellationToken = default);
 
-    /// <summary>
-    /// Drops tracked file state for everything this run recorded as deleted, in one statement.
-    /// </summary>
-    Task ApplyPendingRunDeletionsAsync(Guid deviceId, Guid runId, CancellationToken cancellationToken = default);
 }

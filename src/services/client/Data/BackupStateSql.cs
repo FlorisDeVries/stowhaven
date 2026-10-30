@@ -207,7 +207,7 @@ internal static class BackupStateSql
         """;
 
     internal const string SelectPendingBackupRunQuery =
-        "SELECT PayloadJson FROM PendingBackupRuns WHERE DeviceId = @DeviceId";
+        "SELECT DeviceId, RunId, PayloadJson FROM PendingBackupRuns WHERE DeviceId = @DeviceId";
 
     internal const string UpsertPendingBackupRunQuery = @"
         INSERT INTO PendingBackupRuns (DeviceId, RunId, PayloadJson, UpdatedAt)
