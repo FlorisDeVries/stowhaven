@@ -23,11 +23,12 @@ Stowhaven is the public product and repository brand. Keep existing implementati
 
 ## Engineering guidelines
 
+- Before changing code or Git state, read `CONTRIBUTING.md` for the feature-branch/PR workflow, hook installation, and shared verification command.
 - Preserve nullable reference types and current .NET conventions.
 - Prefer structured `ILogger` messages and asynchronous APIs.
 - Keep public traffic on the Gateway; production API and worker ingress must remain internal.
 - Prefer managed identity and RBAC over storage account keys or connection strings.
 - Treat direct-to-Blob upload/restore and client-side encryption as core security boundaries.
 - Update Bicep source and regenerate `deploy/bicep/main.json` together.
-- Build the Gateway explicitly because it is not included in `FlorisDeV.BackupApi.sln`.
+- Use `bash scripts/verify.sh` for the shared CI/local checks; Gateway and its tests are included in the solution.
 - Keep documentation aligned with implemented behavior and distinguish current limitations from planned work.

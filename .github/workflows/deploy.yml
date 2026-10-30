@@ -13,6 +13,9 @@ on:
     paths:
       - '.github/workflows/deploy.yml'
       - 'scripts/configure-monitoring-ui.py'
+      - 'scripts/verify.sh'
+      - 'scripts/install-git-hooks.sh'
+      - '.githooks/**'
       - 'deploy/bicep/**'
       - 'src/**'
       - 'tests/**'
@@ -25,6 +28,9 @@ on:
     paths:
       - '.github/workflows/deploy.yml'
       - 'scripts/configure-monitoring-ui.py'
+      - 'scripts/verify.sh'
+      - 'scripts/install-git-hooks.sh'
+      - '.githooks/**'
       - 'deploy/bicep/**'
       - 'src/**'
       - 'tests/**'
@@ -65,20 +71,21 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      - name: Restore solution
-        run: dotnet restore FlorisDeV.BackupApi.sln
+      - name: Verify repository
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: bash scripts/verify.sh
 
-      - name: Build solution
-        run: dotnet build FlorisDeV.BackupApi.sln --configuration Release --no-restore
-
-      - name: Publish monitoring UI
-        run: dotnet publish src/services/monitoring/FlorisDeV.BackupMonitoring.csproj --configuration Release --no-restore --output /tmp/monitoring-ui
-
-      - name: Test solution
-        run: dotnet test FlorisDeV.BackupApi.sln --configuration Release --no-build --verbosity normal
-
-      - name: Test static UI configuration packaging
-        run: python3 -m unittest discover -s tests/deployment -p 'test_*.py'
+      - name: Show verification logs
+        if: always()
+        shell: bash
+        run: |
+          shopt -s nullglob
+          for log in "$RUNNER_TEMP"/stowhaven-verify.*/*.log; do
+            printf '::group::%s\n' "$(basename "$log")"
+            cat "$log"
+            printf '::endgroup::\n'
+          done
 
   validate:
     name: CD - Validate Bicep

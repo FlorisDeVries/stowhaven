@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+
+branch=$(git symbolic-ref --quiet --short HEAD) || {
+    printf '%s\n' 'Create a feature branch before committing; detached HEAD is not a change branch.' >&2
+    exit 1
+}
+if [ "$branch" = main ]; then
+    printf '%s\n' 'Commits on protected main are blocked. Create a feature branch and open a PR to main.' >&2
+    exit 1
+fi

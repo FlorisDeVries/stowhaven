@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+
+# Check destination refs: a feature branch can otherwise be pushed as HEAD:main.
+while read -r local_ref local_oid remote_ref remote_oid; do
+    if [ "$remote_ref" = refs/heads/main ]; then
+        printf '%s\n' 'Pushes targeting protected main are blocked. Push a feature branch and open a PR.' >&2
+        exit 1
+    fi
+done

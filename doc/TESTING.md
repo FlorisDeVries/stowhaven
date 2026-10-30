@@ -20,17 +20,26 @@ The worker's service tests live in the API test project. The Gateway and its tes
 ## Standard verification
 
 ```bash
-dotnet restore FlorisDeV.BackupApi.sln
-dotnet test FlorisDeV.BackupApi.sln --no-restore
-dotnet build src/services/gateway/Gateway.csproj
+bash scripts/verify.sh
 ```
 
-The deploy workflow uses Release configuration:
+This is the shared local/CI entry point. It restores dependencies, builds the complete Release solution (including Gateway), publishes the monitoring UI, and runs the .NET suite, Python packaging tests, and workflow automation tests. It stops at the first failure and prints the full log's path plus a bounded tail. Logs and publish output are retained under the OS temporary directory (`TMPDIR`, falling back to `/tmp`). CI prints full logs in collapsed groups.
+
+For infrastructure changes, add Bicep compilation without writing generated output into the working tree:
 
 ```bash
-dotnet test FlorisDeV.BackupApi.sln --configuration Release
-dotnet build src/services/gateway/Gateway.csproj --configuration Release
+bash scripts/verify.sh --bicep
 ```
+
+During TDD, restore before the first baseline and use the focused project/filter commands below for subsequent loops. Run full verification after the review fixes. The standard checks require .NET 10, Python 3 and Bash; Bicep compilation additionally needs Azure CLI/Bicep. Docker is only needed for the separate recovery and smoke checks.
+
+## Workflow automation tests
+
+```bash
+python3 -m unittest discover -s tests/workflow -p 'test_*.py' -v
+```
+
+These tests use disposable repositories and a local bare remote to verify protected-branch commits, push destination refs, linked worktrees, branch-independent installation, and preservation of custom hooks. The verification runner is exercised with controlled tool executables to check ordering, temporary output paths and fail-fast behavior. They do not modify the current clone's hooks.
 
 ## Run one project
 
@@ -89,4 +98,4 @@ Then open the combined Swagger UI at `http://localhost:8200/swagger`. Local API 
 
 ## CI
 
-`.github/workflows/deploy.yml` runs the solution tests, publishes API and worker artifacts, and builds the Gateway before the deployment and container-image phases. A local check should therefore include both the solution tests and the explicit Gateway build.
+`.github/workflows/deploy.yml` calls `bash scripts/verify.sh` for CI, with full logs retained in collapsed job-log groups. The main-branch deployment jobs retain their separate infrastructure validation and deployment steps. `.github/workflows/recovery-tests.yml` runs the container-based recovery check independently.
