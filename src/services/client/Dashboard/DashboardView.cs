@@ -8,11 +8,12 @@ internal static partial class DashboardView
         <body><main><p class="eyebrow">STOWHAVEN · LOCAL CLIENT</p><h1>Backup observations</h1>
         <p id="status" role="status">Connecting to your local companion…</p><p id="notice" class="notice"></p>
         <button id="start" type="button">Start backup</button><p id="start-result" role="status"></p>
-        <dl id="details"></dl><p class="footnote">A clean check examines the selected files. It does not create a server backup or test restoration.</p></main></body></html>
+        <dl id="details"></dl><p class="footnote">A clean check examines the selected files. It does not create a server backup or test restoration.</p>
+        <section><h2>Recent client logs</h2><button id="open-logs" type="button">Open recent logs</button><p id="logs-notice" role="status"></p><pre id="logs" hidden></pre></section></main></body></html>
         """;
     internal const string Css = """
         :root{font:17px/1.6 system-ui,sans-serif;color:#e7edf0;background:#102128;color-scheme:dark}body{margin:0;padding:6vh 6vw}main{max-width:850px;margin:auto}h1{font-size:clamp(2rem,5vw,3.4rem);line-height:1.15;margin:1rem 0 2rem}.eyebrow{letter-spacing:.15em;font-size:.75rem;color:#9bd8c7}.notice{font-weight:700;color:#f0d29c}.notice:empty{display:none}dl{display:grid;grid-template-columns:minmax(130px,1fr) 2fr;gap:.7rem 2rem;padding:1.5rem;background:#19333b;border-radius:12px}dl:empty{display:none}dt{color:#a5bec4}dd{margin:0;overflow-wrap:anywhere}.footnote{color:#a5bec4;font-size:.85rem;margin-top:2rem}
-        """;
+        """ + LogsCss;
     internal const string JavaScript = """
         'use strict';
         const status = document.getElementById('status'), notice = document.getElementById('notice'), details = document.getElementById('details');
@@ -20,7 +21,7 @@ internal static partial class DashboardView
         async function poll() {
           try {
             const response = await fetch('/api/status', {cache:'no-store',headers:authorization()});
-            if (response.status === 401) { status.textContent = 'Authorization expired. Run open-dashboard to authorize this browser.'; notice.textContent=''; details.replaceChildren(); return; }
+            if (response.status === 401) { status.textContent = 'Authorization expired. Run open-dashboard to authorize this browser.'; notice.textContent=''; details.replaceChildren(); clearRecentLogs(); return; }
             if (!response.ok) throw new Error();
             const data = await response.json();
             details.replaceChildren(); notice.textContent = '';
@@ -66,5 +67,5 @@ internal static partial class DashboardView
           await poll();
         }
         connect();
-        """ + RunJavaScript + LiveJavaScript + ObservationJavaScript;
+        """ + RunJavaScript + LiveJavaScript + ObservationJavaScript + LogsJavaScript;
 }
