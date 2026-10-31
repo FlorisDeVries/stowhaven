@@ -62,7 +62,8 @@ public partial class BackupService(
             if (_options.Dashboard.Enabled)
             {
                 var invocation = Environment.GetEnvironmentVariable("INVOCATION_ID");
-                receipt = new(attemptId, execution.Identity, Guid.TryParseExact(invocation, "N", out _) ? invocation : null, startedAt);
+                receipt = new(attemptId, execution.Identity, Guid.TryParseExact(invocation, "N", out _) ? invocation : null, startedAt)
+                    { ProcessId = Environment.ProcessId, ProcessIdentity = ExecutionProcessIdentity.Read(Environment.ProcessId) };
                 await BackupExecutionReceipt.WriteAsync(_options.Dashboard, receipt);
             }
         }

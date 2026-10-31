@@ -19,6 +19,26 @@ internal sealed class BackupExecutionGuard : IDisposable
     internal static BackupExecutionGuard Acquire(string databasePath)
         => TryAcquire(databasePath, launchReservation: false) ?? throw new BackupAlreadyRunningException();
 
+    // Observation never creates a database or initializes backup state. A read-only descriptor
+    // can probe flock on Linux, independently of SQLite's own locks.
+    internal static (string? Identity, bool Active) Observe(string databasePath)
+    {
+        if (!OperatingSystem.IsLinux()) throw new PlatformNotSupportedException();
+        var descriptor = Open(Path.GetFullPath(databasePath), 0x80000, 0); // O_RDONLY|O_CLOEXEC
+        if (descriptor < 0)
+        {
+            var error = Marshal.GetLastPInvokeError();
+            if (error == 2) return (null, false);
+            throw Failure("observe execution protection", error);
+        }
+        using var probe = new BackupExecutionGuard(new SafeFileHandle((IntPtr)descriptor, ownsHandle: true));
+        var identity = probe.Identity;
+        if (Flock(probe._handle, 2 | 4) == 0) return (identity, false);
+        var lockError = Marshal.GetLastPInvokeError();
+        if (lockError == 11) return (identity, true);
+        throw Failure("observe execution protection", lockError);
+    }
+
     internal static BackupExecutionGuard? TryAcquire(string databasePath, bool launchReservation = false)
     {
         if (string.IsNullOrWhiteSpace(databasePath)) throw new InvalidOperationException("Backup state database identity is required for execution protection.");

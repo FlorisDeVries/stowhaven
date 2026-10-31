@@ -46,7 +46,7 @@ public static class FixtureProgram
         using var telemetry = new TelemetryProvider();
         var service = new BackupService(NullLogger<BackupService>.Instance, telemetry, api.Object, state,
             new BackupScanner(new FileSystemService(NullLogger<FileSystemService>.Instance), state, NullLogger<BackupScanner>.Instance),
-            new Mock<IFileUploader>().Object, Options.Create(new BackupClientOptions { BackupTargets = new() { ["test"] = target }, Dashboard = new() { Enabled = true, ReportingDirectory = Path.Combine(root, "reporting") } }));
+            new Mock<IFileUploader>().Object, Options.Create(new BackupClientOptions { BackupTargets = new() { ["test"] = target }, Dashboard = new() { Enabled = args.ElementAtOrDefault(3) != "unreported", ReportingDirectory = Path.Combine(root, "reporting") } }));
         try
         {
             if (args.ElementAtOrDefault(3) == "request")

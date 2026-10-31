@@ -25,7 +25,11 @@ public sealed record DashboardSnapshot(
     public DashboardLiveProgress? Live { get; init; }
 }
 
-public sealed record DashboardStatus(string State, DashboardSnapshot? Snapshot = null, string? Message = null, bool Stale = false);
+public sealed record DashboardStatus(string State, DashboardSnapshot? Snapshot = null, string? Message = null, bool Stale = false)
+{
+    public string Observation { get; init; } = "unavailable";
+    public string ExecutionState { get; init; } = "unavailable";
+}
 
 // Only this allow-listed portable contract reaches disk or HTTP. Never serialize BackupResult/state/configuration.
 internal static class DashboardReporting
@@ -69,7 +73,7 @@ internal static class DashboardReporting
             if (!doc.RootElement.TryGetProperty("schemaVersion", out var version) || !version.TryGetInt32(out var schema) || schema != SchemaVersion)
                 return new("incompatible", Message: "Reporting schema is unsupported. Upgrade the client and dashboard together; preserve the reporting files.");
             var snapshot = JsonSerializer.Deserialize<DashboardSnapshot>(text, Json)!;
-            if (snapshot.AttemptId == Guid.Empty || snapshot.TargetNames == null ||
+            if (snapshot.AttemptId == Guid.Empty || snapshot.TargetNames == null || snapshot.TargetNames.Any(x => x == null) ||
                 snapshot.StartedAt == default || snapshot.ObservedAt < snapshot.StartedAt ||
                 (snapshot.ScanStartedAt is { } scan && (scan < snapshot.StartedAt || scan > snapshot.ObservedAt)) ||
                 (snapshot.Result == "cleanCheck" && snapshot.ScanStartedAt == null) ||

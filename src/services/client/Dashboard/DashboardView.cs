@@ -24,15 +24,16 @@ internal static partial class DashboardView
             if (!response.ok) throw new Error();
             const data = await response.json();
             details.replaceChildren(); notice.textContent = '';
-            if (data.state !== 'available') { status.textContent = data.message || 'Reporting unavailable.'; return; }
+            if (!data.snapshot) { status.textContent = data.message || 'Reporting unavailable.'; return; }
             const s = data.snapshot;
-            status.textContent = s.result === 'cleanCheck' ? 'Clean check — no changes to back up.' : 'Last recorded attempt: ' + s.result + '. Detailed results for this outcome are not available in this dashboard version.';
+            status.textContent = s.result === 'cleanCheck' ? 'Last recorded attempt: clean check — no changes to back up.' : 'Last recorded attempt: ' + s.result + '. Detailed results for this outcome are not available in this dashboard version.';
             if (s.serverBackupEvidence === 'none') notice.textContent = 'No backup has been created yet.';
             else if (s.serverBackupEvidence === 'unknown') notice.textContent = 'Completed server backup history is unknown.';
             const rows = [['Attempt',s.attemptId],['Targets',s.targetNames.join(', ')],['Files examined',s.filesScanned],['Scan started',s.scanStartedAt ? new Date(s.scanStartedAt).toLocaleString() : 'Not observed'],['Recorded',new Date(s.observedAt).toLocaleString()],['Server backup',s.serverBackupEvidence === 'recorded' ? 'Previously recorded by the client; cleanliness is unknown.' : s.serverBackupEvidence]];
             renderLive(s,data,rows);
+            renderObservation(data,rows);
             for (const [name,value] of rows) { const dt=document.createElement('dt'), dd=document.createElement('dd'); dt.textContent=name; dd.textContent=value; details.append(dt,dd); }
-          } catch { status.textContent = 'Companion unavailable. The last observation cannot currently be read.'; details.replaceChildren(); notice.textContent=''; }
+          } catch { status.textContent = 'Companion unavailable. Displayed details are the last verified observation; current activity and completion are unknown.'; notice.textContent=''; }
           finally { window.setTimeout(poll,1000); }
         }
         const startButton = document.getElementById('start'), startResult = document.getElementById('start-result');
@@ -64,5 +65,5 @@ internal static partial class DashboardView
           await poll();
         }
         connect();
-        """ + LiveJavaScript;
+        """ + LiveJavaScript + ObservationJavaScript;
 }
