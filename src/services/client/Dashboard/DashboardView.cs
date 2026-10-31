@@ -1,6 +1,6 @@
 namespace FlorisDeV.BackupClient.Dashboard;
 
-internal static class DashboardView
+internal static partial class DashboardView
 {
     internal const string Html = """
         <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -29,6 +29,7 @@ internal static class DashboardView
             if (s.serverBackupEvidence === 'none') notice.textContent = 'No backup has been created yet.';
             else if (s.serverBackupEvidence === 'unknown') notice.textContent = 'Completed server backup history is unknown.';
             const rows = [['Attempt',s.attemptId],['Targets',s.targetNames.join(', ')],['Files examined',s.filesScanned],['Scan started',s.scanStartedAt ? new Date(s.scanStartedAt).toLocaleString() : 'Not observed'],['Recorded',new Date(s.observedAt).toLocaleString()],['Server backup',s.serverBackupEvidence === 'recorded' ? 'Previously recorded by the client; cleanliness is unknown.' : s.serverBackupEvidence]];
+            renderLive(s,data,rows);
             for (const [name,value] of rows) { const dt=document.createElement('dt'), dd=document.createElement('dd'); dt.textContent=name; dd.textContent=value; details.append(dt,dd); }
           } catch { status.textContent = 'Companion unavailable. The last observation cannot currently be read.'; details.replaceChildren(); notice.textContent=''; }
           finally { window.setTimeout(poll,1000); }
@@ -53,5 +54,5 @@ internal static class DashboardView
           await poll();
         }
         connect();
-        """;
+        """ + LiveJavaScript;
 }
