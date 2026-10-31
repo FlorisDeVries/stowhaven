@@ -93,7 +93,59 @@ dotnet test tests/services/client/FlorisDeV.BackupClient.Tests.csproj -m:1 \
   --filter 'FullyQualifiedName~PendingRun_ExitsInactive|FullyQualifiedName~Dashboard_ReportsPendingRunWhile|FullyQualifiedName~PendingEvidence_Preserves'
 ```
 
-These public-orchestration tests use real temporary SQLite/reporting files, synthetic targets, a controlled server boundary, and the real authorized companion interface. They do not launch the configured backup executable. Run records here describe the latest attempt and the runs it handled; bounded historical browsing and freshness evaluation are separate slices.
+These public-orchestration tests use real temporary SQLite/reporting files, synthetic targets, a controlled server boundary, and the real authorized companion interface. They do not launch the configured backup executable. Run records describe the attempt and the runs it handled. Freshness evidence is retained independently of attempt-history limits.
+
+## Backup freshness
+
+Set `BackupClient:Dashboard:MaximumBackupAge` explicitly, for example
+`"1.00:00:00"` for one day. Its default is `null`: the dashboard shows the age
+without a fresh/overdue judgment. Only a positive duration enables a judgment.
+Timer activity and old success timestamps cannot establish freshness.
+
+The latest attempt, last clean check and last completed server backup are
+separate observations. A failed attempt stays visible alongside an earlier
+clean result. A clean check with no changes can refresh the clean baseline,
+including an empty first scan, while prominently retaining “No completed server
+backup exists yet.” A check never establishes that a restore test happened.
+Completed backups with errors remain visible as completed backups and do not
+refresh the clean baseline. Unintended skipped, deferred or failed files prevent
+a clean result; explicitly excluded files do not.
+
+Age starts at the original scan time, with completion recorded separately.
+Delayed reconciliation does not redate that scan. A clean new run can establish
+freshness even when the same attempt also reconciles older degraded work and
+therefore ends with errors. A completed current clean no-changes scan likewise
+stands on its own evidence. Missing legacy scan/cleanliness evidence remains
+unknown.
+
+The private, versioned `clean-evidence.json` keeps the latest clean result, clean
+check and completed server backup separately from rolling attempt observations.
+It contains only IDs, scan/completion times, selection hashes and outcome labels;
+no credentials or target paths. Optional reporting failures never fail backups.
+Unknown schema versions are preserved for a matching client/companion upgrade.
+
+The companion recomputes the effective selection on each status request, reading
+target-level ignore rules with the same override behavior as the scanner.
+`appsettings.json` and `appsettings.local.json` reload while it runs. Target or
+effective exclusion changes preserve historical evidence and show a
+configuration-changed explanation until a clean result covers the selection.
+Environment and command-line configuration changes take effect after restarting
+the companion. If current configuration cannot be read, it cannot judge the
+current selection as fresh.
+
+The deterministic freshness demonstration uses controlled time, actual temporary
+files (including locked and explicitly excluded files), the public backup
+orchestrator and authorized companion HTTP:
+
+```bash
+dotnet test tests/services/client/FlorisDeV.BackupClient.Tests.csproj --no-restore -m:1 \
+  --filter FullyQualifiedName~Dashboard_Freshness
+```
+
+It covers a fresh clean check, overdue observations, later failed attempts with
+retained clean evidence, live effective-selection edits, delayed completion,
+degraded old work with a clean new run and honest legacy uncertainty. The browser
+renders these same separate evidence fields and scan/completion times.
 
 ## Starting a backup safely
 

@@ -142,6 +142,9 @@ public partial class BackupServiceIntegrationTests
         Assert.Equal(493, terminal.GetProperty("uploadedBytes").GetInt64());
         Assert.Equal(103, terminal.GetProperty("totalFilesToScan").GetInt32());
         Assert.Equal(3, terminal.GetProperty("warnings").GetArrayLength());
+        using var finalStatus = JsonDocument.Parse(await reconnected.GetStringAsync("api/status"));
+        Assert.Equal("unknown", finalStatus.RootElement.GetProperty("freshness").GetProperty("state").GetString());
+        Assert.Equal(JsonValueKind.Null, finalStatus.RootElement.GetProperty("snapshot").GetProperty("evidence").GetProperty("lastCleanResult").ValueKind);
     }
 
     private static async Task<JsonElement> ReadLiveAsync(HttpClient browser)
