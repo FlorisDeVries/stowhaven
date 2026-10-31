@@ -36,7 +36,7 @@ internal static class DashboardHistory
             var history = JsonSerializer.Deserialize<HistoryFile>(text, DashboardReporting.Json);
             if (history?.Attempts == null || history.Attempts.Length > Limit) throw new JsonException();
             var attempts = history.Attempts.Select(a => DashboardReporting.Decode(JsonSerializer.Serialize(a, DashboardReporting.Json))).ToArray();
-            if (attempts.Any(a => a.State != "available" || a.Snapshot!.ClientActive || a.Snapshot.Result == "active")) throw new JsonException();
+            if (attempts.Any(a => a.State != "available")) throw new JsonException();
             return new("available", attempts.Select(a => a.Snapshot!).ToArray());
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException or NotSupportedException)

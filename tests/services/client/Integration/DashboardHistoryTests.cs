@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using FlorisDeV.BackupClient.Dashboard;
 using FlorisDeV.BackupClient.Models;
 using FlorisDeV.BackupClient.Config;
@@ -14,6 +15,32 @@ namespace FlorisDeV.BackupClient.Tests.Integration;
 
 public partial class BackupServiceIntegrationTests
 {
+    [Theory]
+    [InlineData("targetName")]
+    [InlineData("relativePath")]
+    public async Task Dashboard_MalformedHistoricalDiagnosticsRemainUnavailableWithoutLeakingValues(string missing)
+    {
+        var target = Path.Combine(_testRoot, "target"); Directory.CreateDirectory(target);
+        var options = new DashboardOptions { Enabled = true, ReportingDirectory = Path.Combine(_testRoot, "reporting") };
+        await CreateReportingService(target, options.ReportingDirectory).RunAsync(default);
+        var path = Path.Combine(options.ReportingDirectory, "history.json");
+        var history = JsonNode.Parse(await File.ReadAllTextAsync(path))!;
+        var attempt = history["attempts"]![0]!;
+        var entry = new JsonObject { ["at"] = attempt["startedAt"]!.GetValue<string>(), ["category"] = "skipped",
+            ["targetName"] = "documents", ["relativePath"] = "file.txt", ["action"] = "Check file access and readability, then retry the backup." };
+        entry[missing] = null;
+        attempt["diagnostics"] = new JsonObject { ["skipped"] = 1, ["entries"] = new JsonArray(entry) };
+        await File.WriteAllTextAsync(path, history.ToJsonString());
+        await using var companion = await DashboardCompanion.StartAsync(options);
+        using var browser = new HttpClient { BaseAddress = companion.Address };
+        await DashboardTestAuthorization.AuthorizeAsync(browser, options);
+        using var response = await browser.GetAsync("api/history");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal("unavailable", document.RootElement.GetProperty("state").GetString());
+        Assert.Empty(document.RootElement.GetProperty("attempts").EnumerateArray());
+    }
+
     [Fact]
     public async Task Dashboard_DiagnosticNamesAndReadErrorsAreSanitizedBeforePersistenceAndHttp()
     {
@@ -98,8 +125,16 @@ public partial class BackupServiceIntegrationTests
             var attempts = before.RootElement.GetProperty("attempts");
             Assert.Equal(100, attempts.GetArrayLength());
             Assert.DoesNotContain(attempts.EnumerateArray(), a => a.GetProperty("attemptId").GetGuid() == origin.AttemptId);
+            Assert.DoesNotContain(attempts.EnumerateArray(), a => a.GetProperty("attemptId").GetGuid() == baseline.AttemptId);
             Assert.All(attempts.EnumerateArray(), a => Assert.Equal("degraded", a.GetProperty("runs")[0].GetProperty("cleanliness").GetString()));
         }
+        using (var status = JsonDocument.Parse(await browser.GetStringAsync("api/status")))
+        {
+            var clean = status.RootElement.GetProperty("snapshot").GetProperty("evidence").GetProperty("lastCleanResult");
+            Assert.Equal(baseline.AttemptId, clean.GetProperty("attemptId").GetGuid());
+            Assert.Equal(Assert.Single(baseline.Runs).ScanStartedAt, clean.GetProperty("scanStartedAt").GetDateTimeOffset());
+        }
+        Assert.True(File.Exists(Path.Combine(options.Value.Dashboard.ReportingDirectory, "clean-evidence.json")));
         complete = true;
         var reconciled = await Service().RunAsync(default);
         Assert.Equal(BackupOutcome.CompletedWithErrors, reconciled.Outcome);
@@ -110,6 +145,12 @@ public partial class BackupServiceIntegrationTests
         Assert.Equal(origin.AttemptId, retained[0].GetProperty("runs")[0].GetProperty("originAttemptId").GetGuid());
         Assert.Equal("pending", retained[1].GetProperty("runs")[0].GetProperty("localCompletion").GetString());
         Assert.Equal("degraded", retained[1].GetProperty("runs")[0].GetProperty("cleanliness").GetString());
+        using (var status = JsonDocument.Parse(await browser.GetStringAsync("api/status")))
+        {
+            var clean = status.RootElement.GetProperty("snapshot").GetProperty("evidence").GetProperty("lastCleanResult");
+            Assert.Equal(baseline.AttemptId, clean.GetProperty("attemptId").GetGuid());
+            Assert.Equal(Assert.Single(baseline.Runs).ScanStartedAt, clean.GetProperty("scanStartedAt").GetDateTimeOffset());
+        }
         foreach (var path in Directory.GetFiles(options.Value.Dashboard.ReportingDirectory, "*.json"))
         {
             var text = await File.ReadAllTextAsync(path);
@@ -160,6 +201,7 @@ public partial class BackupServiceIntegrationTests
         await StageRunAsync(state, device, run, commit);
         ConfigurePartialStatus();
         var page = FailedPage(device, wrongIdentity ? Guid.NewGuid() : run, commit);
+        page = page with { Files = page.Files.Select(file => file with { Error = "SYNTHETIC-SECRET Bearer test https://storage.test?sig=SAS-SECRET" }).ToArray() };
         _mockApiClient.Setup(x => x.ListFailedCommitFiles(device, commit, 500, It.IsAny<string?>(), It.IsAny<CancellationToken>())).ReturnsAsync(page);
         var target = Path.Combine(_testRoot, "target"); Directory.CreateDirectory(target);
         var options = Options.Create(new BackupClientOptions { BackupTargets = new() { ["default"] = target },
@@ -171,11 +213,20 @@ public partial class BackupServiceIntegrationTests
         await using var companion = await DashboardCompanion.StartAsync(options.Value.Dashboard);
         using var browser = new HttpClient { BaseAddress = companion.Address };
         await DashboardTestAuthorization.AuthorizeAsync(browser, options.Value.Dashboard);
-        using var history = JsonDocument.Parse(await browser.GetStringAsync("api/history"));
+        var historyText = await browser.GetStringAsync("api/history");
+        Assert.DoesNotContain("SYNTHETIC-SECRET", historyText);
+        Assert.DoesNotContain("SAS-SECRET", historyText);
+        Assert.DoesNotContain("SYNTHETIC-SECRET", await File.ReadAllTextAsync(Path.Combine(options.Value.Dashboard.ReportingDirectory, "history.json")));
+        using var history = JsonDocument.Parse(historyText);
         var diagnostics = history.RootElement.GetProperty("attempts")[0].GetProperty("diagnostics");
-        Assert.Equal(wrongIdentity ? 0 : 1, diagnostics.GetProperty("serverRejected").GetInt32());
+        Assert.Equal(1, diagnostics.GetProperty("serverRejected").GetInt32()); // Validated commit status supplies the total.
         if (!wrongIdentity) Assert.Equal("rejected.txt", diagnostics.GetProperty("entries")[0].GetProperty("relativePath").GetString());
-        else Assert.NotNull(await state.GetPendingBackupRunAsync(device));
+        else
+        {
+            Assert.NotNull(await state.GetPendingBackupRunAsync(device));
+            Assert.Empty(diagnostics.GetProperty("entries").EnumerateArray());
+            Assert.True(diagnostics.GetProperty("truncated").GetBoolean());
+        }
     }
 
     [Fact]
@@ -235,6 +286,7 @@ public partial class BackupServiceIntegrationTests
             using var browser = new HttpClient { BaseAddress = companion.Address };
             Assert.Equal(HttpStatusCode.Unauthorized, (await browser.GetAsync("api/history")).StatusCode);
             await DashboardTestAuthorization.AuthorizeAsync(browser, options);
+            Assert.Equal(HttpStatusCode.BadRequest, (await browser.GetAsync("api/history?path=ignored")).StatusCode);
             using var history = JsonDocument.Parse(await browser.GetStringAsync("api/history"));
             var attempts = history.RootElement.GetProperty("attempts");
             Assert.Equal(100, attempts.GetArrayLength());

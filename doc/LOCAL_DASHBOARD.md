@@ -114,6 +114,49 @@ dotnet test tests/services/client/FlorisDeV.BackupClient.Tests.csproj -m:1 \
 
 These public-orchestration tests use real temporary SQLite/reporting files, synthetic targets, a controlled server boundary, and the real authorized companion interface. They do not launch the configured backup executable. Run records describe the attempt and the runs it handled. Freshness evidence is retained independently of attempt-history limits.
 
+## Browsing recent attempts and file problems
+
+Open **Recent backup attempts → Open or refresh history**, then expand an attempt
+to inspect its run identities, original scans, server/local outcomes and file
+problems. The authorized `/api/history` view retains the newest 100 attempts
+across client and companion restarts. Each attempt keeps its own observations;
+later reconciliation does not overwrite an earlier degraded result. An older
+active observation means its final outcome is unknown; it does not establish that
+the client is still running. Live ownership and interruption are shown separately
+in the current observation.
+
+File problems have timestamps, target names, relative paths and fixed retry or
+investigation guidance. Categories distinguish unreadable/hash-skipped files,
+files changed after hashing, deferred uploads, upload failures and server-rejected
+files. Exception text, storage URLs, credentials and absolute paths never enter
+this reporting contract. Sensitive-looking names are redacted before persistence;
+server paths must pass identity, paging and count checks before becoming samples.
+
+At most 100 diagnostic samples are retained per attempt. Complete category counts
+remain available, and **Diagnostic details are incomplete** explicitly identifies
+truncated or unavailable detail. A validated server rejection total is retained
+even when the detailed response cannot be validated. Upload implementations that
+provide only a failure count likewise leave detail explicitly incomplete.
+
+Rolling `history.json` contains only portable allow-listed observations. Pruning
+never touches SQLite backup recovery state or the independent `clean-evidence.json`
+baseline. Pending runs retain their original identity, scan and degradation
+evidence after their originating attempt ages out. Lists of handling attempts
+are bounded to 100; each run keeps its original attempt identity separately.
+History is updated at attempt boundaries and completion, not for each heartbeat.
+
+To demonstrate more than 100 attempts, more than 100 file problems, restart
+persistence, pending reconciliation after pruning and retained clean evidence:
+
+```bash
+dotnet test tests/services/client/FlorisDeV.BackupClient.Tests.csproj -m:1 \
+  --filter 'FullyQualifiedName~Dashboard_History|FullyQualifiedName~Dashboard_PruningRetains|FullyQualifiedName~Dashboard_DiagnosticNames|FullyQualifiedName~ObservationsRecoverAfterCompanionRestart'
+```
+
+The demonstration uses fresh synthetic temporary directories and controlled
+server/file-access boundaries. Its process-kill case starts only the dedicated
+test fixture; it never invokes an installed client or existing backup service.
+
 ## Backup freshness
 
 Set `BackupClient:Dashboard:MaximumBackupAge` explicitly, for example

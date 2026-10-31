@@ -17,6 +17,7 @@ public sealed record DashboardDiagnostics
            value.Entries != null && value.Entries.Length <= 100 &&
            (value.Truncated || (long)value.Skipped + value.Changed + value.Deferred + value.Failed + value.ServerRejected <= value.Entries.Length) &&
            value.Entries.All(e => e != null && e.At >= snapshot.StartedAt && e.At <= snapshot.ObservedAt &&
+               e.Category != null && e.TargetName != null && e.RelativePath != null &&
                DashboardDiagnosticCollector.Actions.TryGetValue(e.Category, out var action) && e.Action == action &&
                e.TargetName == DashboardReporting.SafeTarget(e.TargetName) && DashboardDiagnosticCollector.SafePath(e.RelativePath) == e.RelativePath);
 }
@@ -49,6 +50,10 @@ internal sealed class DashboardDiagnosticCollector(TimeProvider time)
     internal void Add(string category, string target, string path)
     {
         _counts[category] = _counts.GetValueOrDefault(category) + 1;
+        Sample(category, target, path);
+    }
+    internal void Sample(string category, string target, string path)
+    {
         if (_entries.Count < 100) _entries.Add(new(time.GetUtcNow(), category, DashboardReporting.SafeTarget(target), SafePath(path), Actions[category]));
     }
     internal void Missing(string category, int count) => _counts[category] = _counts.GetValueOrDefault(category) + count;

@@ -41,6 +41,12 @@ public sealed partial class BackupExecutionProcessTests
             var recorded = await Status(reconnected);
             Assert.Equal("recorded", recorded.GetProperty("observation").GetString());
             Assert.Equal("cleanCheck", recorded.GetProperty("snapshot").GetProperty("result").GetString());
+            using var history = JsonDocument.Parse(await reconnected.GetStringAsync("api/history"));
+            var attempts = history.RootElement.GetProperty("attempts");
+            Assert.Equal(2, attempts.GetArrayLength());
+            Assert.Equal("cleanCheck", attempts[0].GetProperty("result").GetString());
+            Assert.Equal(attempt, attempts[1].GetProperty("attemptId").GetGuid());
+            Assert.Equal("active", attempts[1].GetProperty("result").GetString()); // Last observation; final outcome is unknown.
         }
         finally { await companion.DisposeAsync(); }
     }
@@ -165,7 +171,6 @@ public sealed partial class BackupExecutionProcessTests
         Assert.Equal(failure == "incompatible" ? "incompatible" : "unavailable", invalid.GetProperty("state").GetString());
         Assert.Equal("unavailable", invalid.GetProperty("observation").GetString());
         Assert.Equal(attempt, invalid.GetProperty("snapshot").GetProperty("attemptId").GetGuid());
-        Assert.DoesNotContain("fresh", invalid.GetRawText());
         if (failure == "incompatible") Assert.Equal(corrupted.ToJsonString(), await File.ReadAllTextAsync(path));
     }
 

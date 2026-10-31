@@ -72,14 +72,19 @@ internal static class DashboardReporting
         snapshot = verified.Snapshot!;
         PrivateFiles.EnsureDirectory(options.ReportingDirectory);
         var path = Path.Combine(options.ReportingDirectory, "snapshot.json");
+        DashboardSnapshot? preceding = null;
         if (File.Exists(path))
         {
             var current = await ReadAsync(options);
             if (current.State == "incompatible") return; // Older producers preserve newer data, too.
+            preceding = current.Snapshot;
+            // Preserve the final available observation even if its producer never wrote a terminal result.
+            if (preceding != null && preceding.AttemptId != snapshot.AttemptId) await DashboardHistory.RecordAsync(options, preceding);
         }
         snapshot = await DashboardFreshnessReporting.RecordAsync(options, snapshot);
         await PrivateFiles.ReplaceAsync(path, JsonSerializer.Serialize(snapshot, Json));
-        if (!snapshot.ClientActive && snapshot.Result != "active") await DashboardHistory.RecordAsync(options, snapshot);
+        if (preceding?.AttemptId != snapshot.AttemptId || !snapshot.ClientActive && snapshot.Result != "active")
+            await DashboardHistory.RecordAsync(options, snapshot);
     }
 
     internal static async Task<DashboardStatus> ReadAsync(DashboardOptions options, TimeProvider? timeProvider = null, Func<FlorisDeV.BackupClient.Config.BackupClientOptions>? currentOptions = null)

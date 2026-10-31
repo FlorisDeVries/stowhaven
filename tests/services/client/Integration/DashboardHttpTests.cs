@@ -47,6 +47,7 @@ public sealed class DashboardHttpTests : IDisposable
         Assert.Equal("empty", (await status.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("state").GetString());
         browser.DefaultRequestHeaders.Add("Origin", "https://unrelated.example");
         Assert.Equal(HttpStatusCode.Forbidden, (await browser.GetAsync("api/status")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await browser.GetAsync("api/history")).StatusCode);
         browser.DefaultRequestHeaders.Remove("Origin");
         browser.DefaultRequestHeaders.Host = "attacker.example";
         Assert.Equal(HttpStatusCode.Forbidden, (await browser.GetAsync("api/status")).StatusCode);

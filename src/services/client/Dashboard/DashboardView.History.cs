@@ -13,10 +13,11 @@ internal static partial class DashboardView
             if (!response.ok) throw new Error();
             const data = await response.json();
             if (data.state !== 'available') { historyNotice.textContent=data.message || 'History unavailable.'; return; }
-            historyNotice.textContent=data.attempts.length ? 'Newest first. Up to 100 finished attempts are retained. Open an attempt for its runs and file problems.' : 'No finished attempts recorded yet.';
+            historyNotice.textContent=data.attempts.length ? 'Newest first. Up to 100 attempts are retained. Open an attempt for its runs and file problems. Historical active observations have unknown final outcomes.' : 'No attempts recorded yet.';
             for (const attempt of data.attempts) {
               const item=document.createElement('details'), summary=document.createElement('summary'), values=document.createElement('dl');
-              summary.textContent=new Date(attempt.startedAt).toLocaleString() + ' · ' + attempt.result + ' · ' + attempt.attemptId;
+              const outcome=attempt.result === 'active' ? 'Last observed active; final outcome unknown' : attempt.result;
+              summary.textContent=new Date(attempt.startedAt).toLocaleString() + ' · ' + outcome + ' · ' + attempt.attemptId;
               item.append(summary,values); historyList.append(item);
               const rows=[['Targets',attempt.targetNames.join(', ')],['Files examined',attempt.filesScanned]];
               renderRuns(attempt,rows);

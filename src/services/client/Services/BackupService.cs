@@ -904,6 +904,8 @@ public partial class BackupService(
         string? continuationToken = null;
         var failedFilesRead = 0;
         var diagnosticSamples = new List<string>();
+        // The validated commit supplies the count even if the detail endpoint is incomplete or invalid.
+        _diagnostics?.Missing("serverRejected", Math.Max(0, expectedFailedFiles));
 
         do
         {
@@ -947,7 +949,6 @@ public partial class BackupService(
         }
         // Only publish after the existing identity, status, paging and total-count checks all pass.
         foreach (var path in diagnosticSamples) DiagnoseServerRejected(path);
-        _diagnostics?.Missing("serverRejected", failedFilesRead - diagnosticSamples.Count);
     }
 
     /// <summary>

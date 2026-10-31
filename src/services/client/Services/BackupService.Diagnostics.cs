@@ -14,7 +14,7 @@ public partial class BackupService
     {
         var separator = logicalPath.IndexOf('/');
         if (separator <= 0 || !_options.BackupTargets.ContainsKey(logicalPath[..separator]))
-        { _diagnostics?.Missing("serverRejected", 1); return; }
-        _diagnostics?.Add("serverRejected", logicalPath[..separator], logicalPath[(separator + 1)..]);
+            return;
+        _diagnostics?.Sample("serverRejected", logicalPath[..separator], logicalPath[(separator + 1)..]);
     }
 }
