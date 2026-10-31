@@ -91,21 +91,21 @@ public sealed class DashboardLogTests : IDisposable
     {
         var secrets = new[]
         {
-            "BEARER synthetic-bearer-value",
-            "https://storage.invalid/file?sv=2025&sig=synthetic-sas-value",
-            "SAS fragment: sv=2025&sp=w&sig=synthetic-fragment-value",
-            "{\"RecoveryPhrase\":\"synthetic recovery phrase one two three\"}",
-            "recovery_phrase =\n  synthetic-multiline-recovery-value\n  synthetic-more-words",
-            "{\"client_secret\":\"synthetic-json-secret-value\"}",
-            "ClientSecret=\n synthetic-multiline-client-value",
-            "{\"apiKey\":\"synthetic-api-key-value\"}",
-            "{\"Sas\":\"synthetic-opaque-sas-value\"}",
-            "{\"sig\":\"synthetic-json-signature-value\"}",
-            "{\"Pwd\":\"synthetic-short-password-value\"}",
+            "BEARER fixture-alpha-value",
+            "https://storage.invalid/file?sv=2025&sig=fixture-beta-value",
+            "SAS fragment: sv=2025&sp=w&sig=fixture-gamma-value",
+            "{\"RecoveryPhrase\":\"fixture delta echo foxtrot golf hotel\"}",
+            "recovery_phrase =\n  fixture-india-value\n  fixture-juliet-value",
+            "{\"client_secret\":\"fixture-kilo-value\"}",
+            "ClientSecret=\n fixture-lima-value",
+            "{\"apiKey\":\"fixture-mike-value\"}",
+            "{\"Sas\":\"fixture-november-value\"}",
+            "{\"sig\":\"fixture-oscar-value\"}",
+            "{\"Pwd\":\"fixture-papa-value\"}",
             "Basic c3ludGhldGljOnBhc3N3b3Jk",
-            "sig%3Dsynthetic-encoded-sas-value%26sv%3D2025",
+            "sig%3Dfixture-quebec-value%26sv%3D2025",
             "eyJhbGciOiJub25lIn0.eyJzdWIiOiJzeW50aGV0aWMifQ.c3ludGhldGljLXNpZ25hdHVyZQ",
-            "Bearer " + new string('x', 4090) + "synthetic-across-buffer-value" + new string('y', 4090)
+            "Bearer " + new string('x', 4090) + "fixture-romeo-value" + new string('y', 4090)
         };
         await WriteLogAsync(string.Concat(secrets.Select(Entry)) + Entry("Safe diagnostic after redaction"));
         await using var companion = await DashboardCompanion.StartAsync(Options);
@@ -113,8 +113,8 @@ public sealed class DashboardLogTests : IDisposable
         await DashboardTestAuthorization.AuthorizeAsync(browser, Options);
         var body = await browser.GetStringAsync("api/logs");
         Assert.Contains("Safe diagnostic after redaction", body);
-        Assert.DoesNotContain("synthetic-", body);
-        Assert.DoesNotContain("synthetic recovery", body);
+        Assert.DoesNotContain("fixture-", body);
+        Assert.DoesNotContain("fixture delta", body);
         Assert.DoesNotContain("eyJhbGci", body);
         Assert.DoesNotContain("c3ludGhldGljOnBhc3N3b3Jk", body);
         // The key is outside the bounded tail; its unlabelled continuation must be discarded.
