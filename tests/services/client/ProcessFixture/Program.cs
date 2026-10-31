@@ -59,7 +59,13 @@ public static class FixtureProgram
                 }, new RequestFixture(root, label, invocation, async () => { await service.RunAsync(default); }), TimeSpan.FromSeconds(2));
                 Console.WriteLine((await control.StartAsync()).State); return 0;
             }
-            Console.WriteLine((await service.RunAsync(default)).Outcome); return 0;
+            Console.WriteLine((await service.RunAsync(default)).Outcome);
+            if (args.ElementAtOrDefault(3) == "linger")
+            {
+                await File.WriteAllTextAsync(Path.Combine(root, label + ".finished"), "finished");
+                while (!File.Exists(Path.Combine(root, label + ".exit"))) await Task.Delay(20);
+            }
+            return 0;
         }
         catch (Exception ex) { Console.WriteLine(ex.GetType().Name); return 10; }
     }

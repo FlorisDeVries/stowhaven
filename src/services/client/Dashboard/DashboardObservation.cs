@@ -12,15 +12,20 @@ internal sealed class DashboardObservation(DashboardOptions options, TimeProvide
     {
         var status = await DashboardReporting.ReadAsync(options, time);
         if (status.Snapshot is { } verified) _lastVerified = verified;
-        else if (status.State != "empty") status = status with { Snapshot = _lastVerified };
+        else if (_lastVerified != null)
+            status = status with { Snapshot = _lastVerified,
+                State = status.State == "empty" ? "unavailable" : status.State,
+                Message = status.State == "empty" ? "Reporting is no longer available. Showing the last verified observation; current activity and completion are unknown." : status.Message };
         var execution = "unavailable";
         string? identity = null;
+        int? ownerProcessId = null;
         if (control != null)
         {
             try
             {
                 var probe = BackupExecutionGuard.Observe(control.DatabasePath);
                 identity = probe.Identity;
+                ownerProcessId = probe.OwnerProcessId;
                 execution = probe.Active ? "active" : "inactive";
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException) { }
@@ -34,7 +39,7 @@ internal sealed class DashboardObservation(DashboardOptions options, TimeProvide
         if (snapshot.Result != "active") return status with { Observation = "recorded" };
         if (receipt?.AttemptId == snapshot.AttemptId && (execution == "inactive" || ExecutionProcessIdentity.HasEnded(receipt)))
             return status with { Observation = "interrupted", Message = "Backup execution ended without a recorded final result. Last verified evidence is preserved; completion is unknown." };
-        if (control != null && (execution == "unavailable" || receipt?.ProcessIdentity == null || receipt.ProcessId is not > 0))
+        if (control != null && (execution == "unavailable" || receipt?.ProcessIdentity == null || receipt.ProcessId is not > 0 || ownerProcessId != receipt.ProcessId))
             return status with { Observation = "unavailable", Message = "The recorded attempt's execution identity cannot be verified. Current execution ownership is reported separately; last verified evidence is preserved." };
         return status with { Observation = status.Stale ? "stale" : "fresh",
             Message = status.Stale ? "No heartbeat for more than 15 seconds. Silence does not establish that backup execution ended." : null };

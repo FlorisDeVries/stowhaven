@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Globalization;
 using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 
@@ -21,22 +22,45 @@ internal sealed class BackupExecutionGuard : IDisposable
 
     // Observation never creates a database or initializes backup state. A read-only descriptor
     // can probe flock on Linux, independently of SQLite's own locks.
-    internal static (string? Identity, bool Active) Observe(string databasePath)
+    internal static (string? Identity, bool Active, int? OwnerProcessId) Observe(string databasePath)
     {
         if (!OperatingSystem.IsLinux()) throw new PlatformNotSupportedException();
         var descriptor = Open(Path.GetFullPath(databasePath), 0x80000, 0); // O_RDONLY|O_CLOEXEC
         if (descriptor < 0)
         {
             var error = Marshal.GetLastPInvokeError();
-            if (error == 2) return (null, false);
+            if (error == 2) return (null, false, null);
             throw Failure("observe execution protection", error);
         }
         using var probe = new BackupExecutionGuard(new SafeFileHandle((IntPtr)descriptor, ownsHandle: true));
         var identity = probe.Identity;
-        if (Flock(probe._handle, 2 | 4) == 0) return (identity, false);
+        if (Flock(probe._handle, 2 | 4) == 0) return (identity, false, null);
         var lockError = Marshal.GetLastPInvokeError();
-        if (lockError == 11) return (identity, true);
+        if (lockError == 11) return (identity, true, ObserveOwner(identity));
         throw Failure("observe execution protection", lockError);
+    }
+
+    private static int? ObserveOwner(string identity)
+    {
+        // /proc/locks identifies FLOCK's owner and actual device+inode. PID alone cannot
+        // associate an acknowledgment with whichever execution currently owns the database.
+        // See https://man7.org/linux/man-pages/man5/proc_locks.5.html
+        try
+        {
+            foreach (var line in File.ReadLines("/proc/locks"))
+            {
+                var fields = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (fields.Length != 8 || fields[1] != "FLOCK" || fields[3] != "WRITE" ||
+                    fields[6] != "0" || fields[7] != "EOF" || !int.TryParse(fields[4], out var pid) || pid <= 0) continue;
+                var device = fields[5].Split(':');
+                if (device.Length == 3 && ulong.TryParse(device[0], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var major) &&
+                    ulong.TryParse(device[1], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var minor) &&
+                    ulong.TryParse(device[2], NumberStyles.None, CultureInfo.InvariantCulture, out var inode) &&
+                    $"{major:x}:{minor:x}:{inode:x}" == identity) return pid;
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        return null;
     }
 
     internal static BackupExecutionGuard? TryAcquire(string databasePath, bool launchReservation = false)

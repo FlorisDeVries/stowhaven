@@ -34,6 +34,10 @@ The first command stays running. The second opens an authorized browser tab. A h
 
 The browser polls once per second. The client coalesces live observations to at most one per second and keeps sending heartbeats during quiet work; the final outcome is recorded immediately after stopping the heartbeat. After 15 seconds without a heartbeat the view labels the observation stale, without declaring the process stopped. Streaming scans and transfers have unknown totals, so the view does not invent percentages or completion estimates. Reloading the same tab preserves its origin-scoped session; sessions are not cookies and are never sent to other local ports. Authorization ends after companion restart or 12 hours without keyboard/pointer activity. Passive polling does not extend it. Run `open-dashboard` again to authorize. Closing the browser or stopping the companion with Ctrl+C leaves backup execution alone.
 
+Each response distinguishes fresh observations, recorded terminal results, stale heartbeats, confirmed interruption, and unavailable observations. Execution ownership is probed separately against the actual database inode without creating or initializing backup state. An occupied lock protects against duplicate starts even when reporting is stale or unreadable. The recorded execution's kernel process start identity and current inode-lock owner must match before activity is attributed to that attempt; a PID alone can be reused. Missing or unverifiable ownership information never proves interruption or completion. An ended execution without a recorded final result is interrupted, retaining its last counters and run evidence as historical information.
+
+While the companion remains running, malformed, missing, unreadable or unsupported reporting retains its last validated snapshot with an explicit unavailable/compatibility notice. Unreachable companion requests retain the browser's already displayed evidence with a warning. These retained details never establish current activity or new success. Restart reads durable supported reporting afresh and requires browser reauthorization; a stopped companion cannot maintain an in-memory copy of a reporting file that is subsequently lost. Unsupported schemas and incomplete staging files are preserved rather than interpreted or promoted.
+
 For a reproducible clean-check demonstration, run the public backup orchestration integration test below. It uses the real scanner and temporary SQLite state with a controlled remote API dependency, records a clean check while the companion is stopped, starts the companion, authorizes a browser HTTP client, and reads the same recorded attempt. It does not contact your configured API or read user secrets:
 
 ```bash
@@ -146,6 +150,16 @@ compete for the same inode reservation, with no delayed backup after the winning
 attempt finishes. Authorized HTTP cases exercise active and fast completed
 execution confirmation, errors, browser expiry and concurrent browser starts.
 The systemd boundary is controlled in these deterministic tests.
+
+`ObservationsRecoverAfterCompanionRestartAndDistinguishSilenceFromConfirmedClientDeath`
+also authorizes a polling HTTP browser equivalent, observes a stale heartbeat
+while the real process still owns execution, rejects a duplicate start, stops
+and restarts the real companion, reconnects to the same recorded attempt, then
+forcibly kills the client and observes interruption. A subsequent real test
+process acquires execution and records a clean check. Additional cases keep a
+historical process alive while a different process owns execution, simulate PID
+reuse, lose reporting files, and encounter incompatible schemas. Polling a
+missing database verifies that observation creates no backup state.
 
 A genuine CLI/service/browser smoke against isolated published binaries and
 unique real user units remains part of the final installation verification.
