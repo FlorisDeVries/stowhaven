@@ -8,6 +8,9 @@ public enum BackupOutcome { NoChanges, Succeeded, CompletedWithErrors, Pending, 
 public sealed record BackupResult
 {
     public required BackupOutcome Outcome { get; init; }
+    public Guid AttemptId { get; init; }
+    public BackupRunResult[] Runs { get; init; } = [];
+    public BackupScanEvidence? CurrentScan { get; init; }
     public string Operation { get; init; } = "backup";
     public Guid? DeviceId { get; init; }
     public Guid? RunId { get; init; }

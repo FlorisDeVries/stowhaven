@@ -26,10 +26,11 @@ internal static partial class DashboardView
             details.replaceChildren(); notice.textContent = '';
             if (!data.snapshot) { status.textContent = data.message || 'Reporting unavailable.'; return; }
             const s = data.snapshot;
-            status.textContent = s.result === 'cleanCheck' ? 'Last recorded attempt: clean check — no changes to back up.' : 'Last recorded attempt: ' + s.result + '. Detailed results for this outcome are not available in this dashboard version.';
+            status.textContent = 'Last recorded attempt: ' + (({cleanCheck:'Clean check — no changes to back up.',noChanges:'No changes to back up.',pending:'Pending server completion; the next backup attempt will reconcile this work.',succeeded:'Backup succeeded: server and local completion confirmed.',completedWithErrors:'Backup completed with errors.',failed:'Backup attempt failed.'})[s.result] || 'Active at the recorded observation.');
             if (s.serverBackupEvidence === 'none') notice.textContent = 'No backup has been created yet.';
             else if (s.serverBackupEvidence === 'unknown') notice.textContent = 'Completed server backup history is unknown.';
             const rows = [['Attempt',s.attemptId],['Targets',s.targetNames.join(', ')],['Files examined',s.filesScanned],['Scan started',s.scanStartedAt ? new Date(s.scanStartedAt).toLocaleString() : 'Not observed'],['Recorded',new Date(s.observedAt).toLocaleString()],['Server backup',s.serverBackupEvidence === 'recorded' ? 'Previously recorded by the client; cleanliness is unknown.' : s.serverBackupEvidence]];
+            renderRuns(s,rows);
             renderLive(s,data,rows);
             renderObservation(data,rows);
             for (const [name,value] of rows) { const dt=document.createElement('dt'), dd=document.createElement('dd'); dt.textContent=name; dd.textContent=value; details.append(dt,dd); }
@@ -65,5 +66,5 @@ internal static partial class DashboardView
           await poll();
         }
         connect();
-        """ + LiveJavaScript + ObservationJavaScript;
+        """ + RunJavaScript + LiveJavaScript + ObservationJavaScript;
 }

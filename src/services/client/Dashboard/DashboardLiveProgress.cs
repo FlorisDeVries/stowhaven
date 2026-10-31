@@ -58,6 +58,10 @@ internal sealed class DashboardLiveAttempt(DashboardOptions options, DashboardSn
             _progress = _progress with { ApiWaking = false, Scanning = true };
         }
     }
+    internal void RunEvidence(FlorisDeV.BackupClient.Models.BackupRunResult[] runs, FlorisDeV.BackupClient.Models.BackupScanEvidence? scan)
+    {
+        lock (_gate) _snapshot = _snapshot with { Runs = runs, CurrentScan = scan };
+    }
     internal int FilesScanned { get { lock (_gate) return _snapshot.FilesScanned; } }
 
     internal DashboardLiveProgress Capture(bool active)

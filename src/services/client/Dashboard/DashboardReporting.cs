@@ -22,6 +22,9 @@ public sealed record DashboardSnapshot(
     DateTimeOffset ObservedAt, string Result, string[] TargetNames, string SelectionFingerprint,
     int FilesScanned, string ServerBackupEvidence)
 {
+    public bool ClientActive { get; init; }
+    public BackupRunResult[] Runs { get; init; } = [];
+    public BackupScanEvidence? CurrentScan { get; init; }
     public DashboardLiveProgress? Live { get; init; }
 }
 
@@ -51,6 +54,7 @@ internal static class DashboardReporting
 
     internal static async Task WriteAsync(DashboardOptions options, DashboardSnapshot snapshot)
     {
+        if (!ValidRunEvidence(snapshot)) throw new InvalidOperationException("Invalid run evidence cannot be reported.");
         PrivateFiles.EnsureDirectory(options.ReportingDirectory);
         var path = Path.Combine(options.ReportingDirectory, "snapshot.json");
         if (File.Exists(path))
@@ -79,7 +83,7 @@ internal static class DashboardReporting
                 (snapshot.Result == "cleanCheck" && snapshot.ScanStartedAt == null) ||
                 (snapshot.Result == "active" && snapshot.Live is not { Active: true }) ||
                 !Regex.IsMatch(snapshot.SelectionFingerprint ?? "", "\\A[a-f0-9]{64}\\z") ||
-                snapshot.FilesScanned < 0 || snapshot.Result is not ("cleanCheck" or "noChanges" or "succeeded" or "completedWithErrors" or "pending" or "failed" or "active") ||
+                !ValidRunEvidence(snapshot) || snapshot.FilesScanned < 0 || snapshot.Result is not ("cleanCheck" or "noChanges" or "succeeded" or "completedWithErrors" or "pending" or "failed" or "active") ||
                 snapshot.ServerBackupEvidence is not ("none" or "recorded" or "unknown"))
                 return new("unavailable", Message: "Reporting is invalid. Run the client again to record a new observation.");
             if (snapshot.Live is { } live && (live.HeartbeatAt < snapshot.StartedAt || live.HeartbeatAt > snapshot.ObservedAt ||
@@ -98,6 +102,29 @@ internal static class DashboardReporting
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException or NotSupportedException)
         { return new("unavailable", Message: "Reporting cannot be read. Check private reporting permissions and run the client again."); }
     }
+    private static bool ValidRunEvidence(DashboardSnapshot snapshot)
+    {
+        static bool Fingerprint(string? value) => value == null || Regex.IsMatch(value, "\\A[a-f0-9]{64}\\z");
+        if (snapshot.Runs == null || snapshot.Runs.Length > 128) return false;
+        foreach (var run in snapshot.Runs)
+        {
+            if (run == null || run.RunId == Guid.Empty || run.CommitId == Guid.Empty || run.OriginAttemptId == Guid.Empty ||
+                run.AttemptIds == null || run.AttemptIds.Length > 10000 || run.AttemptIds.Any(x => x == Guid.Empty) ||
+                run.ScanStartedAt > snapshot.ObservedAt || !Fingerprint(run.SelectionFingerprint) ||
+                run.FilesSkipped < 0 || run.FilesDeferred < 0 || run.FilesFailed < 0 || run.ServerFilesFailed < 0 ||
+                run.Outcome is not ("pending" or "succeeded" or "completedWithErrors" or "failed") ||
+                run.ServerProcessing is not ("unknown" or "notSubmitted" or "pending" or "succeeded" or "completedWithErrors" or "failed") ||
+                run.LocalCompletion is not ("pending" or "completed" or "notCompleted") || run.Cleanliness is not ("unknown" or "clean" or "degraded") ||
+                (run.LocalCompletion == "completed" && run.ServerProcessing is not ("succeeded" or "completedWithErrors")) ||
+                (run.Cleanliness == "clean" && (run.LocalCompletion != "completed" || run.ServerProcessing != "succeeded" ||
+                    run.ScanCompleted != true || run.ScanStartedAt == null || run.SelectionFingerprint == null ||
+                    run.FilesSkipped != 0 || run.FilesDeferred != 0 || run.FilesFailed != 0))) return false;
+        }
+        return snapshot.CurrentScan is not { } scan ||
+            (scan.StartedAt >= snapshot.StartedAt && scan.StartedAt <= snapshot.ObservedAt &&
+             scan.SelectionFingerprint != null && Fingerprint(scan.SelectionFingerprint) && (scan.Clean != true || scan.Completed));
+    }
+
 }
 
 internal static class PrivateFiles
