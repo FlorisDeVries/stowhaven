@@ -148,6 +148,21 @@ public sealed class DashboardSchedulingTests : IDisposable
         Assert.Contains("unmask", schedule.GetProperty("message").GetString());
     }
 
+    [Fact]
+    public async Task ConfigurationReloadDetectsResidentSchedulingWithoutRestartingTheCompanion()
+    {
+        var current = Options();
+        await using var companion = await DashboardCompanion.StartAsync(current.Dashboard,
+            startControl: new(new() { FilePath = Path.Combine(_root, "unused.db") }, current, new SchedulingSystemd()), currentOptions: () => current);
+        using var browser = new HttpClient { BaseAddress = companion.Address };
+        await DashboardTestAuthorization.AuthorizeAsync(browser, current.Dashboard);
+        Assert.Equal("enabled", (await browser.GetFromJsonAsync<JsonElement>("api/status")).GetProperty("scheduling").GetProperty("state").GetString());
+        current = Options(resident: true);
+        var schedule = (await browser.GetFromJsonAsync<JsonElement>("api/status")).GetProperty("scheduling");
+        Assert.Equal("incompatibleSchedule", schedule.GetProperty("state").GetString());
+        Assert.Equal(JsonValueKind.Null, schedule.GetProperty("nextActivation").ValueKind);
+    }
+
     private async Task<JsonElement> Status(SchedulingSystemd systemd, BackupClientOptions? backup = null)
     {
         backup ??= Options();

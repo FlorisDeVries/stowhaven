@@ -26,7 +26,7 @@ public sealed class DashboardCompanion : IAsyncDisposable
     private DashboardCompanion(WebApplication app, Uri address, FileStream ownership, string connectionPath)
         => (_app, Address, _ownership, _connectionPath) = (app, address, ownership, connectionPath);
 
-    public static async Task<DashboardCompanion> StartAsync(DashboardOptions options, TimeProvider? timeProvider = null, CancellationToken cancellationToken = default, DashboardStartControl? startControl = null)
+    public static async Task<DashboardCompanion> StartAsync(DashboardOptions options, TimeProvider? timeProvider = null, CancellationToken cancellationToken = default, DashboardStartControl? startControl = null, Func<FlorisDeV.BackupClient.Config.BackupClientOptions>? currentOptions = null)
     {
         var time = timeProvider ?? TimeProvider.System;
         PrivateFiles.EnsureDirectory(options.ReportingDirectory);
@@ -119,8 +119,8 @@ public sealed class DashboardCompanion : IAsyncDisposable
             }
             app.MapPost("/api/activity", (HttpContext context) =>
                 Authorized(context, activity: true) ? Results.NoContent() : Results.Unauthorized());
-            var observations = new DashboardObservation(options, time, startControl);
-            var scheduling = new DashboardScheduling(options, startControl);
+            var observations = new DashboardObservation(options, time, startControl, currentOptions);
+            var scheduling = new DashboardScheduling(options, startControl, currentOptions);
             app.MapPost("/api/start", async (HttpContext context) =>
             {
                 if (!Authorized(context, activity: true)) return Results.Unauthorized();
