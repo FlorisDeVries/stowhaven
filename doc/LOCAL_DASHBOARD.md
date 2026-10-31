@@ -284,3 +284,45 @@ development user secrets can override them. Use a reviewed fresh publication
 with a unique UserSecretsId, scrubbed environment, explicit temporary paths and
 synthetic local services. Never start or change the installed backup units as a
 development demonstration.
+
+## Actual scheduling information
+
+The **Scheduling** section reads the configured systemd user timer on each
+successful authorized status poll, including when there is no backup reporting.
+`BackupClient:Dashboard:BackupTimerUnit` defaults to `backup-client.timer`; set it
+and `BackupServiceUnit` together for custom installations. The timer's `Unit=`
+must target that service, which must use `Type=oneshot` and `RemainAfterExit=no`.
+Leave `BackupClient:Schedule:Enabled=false`; the alternative resident scheduler
+is unsupported. The companion explains incompatible settings without changing
+them.
+
+Enabled state comes from actual `UnitFileState`, separately from current timer
+activity. A disabled timer can still be active and have a next activation;
+an enabled but inactive timer needs inspection. Missing units, masked timers,
+unavailable user sessions, denied reads and unknown enablement (including
+transient/static timers) have distinct messages. Install missing units for the
+same user, inspect their configuration, then reload the user manager. Review
+whether scheduling is intended before manually enabling, starting or unmasking
+a timer. The dashboard performs none of those actions while reading status.
+
+Next activation comes only from `NextElapseUSecRealtime` returned by
+`systemctl --user show --timestamp=unix`. This machine-readable timestamp format
+requires systemd 251 or newer; older/unsupported command output produces
+unavailable information with upgrade guidance. Absent, zero, infinite or
+unrecognized values remain **Unknown**; configured calendars and resident
+intervals never substitute an invented next time. Timer activation is scheduling
+information and does not establish a clean backup outcome, completed server
+backup, or freshness.
+
+Run the authorized HTTP demonstration and isolated command-fixture cases with:
+
+```bash
+dotnet test tests/services/client/FlorisDeV.BackupClient.Tests.csproj --no-restore -m:1 \
+  --filter FullyQualifiedName~DashboardSchedulingTests
+```
+
+The subprocess cases use temporary synthetic unit names and an explicitly
+nonexistent user bus as fallback. They verify machine-readable next activation,
+unknown values, masked units, and an actual `systemctl` unavailable-session read;
+no case starts a backup or changes installed units. Actual installation and
+activation verification uses the isolated smoke procedure described above.

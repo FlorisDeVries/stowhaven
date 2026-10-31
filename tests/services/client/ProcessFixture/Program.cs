@@ -25,6 +25,20 @@ public static class FixtureProgram
             try { await new SystemdUserService().ShowAsync("stowhaven-synthetic-never-start.service", default); Console.WriteLine("unexpectedConnected"); return 1; }
             catch (SystemdControlException ex) { Console.WriteLine(ex.Category); return 0; }
         }
+        if (args.ElementAtOrDefault(3) == "scheduleHttp")
+        {
+            // Scheduler-only fixture never constructs backup services, state, appsettings or secrets.
+            var options = new BackupClientOptions { BackupTargets = new(), Dashboard = new()
+            {
+                ReportingDirectory = Path.Combine(root, "reporting"),
+                BackupServiceUnit = "stowhaven-synthetic.service", BackupTimerUnit = args.ElementAtOrDefault(4) ?? "stowhaven-synthetic.timer"
+            } };
+            await using var companion = await DashboardCompanion.StartAsync(options.Dashboard,
+                startControl: new(new() { FilePath = Path.Combine(root, "unused.db") }, options));
+            await File.WriteAllTextAsync(Path.Combine(root, "schedule.ready"), companion.Address.ToString());
+            while (!File.Exists(Path.Combine(root, "schedule.release"))) await Task.Delay(20);
+            return 0;
+        }
         var database = Path.GetFullPath(args[1]);
         var directory = Path.GetDirectoryName(database)!;
         var resolvedDirectory = new DirectoryInfo(directory).ResolveLinkTarget(true)?.FullName ?? directory;

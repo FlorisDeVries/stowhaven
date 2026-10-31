@@ -10,6 +10,7 @@ internal static partial class DashboardView
         <button id="start" type="button">Start backup</button><p id="start-result" role="status"></p>
         <dl id="details"></dl><p class="footnote">A clean check examines the selected files. It does not create a server backup or test restoration.</p>
         <section><h2>Recent backup attempts</h2><button id="open-history" type="button">Open or refresh history</button><p id="history-notice" role="status"></p><div id="attempts"></div></section>
+        <section><h2>Scheduling</h2><p id="scheduling-status" role="status">Authorize this browser to inspect the user timer.</p><dl id="scheduling-details"></dl></section>
         <section><h2>Recent client logs</h2><button id="open-logs" type="button">Open recent logs</button><p id="logs-notice" role="status"></p><pre id="logs" hidden></pre></section></main></body></html>
         """;
     internal const string Css = """
@@ -22,9 +23,10 @@ internal static partial class DashboardView
         async function poll() {
           try {
             const response = await fetch('/api/status', {cache:'no-store',headers:authorization()});
-            if (response.status === 401) { status.textContent = 'Authorization expired. Run open-dashboard to authorize this browser.'; notice.textContent=''; details.replaceChildren(); clearRecentLogs(); return; }
+            if (response.status === 401) { status.textContent = 'Authorization expired. Run open-dashboard to authorize this browser.'; notice.textContent=''; details.replaceChildren(); clearRecentLogs(); renderScheduling(null); return; }
             if (!response.ok) throw new Error();
             const data = await response.json();
+            renderScheduling(data.scheduling);
             details.replaceChildren(); notice.textContent = '';
             if (!data.snapshot) { status.textContent = data.message || 'Reporting unavailable.'; return; }
             const s = data.snapshot;
@@ -37,7 +39,7 @@ internal static partial class DashboardView
             renderFreshness(s,data,rows);
             renderObservation(data,rows);
             for (const [name,value] of rows) { const dt=document.createElement('dt'), dd=document.createElement('dd'); dt.textContent=name; dd.textContent=value; details.append(dt,dd); }
-          } catch { status.textContent = 'Companion unavailable. Displayed details are the last verified observation; current activity and completion are unknown.'; notice.textContent=''; }
+          } catch { status.textContent = 'Companion unavailable. Displayed details are the last verified observation; current activity and completion are unknown.'; notice.textContent=''; renderScheduling(null); }
           finally { window.setTimeout(poll,1000); }
         }
         const startButton = document.getElementById('start'), startResult = document.getElementById('start-result');
@@ -69,5 +71,5 @@ internal static partial class DashboardView
           await poll();
         }
         connect();
-        """ + RunJavaScript + LiveJavaScript + FreshnessJavaScript + ObservationJavaScript + LogsJavaScript + HistoryJavaScript;
+        """ + RunJavaScript + LiveJavaScript + FreshnessJavaScript + ObservationJavaScript + LogsJavaScript + HistoryJavaScript + SchedulingJavaScript;
 }
