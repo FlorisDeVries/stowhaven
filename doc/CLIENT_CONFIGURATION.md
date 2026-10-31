@@ -307,3 +307,5 @@ Review ignore rules before increasing concurrency. For many small files, a highe
 ### Restore cannot read an archived blob
 
 Keep `Restore:RehydrateArchivedFiles=true` to request standard-priority rehydration automatically. If the wait limit expires, retry later; storage continues the preparation. When automatic preparation is disabled, rehydrate to Hot or Cool in Azure Storage before retrying.
+
+See [the local dashboard development preview](LOCAL_DASHBOARD.md) to opt into private structured reporting and run the independent companion.

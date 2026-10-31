@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using FlorisDeV.BackupClient.Dashboard;
 using System.Net;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
@@ -34,7 +35,8 @@ public partial class BackupService(
     IBackupStateService backupStateService,
     IBackupScanner scanner,
     IFileUploader uploader,
-    IOptions<BackupClientOptions> backupOptions) : IBackupService
+    IOptions<BackupClientOptions> backupOptions,
+    TimeProvider? timeProvider = null) : IBackupService
 {
     private const int InitialScanProgressFileCount = 1000;
     private static readonly TimeSpan PendingRunSasSafetyWindow = TimeSpan.FromMinutes(5);
@@ -45,6 +47,85 @@ public partial class BackupService(
         => (await RunAsync(cancellationToken)).Outcome != BackupOutcome.Failed;
 
     public async Task<BackupResult> RunAsync(CancellationToken cancellationToken)
+    {
+        using var execution = BackupExecutionGuard.Acquire(backupStateService.DatabasePath);
+        _dashboardLive = null;
+        _diagnostics = _options.Dashboard.Enabled ? new DashboardDiagnosticCollector(timeProvider ?? TimeProvider.System) : null;
+        var attemptId = Guid.NewGuid();
+        var startedAt = (timeProvider ?? TimeProvider.System).GetUtcNow();
+        _attemptEvidence = new AttemptEvidence(attemptId);
+        DateTimeOffset? scanStartedAt = null;
+        string selection = "";
+        string backupEvidence = "unknown";
+        BackupResult? result = null;
+        BackupExecutionReceipt? receipt = null;
+        try
+        {
+            if (_options.Dashboard.Enabled)
+            {
+                var invocation = Environment.GetEnvironmentVariable("INVOCATION_ID");
+                receipt = new(attemptId, execution.Identity, Guid.TryParseExact(invocation, "N", out _) ? invocation : null, startedAt)
+                    { ProcessId = Environment.ProcessId, ProcessIdentity = ExecutionProcessIdentity.Read(Environment.ProcessId) };
+                await BackupExecutionReceipt.WriteAsync(_options.Dashboard, receipt);
+            }
+        }
+        catch (Exception ex) { logger.LogWarning("Optional execution acknowledgment is unavailable ({ErrorType})", ex.GetType().Name); }
+        try
+        {
+            if (_options.Dashboard.Enabled)
+            {
+                try
+                {
+                    _dashboardLive = new DashboardLiveAttempt(_options.Dashboard, new DashboardSnapshot(
+                        DashboardReporting.SchemaVersion, attemptId, startedAt, null, startedAt, "active",
+                        _options.BackupTargets.Keys.Select(DashboardReporting.SafeTarget).ToArray(),
+                        DashboardReporting.Fingerprint(_options.BackupTargets, null), 0, "unknown") { ClientActive = true }, timeProvider ?? TimeProvider.System);
+                    await _dashboardLive.StartAsync();
+                }
+                catch (Exception ex) { logger.LogWarning("Optional dashboard reporting is unavailable ({ErrorType})", ex.GetType().Name); }
+            }
+            result = await RunCoreAsync(cancellationToken, (scan, fingerprint, evidence) =>
+            {
+                scanStartedAt = scan;
+                selection = fingerprint;
+                backupEvidence = evidence;
+                _dashboardLive?.ScanStarted(scan, fingerprint, evidence);
+            });
+            result = AttachEvidence(result);
+            return result;
+        }
+        finally
+        {
+            try
+            {
+                if (receipt != null) await BackupExecutionReceipt.WriteAsync(_options.Dashboard, receipt with { CompletedAt = (timeProvider ?? TimeProvider.System).GetUtcNow() });
+            }
+            catch (Exception ex) { logger.LogWarning("Optional execution acknowledgment is unavailable ({ErrorType})", ex.GetType().Name); }
+            // Reporting is optional: disk/permissions/version failures must never change backup results or recovery.
+            try
+            {
+                if (_dashboardLive != null) await _dashboardLive.DisposeAsync();
+                if (result != null) _dashboardLive?.Update(p => p with {
+                    FilesFailed = Math.Max(p.FilesFailed, result.FilesFailed), FilesSkipped = Math.Max(p.FilesSkipped, result.FilesSkipped),
+                    FilesDeferred = Math.Max(p.FilesDeferred, result.FilesDeferred) });
+                var finalLive = _dashboardLive?.Capture(false);
+                var clean = result is { Outcome: BackupOutcome.NoChanges, FilesSkipped: 0, FilesDeferred: 0, FilesFailed: 0 } && scanStartedAt != null;
+                if (_options.Dashboard.Enabled) await DashboardReporting.WriteAsync(_options.Dashboard, new DashboardSnapshot(
+                    DashboardReporting.SchemaVersion, attemptId, startedAt, scanStartedAt, finalLive?.HeartbeatAt ?? (timeProvider ?? TimeProvider.System).GetUtcNow(),
+                    clean ? "cleanCheck" : result == null ? "failed" : System.Text.Json.JsonNamingPolicy.CamelCase.ConvertName(result.Outcome.ToString()),
+                    _options.BackupTargets.Keys.Select(DashboardReporting.SafeTarget).ToArray(),
+                    selection.Length == 0 ? DashboardReporting.Fingerprint(_options.BackupTargets, null) : selection,
+                    result?.FilesScanned ?? _dashboardLive?.FilesScanned ?? 0,
+                    result is { RunId: not null, Outcome: BackupOutcome.Succeeded or BackupOutcome.CompletedWithErrors } ? "recorded" : backupEvidence)
+                    { Live = finalLive, Runs = _attemptEvidence?.Runs.Values.ToArray() ?? [], CurrentScan = _attemptEvidence?.Scan,
+                        Diagnostics = _diagnostics?.Capture() ?? new() });
+            }
+            catch (Exception ex)
+            { logger.LogWarning("Optional dashboard reporting is unavailable ({ErrorType})", ex.GetType().Name); }
+        }
+    }
+
+    private async Task<BackupResult> RunCoreAsync(CancellationToken cancellationToken, Action<DateTimeOffset, string, string> observeScan)
     {
         var stopwatch = Stopwatch.StartNew();
         var metricTags = new TagList { { "operation.name", "Backup" } };
@@ -65,6 +146,7 @@ public partial class BackupService(
             SetupTelemetryBackupStart(activity, deviceId, targets);
 
             var pendingRun = await LoadUsablePendingRunAsync(deviceId, cancellationToken);
+            if (pendingRun != null) await ObservePendingAsync(pendingRun, cancellationToken);
             CommitExecution? resumed = null;
             Guid? resumedRunId = pendingRun?.RunId;
             var finalizedPendingRun = false;
@@ -84,6 +166,7 @@ public partial class BackupService(
                 deviceState = await backupStateService.GetOrCreateDeviceStateAsync(cancellationToken);
                 pendingRun = null;
                 finalizedPendingRun = true;
+                _attemptEvidence!.ScanBase = null;
             }
 
             if (!finalizedPendingRun)
@@ -96,9 +179,27 @@ public partial class BackupService(
             // Step 1: Resolve exclusion patterns
             var excludePatterns = ResolveExclusionPatterns();
 
+            var scanTime = (timeProvider ?? TimeProvider.System).GetUtcNow();
+            string? scanSelection = null;
+            try { scanSelection = DashboardReporting.Fingerprint(targets, excludePatterns); }
+            catch (Exception ex) { logger.LogWarning("Scan selection evidence is unavailable ({ErrorType})", ex.GetType().Name); }
+            if (scanSelection != null) _attemptEvidence!.Scan = new BackupScanEvidence(scanTime, scanSelection, false, null, false);
+            if (_options.Dashboard.Enabled && scanSelection != null)
+            {
+                try
+                {
+                    observeScan(scanTime, scanSelection,
+                        deviceState.LastRunId.HasValue ? "recorded" : "none");
+                }
+                catch (Exception ex) { logger.LogWarning("Optional dashboard selection reporting is unavailable ({ErrorType})", ex.GetType().Name); }
+            }
+
             // Step 2: Scan, hash, batch, and upload files
             var processingResult = await ProcessFilesAsync(
                 deviceState, deviceId, targets, excludePatterns, pendingRun, activity, metricTags, cancellationToken);
+
+            if (_attemptEvidence?.Scan is { } scanEvidence)
+                _attemptEvidence.Scan = scanEvidence with { Completed = true, Clean = processingResult.Stats.SkippedCount + processingResult.Stats.SkippedChangedCount + processingResult.Stats.SkippedSasExpiredCount + processingResult.Stats.TotalUploadFailures == 0 };
 
             // Step 3: Count deleted files, i.e. tracked files this scan never saw. A SQL anti-join
             // between the recorded scan paths and tracked state, so neither set is materialized in
@@ -111,6 +212,7 @@ public partial class BackupService(
             // Step 4: Handle case of no changes
             if (!processingResult.HasStartedBackupRun && deletedCount == 0)
             {
+                if (_attemptEvidence?.Scan is { } checkedScan) _attemptEvidence.Scan = checkedScan with { NoChanges = true };
                 HandleNoChanges(activity, metricTags, stopwatch);
                 var outcome = resumed?.Status?.Status == CommitJobStatus.CompletedWithErrors || processingResult.Stats.SkippedCount > 0
                     ? BackupOutcome.CompletedWithErrors
@@ -172,6 +274,8 @@ public partial class BackupService(
         }
         catch (Exception ex)
         {
+            try { await PreserveInterruptedEvidenceAsync(); }
+            catch (Exception evidenceError) { logger.LogWarning("Interrupted run evidence could not be preserved ({ErrorType})", evidenceError.GetType().Name); }
             HandleBackupFailure(ex, activity, stopwatch);
             throw;
         }
@@ -233,6 +337,7 @@ public partial class BackupService(
         await backupStateService.BeginScanAsync(cancellationToken);
 
         var stats = new BackupStats();
+        if (_attemptEvidence != null) _attemptEvidence.Stats = stats;
         var currentBatch = new List<TaggedFile>();
         var scannedPaths = new List<string>(scannedPathFlushSize);
         var scanStopwatch = Stopwatch.StartNew();
@@ -266,6 +371,7 @@ public partial class BackupService(
         await foreach (var taggedFile in scanner.ScanAllTargetsAsync(targets, excludePatterns, cancellationToken))
         {
             stats.TotalScanned++;
+            _dashboardLive?.Update(p => p with { CurrentTarget = DashboardReporting.SafeTarget(taggedFile.TargetName) }, stats.TotalScanned);
 
             scannedPaths.Add(taggedFile.GetStoragePath());
             if (scannedPaths.Count >= scannedPathFlushSize)
@@ -289,9 +395,11 @@ public partial class BackupService(
                     break;
                 case FileChangeType.Skipped:
                     stats.SkippedCount++;
+                    Diagnose("skipped", taggedFile);
                     break;
             }
 
+            ObserveLiveCounts(stats);
             var scanElapsed = scanStopwatch.Elapsed;
             if (ShouldLogScanProgress(stats.TotalScanned, scanElapsed, lastProgressElapsed))
             {
@@ -363,6 +471,7 @@ public partial class BackupService(
             }
         }
 
+        _dashboardLive?.Update(p => p with { Scanning = false, TotalFilesToScan = stats.TotalScanned });
         if (scannedPaths.Count > 0)
         {
             await backupStateService.AppendScannedPathsAsync(scannedPaths, cancellationToken);
@@ -459,6 +568,7 @@ public partial class BackupService(
         foreach (var changed in changedFiles)
         {
             stats.SkippedChangedCount++;
+            Diagnose("changed", changed);
             LogFileChangedDuringBackup(changed.Metadata.FilePath, changed.Metadata.SizeBytes, GetCurrentFileSize(changed.Metadata.FilePath));
         }
 
@@ -474,7 +584,7 @@ public partial class BackupService(
 
         // Upload batch
         stats.TotalUploadAttempts += stableBatch.Count;
-        var uploadResult = await uploader.UploadFilesAsync(containerClient!, stableBatch, cancellationToken);
+        var uploadResult = await UploadObservedAsync(containerClient!, stableBatch, cancellationToken);
         var uploadedFiles = new List<TaggedFile>(uploadResult.Uploaded);
         var otherFailureCount = uploadResult.OtherFailureCount;
 
@@ -486,7 +596,7 @@ public partial class BackupService(
             (containerClient, manifestContainerClient, uploadSasUrlInfo, manifestSasUrlInfo, manifestBasePath, manifestIsPathEmbedded) =
                 (sas.ContainerClient, sas.ManifestContainerClient, sas.UploadSasUrlInfo, sas.ManifestSasUrlInfo, sas.ManifestBasePath, sas.ManifestIsPathEmbedded);
 
-            var retryResult = await uploader.UploadFilesAsync(containerClient!, uploadResult.SasExpiredFiles, cancellationToken);
+            var retryResult = await UploadObservedAsync(containerClient!, uploadResult.SasExpiredFiles, cancellationToken);
             uploadedFiles.AddRange(retryResult.Uploaded);
             otherFailureCount += retryResult.OtherFailureCount;
 
@@ -497,15 +607,18 @@ public partial class BackupService(
                 // single batch slower than a whole token lifetime). Defer them to the next run instead
                 // of counting them toward the failure threshold and aborting an otherwise healthy backup.
                 stats.SkippedSasExpiredCount += stillExpired;
+                foreach (var file in retryResult.SasExpiredFiles) Diagnose("deferred", file);
                 LogSasExpiredUnrecovered(stillExpired, runId.Value);
             }
         }
 
         var failedCount = otherFailureCount;
         stats.TotalUploadFailures += failedCount;
+        ObserveLiveCounts(stats);
 
         // Check failure threshold after each batch (early detection). SAS-expiry files are intentionally
         // excluded from the failure count above: they are recoverable and re-detected on the next run.
+        await SavePendingRunAsync(deviceId, runId.Value, startedAt, uploadSasUrlInfo!, manifestSasUrlInfo!, false, null, cancellationToken);
         CheckFailureThresholdProgress(stats.TotalUploadAttempts, stats.TotalUploadFailures);
 
         // Local file state is updated only after the server-side commit succeeds. The journal is
@@ -693,7 +806,9 @@ public partial class BackupService(
 
         if (commitStatus.Status == CommitJobStatus.Failed)
         {
+            ObserveRunCompletion(runId.Value, commitStatus, localCompleted: false);
             await backupStateService.RecoverFailedRunAsync(deviceId, runId.Value, cancellationToken);
+            if (_attemptEvidence != null) _attemptEvidence.PendingHeader = null;
             throw new InvalidOperationException($"Backup commit {commitId} failed: {commitStatus.Error ?? "Unknown error"}. A later backup will retry the affected files.");
         }
         await FinalizeRunStateAsync(deviceId, runId.Value, commitStatus, cancellationToken);
@@ -712,6 +827,7 @@ public partial class BackupService(
     {
         if (commitStatus.Status is not (CommitJobStatus.Succeeded or CommitJobStatus.CompletedWithErrors))
             throw new InvalidOperationException("Only a server-finished run can complete locally.");
+        ObserveRunCompletion(runId, commitStatus, localCompleted: false);
         if (commitStatus.Status == CommitJobStatus.CompletedWithErrors)
         {
             await RemoveServerRejectedFilesFromJournalAsync(
@@ -723,6 +839,8 @@ public partial class BackupService(
         }
 
         await backupStateService.CompletePendingRunAsync(deviceId, runId, commitStatus.CommitId, cancellationToken);
+        ObserveRunCompletion(runId, commitStatus, localCompleted: true);
+        if (_attemptEvidence != null) _attemptEvidence.PendingHeader = null;
     }
 
     private async Task RemoveServerRejectedFilesFromJournalAsync(
@@ -785,6 +903,9 @@ public partial class BackupService(
     {
         string? continuationToken = null;
         var failedFilesRead = 0;
+        var diagnosticSamples = new List<string>();
+        // The validated commit supplies the count even if the detail endpoint is incomplete or invalid.
+        _diagnostics?.Missing("serverRejected", Math.Max(0, expectedFailedFiles));
 
         do
         {
@@ -815,6 +936,7 @@ public partial class BackupService(
                 cancellationToken);
 
             failedFilesRead += page.Files.Count;
+            diagnosticSamples.AddRange(page.Files.Take(Math.Max(0, 100 - diagnosticSamples.Count)).Select(file => file.LogicalPath));
             continuationToken = page.NextContinuationToken;
         } while (!string.IsNullOrWhiteSpace(continuationToken));
 
@@ -825,6 +947,8 @@ public partial class BackupService(
             throw new InvalidOperationException(
                 $"Commit {commitId} reported {expectedFailedFiles} failed file(s), but the failed-file endpoint returned {failedFilesRead}");
         }
+        // Only publish after the existing identity, status, paging and total-count checks all pass.
+        foreach (var path in diagnosticSamples) DiagnoseServerRejected(path);
     }
 
     /// <summary>
@@ -867,7 +991,9 @@ public partial class BackupService(
             return pendingRun;
         }
 
+        await ObservePendingAsync(pendingRun, cancellationToken);
         await backupStateService.ClearPendingBackupRunAsync(deviceId, pendingRun.RunId, cancellationToken);
+        ObserveDiscardedRun(pendingRun.RunId);
         LogPendingBackupRunExpired(pendingRun.RunId, pendingRun.ExpiresAt);
         return null;
     }
@@ -885,11 +1011,8 @@ public partial class BackupService(
             }, cancellationToken);
             commitId = GetValidatedCommitId(pendingRun.DeviceId, pendingRun.RunId, commitResponse);
 
-            await backupStateService.SavePendingBackupRunAsync(pendingRun with
-            {
-                ManifestUploaded = true,
-                CommitId = commitId
-            }, cancellationToken);
+            await SavePendingRunAsync(pendingRun.DeviceId, pendingRun.RunId, pendingRun.StartedAt,
+                pendingRun.UploadSasUrlInfo, pendingRun.ManifestSasUrlInfo, true, commitId, cancellationToken);
         }
 
         var commitStatus = await WaitForCommitCompletionAsync(pendingRun.DeviceId, pendingRun.RunId, commitId.Value, cancellationToken);
@@ -901,7 +1024,9 @@ public partial class BackupService(
 
         if (commitStatus.Status == CommitJobStatus.Failed)
         {
+            ObserveRunCompletion(pendingRun.RunId, commitStatus, localCompleted: false);
             await backupStateService.RecoverFailedRunAsync(pendingRun.DeviceId, pendingRun.RunId, cancellationToken);
+            if (_attemptEvidence != null) _attemptEvidence.PendingHeader = null;
             logger.LogWarning("Discarded terminally failed commit {CommitId}; affected paths will be uploaded again", commitId);
             return new CommitExecution(commitId.Value, commitStatus);
         }
@@ -919,7 +1044,8 @@ public partial class BackupService(
         bool manifestUploaded,
         Guid? commitId,
         CancellationToken cancellationToken)
-        => backupStateService.SavePendingBackupRunAsync(new PendingBackupRun
+    {
+        var pending = new PendingBackupRun
         {
             DeviceId = deviceId,
             RunId = runId,
@@ -927,8 +1053,12 @@ public partial class BackupService(
             UploadSasUrlInfo = uploadSasUrlInfo,
             ManifestSasUrlInfo = manifestSasUrlInfo,
             ManifestUploaded = manifestUploaded,
-            CommitId = commitId
-        }, cancellationToken);
+            CommitId = commitId,
+            Evidence = CaptureRun(runId, commitId)
+        };
+        if (_attemptEvidence != null) _attemptEvidence.PendingHeader = pending;
+        return backupStateService.SavePendingBackupRunAsync(pending, cancellationToken);
+    }
 
     /// <summary>
     /// Polls the server-side commit until it reaches a terminal state.

@@ -10,6 +10,7 @@ public class BackupClientOptions
     /// </summary>
     public const string SectionName = "BackupClient";
     public string? ResultFilePath { get; init; }
+    public Dashboard.DashboardOptions Dashboard { get; init; } = new();
 
     /// <summary>
     /// Named backup targets. Each target has a name (used as prefix in storage) and a directory path.
