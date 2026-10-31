@@ -7,8 +7,10 @@ namespace FlorisDeV.BackupClient.Tests.Integration;
 
 public partial class BackupServiceIntegrationTests
 {
-    [Fact]
-    public async Task InstalledObserverReloadsAtomicEditsToSharedConfigurationWithoutCreatingBackupState()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task InstalledObserverReloadsAtomicEditsToSharedConfigurationWithoutCreatingBackupState(bool relativeTarget)
     {
         if (!OperatingSystem.IsLinux()) return;
         var root = Path.Combine(Path.GetTempPath(), "stowhaven-installed-observer-" + Guid.NewGuid().ToString("N"));
@@ -27,7 +29,9 @@ public partial class BackupServiceIntegrationTests
             var config = Path.Combine(client, "appsettings.local.json");
             var reporting = Path.Combine(root, "reporting");
             var database = Path.Combine(root, "never-created.db");
-            var target = Directory.CreateDirectory(Path.Combine(root, "target")).FullName;
+            var target = Directory.CreateDirectory(Path.Combine(client, "target")).FullName;
+            var targetIgnore = Path.Combine(target, ".backupignore");
+            if (relativeTarget) await File.WriteAllTextAsync(targetIgnore, "");
             var clientIgnore = Path.Combine(client, ".backupignore");
             await File.WriteAllTextAsync(clientIgnore, "*.tmp\n");
             await File.WriteAllTextAsync(Path.Combine(payload, ".backupignore"), "*.tmp\n");
@@ -47,7 +51,7 @@ public partial class BackupServiceIntegrationTests
                         Dashboard = new { Enabled = true, ReportingDirectory = reporting, MaximumBackupAge = "1.00:00:00",
                             LogDirectory = Path.Combine(root, "logs"), BackupServiceUnit = "stowhaven-synthetic-reload.service",
                             BackupTimerUnit = "stowhaven-synthetic-reload.timer" },
-                        Schedule = new { Enabled = resident }, BackupTargets = new Dictionary<string, string> { ["documents"] = target }, IgnoreFilePath = ".backupignore"
+                        Schedule = new { Enabled = resident }, BackupTargets = new Dictionary<string, string> { ["documents"] = relativeTarget ? "target" : target }, IgnoreFilePath = ".backupignore"
                     },
                     Database = new { FilePath = database }
                 }));
@@ -98,7 +102,9 @@ public partial class BackupServiceIntegrationTests
             await ExpectScheduling("userSessionUnavailable");
             var initial = await browser.GetFromJsonAsync<DashboardStatus>("/api/status");
             Assert.Equal("fresh", initial!.Freshness!.State);
-            await File.WriteAllTextAsync(clientIgnore, "*.log\n");
+            // An empty local override initially agrees with missing copied rules, so
+            // only editing the real client's local file exposes wrong-base reads.
+            await File.WriteAllTextAsync(relativeTarget ? targetIgnore : clientIgnore, "*.log\n");
             var edited = await browser.GetFromJsonAsync<DashboardStatus>("/api/status");
             Assert.Equal("configurationChanged", edited!.Freshness!.State);
             await Configure(true);

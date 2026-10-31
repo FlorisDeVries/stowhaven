@@ -33,7 +33,7 @@ internal static class DashboardFreshnessReporting
         var ignore = options.IgnoreFilePath;
         if (!string.IsNullOrWhiteSpace(ignore) && !Path.IsPathRooted(ignore) && clientBaseDirectory != null)
             ignore = Path.Combine(clientBaseDirectory, ignore);
-        return DashboardReporting.Fingerprint(options.GetEffectiveTargets(), BackupIgnoreParser.GetCombinedPatterns(ignore));
+        return DashboardReporting.Fingerprint(options.GetEffectiveTargets(), BackupIgnoreParser.GetCombinedPatterns(ignore), clientBaseDirectory);
     }
 
     internal static DashboardFreshness Project(DashboardBackupEvidence? evidence, DashboardOptions options,

@@ -50,13 +50,20 @@ internal static class DashboardReporting
     internal const int SchemaVersion = 1;
     internal static string SafeTarget(string value) => Regex.IsMatch(value, "\\A[a-zA-Z0-9_.-]{1,64}\\z") && !DashboardDiagnosticCollector.SensitiveName(value) ? value : "[redacted target]";
 
-    internal static string Fingerprint(IReadOnlyDictionary<string, string> targets, string[]? exclusions)
+    internal static string Fingerprint(IReadOnlyDictionary<string, string> targets, string[]? exclusions, string? clientBaseDirectory = null)
     {
-        var selection = JsonSerializer.Serialize(targets.OrderBy(x => x.Key, StringComparer.Ordinal).Select(x => new
+        var selection = JsonSerializer.Serialize(targets.OrderBy(x => x.Key, StringComparer.Ordinal).Select(x =>
         {
-            Name = x.Key, Path = Path.TrimEndingDirectorySeparator(Path.GetFullPath(x.Value)),
-            Exclusions = File.Exists(Path.Combine(x.Value, ".backupignore"))
-                ? BackupIgnoreParser.GetCombinedPatterns(Path.Combine(x.Value, ".backupignore")) ?? [] : exclusions ?? []
+            // Only the separately installed observer supplies the client's base directory.
+            // Producer calls retain the scanner's existing path resolution behavior.
+            var target = clientBaseDirectory != null && !Path.IsPathRooted(x.Value)
+                ? Path.Combine(clientBaseDirectory, x.Value) : x.Value;
+            return new
+            {
+                Name = x.Key, Path = Path.TrimEndingDirectorySeparator(Path.GetFullPath(target)),
+                Exclusions = File.Exists(Path.Combine(target, ".backupignore"))
+                    ? BackupIgnoreParser.GetCombinedPatterns(Path.Combine(target, ".backupignore")) ?? [] : exclusions ?? []
+            };
         }));
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(selection))).ToLowerInvariant();
     }
