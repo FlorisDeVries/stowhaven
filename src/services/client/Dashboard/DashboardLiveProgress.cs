@@ -23,6 +23,13 @@ public sealed record DashboardLiveProgress
     public double? UploadPercent { get; init; }
     public double? EstimatedSecondsRemaining { get; init; }
     public string[] Warnings { get; init; } = [];
+
+    internal string[] TrustedWarnings() => new[]
+    {
+        FilesSkipped > 0 ? "Some files were skipped. Review the selected files and retry." : null,
+        FilesDeferred > 0 ? "Some files were deferred and need another backup attempt." : null,
+        FilesFailed > 0 ? "Some files failed to upload and need another backup attempt." : null
+    }.OfType<string>().ToArray();
 }
 
 // One independent heartbeat owns all live writes. File callbacks only update bounded in-memory counters.
@@ -70,15 +77,11 @@ internal sealed class DashboardLiveAttempt(DashboardOptions options, DashboardSn
         {
             var now = time.GetUtcNow();
             var elapsed = Math.Max(0, (now - _startedAt).TotalSeconds);
-            var warnings = new List<string>();
-            if (_progress.FilesSkipped > 0) warnings.Add("Some files were skipped. Review the selected files and retry.");
-            if (_progress.FilesDeferred > 0) warnings.Add("Some files were deferred and need another backup attempt.");
-            if (_progress.FilesFailed > 0) warnings.Add("Some files failed to upload and need another backup attempt.");
             return _progress with { Active = active, ApiWaking = active && _progress.ApiWaking,
                 Scanning = active && _progress.Scanning, Uploading = active && _progress.Uploading,
                 HeartbeatAt = now, ElapsedSeconds = elapsed,
                 AverageBytesPerSecond = elapsed > 0 ? _progress.UploadedBytes / elapsed : 0,
-                AverageFilesPerSecond = elapsed > 0 ? _progress.FilesUploaded / elapsed : 0, Warnings = warnings.ToArray() };
+                AverageFilesPerSecond = elapsed > 0 ? _progress.FilesUploaded / elapsed : 0, Warnings = _progress.TrustedWarnings() };
         }
     }
     private async Task WriteAsync()

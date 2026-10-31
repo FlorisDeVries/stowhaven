@@ -9,9 +9,10 @@ internal static partial class DashboardView
           try {
             const response = await fetch('/api/history', {cache:'no-store',headers:authorization()});
             historyList.replaceChildren();
-            if (response.status === 401) { historyNotice.textContent='Authorization expired. Run open-dashboard again.'; return; }
+            if (response.status === 401) { expireAuthorization(); return; }
             if (!response.ok) throw new Error();
             const data = await response.json();
+            if (authorizationExpired) return;
             if (data.state !== 'available') { historyNotice.textContent=data.message || 'History unavailable.'; return; }
             historyNotice.textContent=data.attempts.length ? 'Newest first. Up to 100 attempts are retained. Open an attempt for its runs and file problems. Historical active observations have unknown final outcomes.' : 'No attempts recorded yet.';
             for (const attempt of data.attempts) {

@@ -1,3 +1,4 @@
+using System.Net.Http.Json;
 using System.Text.Json;
 using FlorisDeV.BackupClient.Config;
 using FlorisDeV.BackupClient.Dashboard;
@@ -230,9 +231,11 @@ public partial class BackupServiceIntegrationTests
     }
 
     [Theory]
-    [InlineData("{\"schemaVersion\":999,\"future\":\"preserve-me\"}")]
-    [InlineData("{\"lastCleanResult\":null}")]
-    public async Task Dashboard_FreshnessUnsupportedBaselineIsPreservedAndCannotFailBackup(string unsupported)
+    [InlineData("{\"schemaVersion\":999,\"future\":\"preserve-me\"}", false)]
+    [InlineData("{\"schemaVersion\":999,\"future\":\"preserve-me\"}", true)]
+    [InlineData("{\"lastCleanResult\":null}", false)]
+    [InlineData("{\"lastCleanResult\":null}", true)]
+    public async Task Dashboard_FreshnessUnsupportedBaselineIsPreservedAndCannotFailBackup(string unsupported, bool snapshotMissing)
     {
         var target = Path.Combine(_testRoot, "fresh-target"); Directory.CreateDirectory(target);
         var options = new BackupClientOptions { BackupTargets = new() { ["documents"] = target },
@@ -241,14 +244,21 @@ public partial class BackupServiceIntegrationTests
         var service = CreateFreshnessService(options, clock);
         await service.RunAsync(default);
         var baseline = Path.Combine(options.Dashboard.ReportingDirectory, "clean-evidence.json");
-        await File.WriteAllTextAsync(baseline, unsupported);
-        Assert.Equal(BackupOutcome.NoChanges, (await service.RunAsync(default)).Outcome);
-        Assert.Equal(unsupported, await File.ReadAllTextAsync(baseline));
         await using var companion = await DashboardCompanion.StartAsync(options.Dashboard, clock);
         using var browser = new HttpClient { BaseAddress = companion.Address };
         await DashboardTestAuthorization.AuthorizeAsync(browser, options.Dashboard);
-        using var json = JsonDocument.Parse(await browser.GetStringAsync("api/status"));
-        Assert.Equal("unavailable", json.RootElement.GetProperty("state").GetString());
+        var valid = await browser.GetFromJsonAsync<DashboardStatus>("api/status");
+        Assert.NotNull(valid!.Snapshot!.Evidence!.LastCleanResult);
+        await File.WriteAllTextAsync(baseline, unsupported);
+        if (snapshotMissing) File.Delete(Path.Combine(options.Dashboard.ReportingDirectory, "snapshot.json"));
+        Assert.Equal(BackupOutcome.NoChanges, (await service.RunAsync(default)).Outcome);
+        Assert.Equal(unsupported, await File.ReadAllTextAsync(baseline));
+        if (snapshotMissing) Assert.False(File.Exists(Path.Combine(options.Dashboard.ReportingDirectory, "snapshot.json")));
+        var incompatible = await browser.GetFromJsonAsync<DashboardStatus>("api/status");
+        Assert.Equal("incompatible", incompatible!.State);
+        Assert.Contains("Upgrade", incompatible.Message);
+        Assert.Equal(valid.Snapshot.AttemptId, incompatible.Snapshot!.AttemptId);
+        Assert.Equal(valid.Snapshot.Evidence.LastCleanResult, incompatible.Snapshot.Evidence!.LastCleanResult);
     }
 
     private BackupService CreateFreshnessService(BackupClientOptions options, TimeProvider clock)

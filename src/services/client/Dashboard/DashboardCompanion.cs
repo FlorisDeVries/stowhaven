@@ -26,7 +26,7 @@ public sealed class DashboardCompanion : IAsyncDisposable
     private DashboardCompanion(WebApplication app, Uri address, FileStream ownership, string connectionPath)
         => (_app, Address, _ownership, _connectionPath) = (app, address, ownership, connectionPath);
 
-    public static async Task<DashboardCompanion> StartAsync(DashboardOptions options, TimeProvider? timeProvider = null, CancellationToken cancellationToken = default, DashboardStartControl? startControl = null, Func<FlorisDeV.BackupClient.Config.BackupClientOptions>? currentOptions = null)
+    public static async Task<DashboardCompanion> StartAsync(DashboardOptions options, TimeProvider? timeProvider = null, CancellationToken cancellationToken = default, DashboardStartControl? startControl = null, Func<FlorisDeV.BackupClient.Config.BackupClientOptions>? currentOptions = null, string? clientBaseDirectory = null)
     {
         var time = timeProvider ?? TimeProvider.System;
         PrivateFiles.EnsureDirectory(options.ReportingDirectory);
@@ -119,14 +119,14 @@ public sealed class DashboardCompanion : IAsyncDisposable
             }
             app.MapPost("/api/activity", (HttpContext context) =>
                 Authorized(context, activity: true) ? Results.NoContent() : Results.Unauthorized());
-            var observations = new DashboardObservation(options, time, startControl, currentOptions);
+            var observations = new DashboardObservation(options, time, startControl, currentOptions, clientBaseDirectory);
             var scheduling = new DashboardScheduling(options, startControl, currentOptions);
             app.MapPost("/api/start", async (HttpContext context) =>
             {
                 if (!Authorized(context, activity: true)) return Results.Unauthorized();
                 var result = startControl == null
                     ? new DashboardStartResult("unconfigured", "Start control is unavailable. Restart the companion with the same database configuration as the backup service.")
-                    : await startControl.StartAsync(context.RequestAborted);
+                    : await startControl.StartAsync(context.RequestAborted, currentOptions);
                 return Results.Json(result, DashboardReporting.Json, statusCode: result.State is "started" or "alreadyRunning" ? 200 : 503);
             });
             app.MapGet("/api/status", async (HttpContext context) =>

@@ -50,11 +50,6 @@ internal static class DashboardReporting
     internal const int SchemaVersion = 1;
     internal static string SafeTarget(string value) => Regex.IsMatch(value, "\\A[a-zA-Z0-9_.-]{1,64}\\z") && !DashboardDiagnosticCollector.SensitiveName(value) ? value : "[redacted target]";
 
-    private static string[] SafeWarnings(DashboardLiveProgress progress)
-        => new[] { progress.FilesSkipped > 0 ? "Some files were skipped. Review the selected files and retry." : null,
-            progress.FilesDeferred > 0 ? "Some files were deferred and need another backup attempt." : null,
-            progress.FilesFailed > 0 ? "Some files failed to upload and need another backup attempt." : null }.OfType<string>().ToArray();
-
     internal static string Fingerprint(IReadOnlyDictionary<string, string> targets, string[]? exclusions)
     {
         var selection = JsonSerializer.Serialize(targets.OrderBy(x => x.Key, StringComparer.Ordinal).Select(x => new
@@ -89,29 +84,32 @@ internal static class DashboardReporting
             await DashboardHistory.RecordAsync(options, snapshot);
     }
 
-    internal static async Task<DashboardStatus> ReadAsync(DashboardOptions options, TimeProvider? timeProvider = null, Func<FlorisDeV.BackupClient.Config.BackupClientOptions>? currentOptions = null)
+    internal static async Task<DashboardStatus> ReadAsync(DashboardOptions options, TimeProvider? timeProvider = null, Func<FlorisDeV.BackupClient.Config.BackupClientOptions>? currentOptions = null, string? clientBaseDirectory = null)
     {
         try
         {
             PrivateFiles.EnsureDirectory(options.ReportingDirectory);
+            var retainedEvidence = await DashboardFreshnessReporting.ReadAsync(options);
             var path = Path.Combine(options.ReportingDirectory, "snapshot.json");
             if (!File.Exists(path)) return new("empty", Message: "No backup attempt has been recorded.");
             var text = await PrivateFiles.ReadAsync(path);
             var decoded = Decode(text, timeProvider);
             if (decoded.State != "available") return decoded;
             var snapshot = decoded.Snapshot!;
-            var evidence = await DashboardFreshnessReporting.ReadAsync(options) ?? snapshot.Evidence;
+            var evidence = retainedEvidence ?? snapshot.Evidence;
             string? selection = null; // Historical observations cannot prove the resident companion's current selection.
             var policy = options;
             if (currentOptions != null)
             {
-                try { var configured = currentOptions(); selection = DashboardFreshnessReporting.Selection(configured); policy = configured.Dashboard; }
+                try { var configured = currentOptions(); selection = DashboardFreshnessReporting.Selection(configured, clientBaseDirectory); policy = configured.Dashboard; }
                 catch { selection = null; }
             }
             return decoded with { Snapshot = snapshot with { Evidence = evidence,
                 ServerBackupEvidence = evidence?.LastCompletedServerBackup != null ? "recorded" : snapshot.ServerBackupEvidence },
                 Freshness = DashboardFreshnessReporting.Project(evidence, policy, selection, (timeProvider ?? TimeProvider.System).GetUtcNow()) };
         }
+        catch (DashboardReportingCompatibilityException ex)
+        { return new("incompatible", Message: ex.Message); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException or NotSupportedException)
         { return new("unavailable", Message: "Reporting cannot be read. Check private reporting permissions and run the client again."); }
     }
@@ -140,7 +138,7 @@ internal static class DashboardReporting
             return new("unavailable", Message: "Live reporting is invalid. Run the client again to record a new observation.");
         return new("available", snapshot with { TargetNames = snapshot.TargetNames.Select(SafeTarget).ToArray(),
             Live = snapshot.Live is { } progress ? progress with { CurrentTarget = progress.CurrentTarget == null ? null : SafeTarget(progress.CurrentTarget),
-                Warnings = SafeWarnings(progress) } : null },
+                Warnings = progress.TrustedWarnings() } : null },
             Stale: snapshot.Live is { Active: true } current && (timeProvider ?? TimeProvider.System).GetUtcNow() - current.HeartbeatAt > TimeSpan.FromSeconds(15));
 
     }
@@ -155,16 +153,10 @@ internal static class DashboardReporting
                 run.AttemptIds == null || run.AttemptIds.Length > 100 || run.AttemptIds.Any(x => x == Guid.Empty) ||
                 run.ScanStartedAt > snapshot.ObservedAt || run.CompletedAt > snapshot.ObservedAt ||
                 run.ServerCompletionObservedAt > snapshot.ObservedAt ||
-                (run.ServerCompletionObservedAt != null && (run.ServerProcessing is not ("succeeded" or "completedWithErrors") || run.ServerCompletionObservedAt < run.ScanStartedAt)) ||
-                (run.CompletedAt != null && (run.LocalCompletion != "completed" || run.CompletedAt < run.ScanStartedAt)) || !Fingerprint(run.SelectionFingerprint) ||
+                (run.ServerCompletionObservedAt != null && (!run.HasCompletedServer || run.ServerCompletionObservedAt < run.ScanStartedAt)) ||
+                (run.CompletedAt != null && (run.LocalCompletion != BackupLocalCompletion.Completed || run.CompletedAt < run.ScanStartedAt)) || !Fingerprint(run.SelectionFingerprint) ||
                 run.FilesSkipped < 0 || run.FilesDeferred < 0 || run.FilesFailed < 0 || run.ServerFilesFailed < 0 ||
-                run.Outcome is not ("pending" or "succeeded" or "completedWithErrors" or "failed") ||
-                run.ServerProcessing is not ("unknown" or "notSubmitted" or "pending" or "succeeded" or "completedWithErrors" or "failed") ||
-                run.LocalCompletion is not ("pending" or "completed" or "notCompleted") || run.Cleanliness is not ("unknown" or "clean" or "degraded") ||
-                (run.LocalCompletion == "completed" && run.ServerProcessing is not ("succeeded" or "completedWithErrors")) ||
-                (run.Cleanliness == "clean" && (run.LocalCompletion != "completed" || run.ServerProcessing != "succeeded" ||
-                    run.ScanCompleted != true || run.ScanStartedAt == null || run.SelectionFingerprint == null ||
-                    run.FilesSkipped != 0 || run.FilesDeferred != 0 || run.FilesFailed != 0))) return false;
+                !run.HasValidStatuses) return false;
         }
         return snapshot.CurrentScan is not { } scan ||
             (scan.StartedAt >= snapshot.StartedAt && scan.StartedAt <= snapshot.ObservedAt &&

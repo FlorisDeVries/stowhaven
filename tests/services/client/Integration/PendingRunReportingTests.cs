@@ -37,8 +37,8 @@ public partial class BackupServiceIntegrationTests
         var pending = await Service().RunAsync(default);
         Assert.Equal(BackupOutcome.Pending, pending.Outcome);
         var run = Assert.Single(pending.Runs);
-        Assert.Equal("pending", run.ServerProcessing);
-        Assert.Equal("pending", run.LocalCompletion);
+        Assert.Equal(BackupServerProcessing.Pending, run.ServerProcessing);
+        Assert.Equal(BackupLocalCompletion.Pending, run.LocalCompletion);
         Assert.Equal(pending.AttemptId, run.OriginAttemptId);
         var durable = await state.GetPendingBackupRunAsync(pending.DeviceId!.Value);
         Assert.Equal(run.ScanStartedAt, durable!.Evidence!.ScanStartedAt);
@@ -68,8 +68,8 @@ public partial class BackupServiceIntegrationTests
         var finished = Assert.Single(resumed.Runs);
         Assert.Equal(run.RunId, finished.RunId);
         Assert.Equal(run.ScanStartedAt, finished.ScanStartedAt);
-        Assert.Equal("completed", finished.LocalCompletion);
-        Assert.Equal("clean", finished.Cleanliness);
+        Assert.Equal(BackupLocalCompletion.Completed, finished.LocalCompletion);
+        Assert.Equal(BackupCleanliness.Clean, finished.Cleanliness);
         Assert.Equal(new[] { pending.AttemptId, intermediate.AttemptId, stillPending.AttemptId, resumed.AttemptId }, finished.AttemptIds);
         Assert.Equal(1, resumed.FilesScanned);
         Assert.Null(await state.GetPendingBackupRunAsync(pending.DeviceId.Value));
@@ -136,7 +136,7 @@ public partial class BackupServiceIntegrationTests
             {
                 RunId = run, OriginAttemptId = origin, AttemptIds = [origin], ScanStartedAt = originalScan,
                 SelectionFingerprint = new string('a', 64), FilesSkipped = 2, FilesDeferred = 3, FilesFailed = 4,
-                ScanCompleted = true, Cleanliness = "degraded"
+                ScanCompleted = true, Cleanliness = BackupCleanliness.Degraded
             }
         });
         await CreateSourceFileAsync("first.txt", "first");
@@ -152,7 +152,7 @@ public partial class BackupServiceIntegrationTests
         Assert.Equal(legacy ? null : 2, saved.FilesSkipped);
         Assert.Equal(legacy ? null : 3, saved.FilesDeferred);
         Assert.Equal(legacy ? null : 4, saved.FilesFailed);
-        Assert.Equal(legacy ? "unknown" : "degraded", saved.Cleanliness);
+        Assert.Equal(legacy ? BackupCleanliness.Unknown : BackupCleanliness.Degraded, saved.Cleanliness);
         Assert.Equal(legacy ? null : true, saved.ScanCompleted);
         Assert.True(pending.CurrentScan!.Clean);
         if (newRun) await CreateSourceFileAsync("new.txt", "new clean work");
@@ -163,16 +163,16 @@ public partial class BackupServiceIntegrationTests
         Assert.True(finished.CurrentScan!.Clean);
         Assert.Equal(!newRun, finished.CurrentScan.NoChanges);
         var old = finished.Runs.Single(x => x.RunId == run);
-        Assert.Equal(legacy ? "unknown" : "degraded", old.Cleanliness);
+        Assert.Equal(legacy ? BackupCleanliness.Unknown : BackupCleanliness.Degraded, old.Cleanliness);
         Assert.Equal(legacy ? null : originalScan, old.ScanStartedAt);
-        Assert.Equal("completed", old.LocalCompletion);
+        Assert.Equal(BackupLocalCompletion.Completed, old.LocalCompletion);
         Assert.Contains(pending.AttemptId, old.AttemptIds);
         Assert.Contains(finished.AttemptId, old.AttemptIds);
         if (newRun)
         {
         var clean = finished.Runs.Single(x => x.RunId != run);
-        Assert.Equal("clean", clean.Cleanliness);
-        Assert.Equal("succeeded", clean.Outcome);
+        Assert.Equal(BackupCleanliness.Clean, clean.Cleanliness);
+        Assert.Equal(BackupRunOutcome.Succeeded, clean.Outcome);
         Assert.Equal(finished.AttemptId, clean.OriginAttemptId);
         Assert.Equal(0, clean.FilesFailed);
         Assert.Equal(clean.RunId, (await state.GetOrCreateDeviceStateAsync()).LastRunId);
@@ -192,7 +192,7 @@ public partial class BackupServiceIntegrationTests
         {
             RunId = run, OriginAttemptId = origin, AttemptIds = [origin], ScanStartedAt = DateTimeOffset.UtcNow.AddHours(-2),
             SelectionFingerprint = new string('b', 64), FilesSkipped = 2, FilesDeferred = 0, FilesFailed = 0,
-            ScanCompleted = false, Cleanliness = "degraded"
+            ScanCompleted = false, Cleanliness = BackupCleanliness.Degraded
         }});
         await CreateSourceFileAsync("one.txt", "one");
         await CreateSourceFileAsync("two.txt", "two");
@@ -323,16 +323,16 @@ public partial class BackupServiceIntegrationTests
             ManifestSasUrlInfo = new() { Url = header.ManifestSasUrlInfo.Url, TtlMinutes = 60, ExpiresAt = DateTimeOffset.UtcNow.AddHours(-1) },
             Evidence = new BackupRunResult { RunId = run, OriginAttemptId = origin, AttemptIds = [origin],
                 ScanStartedAt = DateTimeOffset.UtcNow.AddDays(-1), SelectionFingerprint = new string('c', 64),
-                ScanCompleted = false, FilesSkipped = 1, FilesDeferred = 0, FilesFailed = 0, Cleanliness = "degraded" }
+                ScanCompleted = false, FilesSkipped = 1, FilesDeferred = 0, FilesFailed = 0, Cleanliness = BackupCleanliness.Degraded }
         });
         await CreateSourceFileAsync("replacement.txt", "synthetic");
         var result = await CreateServiceWithState(state).RunAsync(default);
         Assert.Equal(BackupOutcome.CompletedWithErrors, result.Outcome);
         var expired = result.Runs.Single(x => x.RunId == run);
-        Assert.Equal("failed", expired.Outcome);
-        Assert.Equal("notCompleted", expired.LocalCompletion);
-        Assert.Equal("degraded", expired.Cleanliness);
-        Assert.Equal("clean", result.Runs.Single(x => x.RunId != run).Cleanliness);
+        Assert.Equal(BackupRunOutcome.Failed, expired.Outcome);
+        Assert.Equal(BackupLocalCompletion.NotCompleted, expired.LocalCompletion);
+        Assert.Equal(BackupCleanliness.Degraded, expired.Cleanliness);
+        Assert.Equal(BackupCleanliness.Clean, result.Runs.Single(x => x.RunId != run).Cleanliness);
         Assert.Null(await state.GetPendingBackupRunAsync(device));
     }
 

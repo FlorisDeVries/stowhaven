@@ -22,7 +22,7 @@ internal sealed class DashboardScheduling(DashboardOptions options, DashboardSta
             var service = await systemd.ShowAsync(dashboard.BackupServiceUnit, token);
             if (service.LoadState == "not-found") return new("missingUnit", "The backup user service is missing. Install it for this user and reload the user systemd manager.");
             if (service.LoadState != "loaded") return new("unavailable", "The backup service cannot be loaded. Check its systemd user unit configuration and reload the user manager.");
-            if (service.Type != "oneshot" || service.RemainAfterExit) return new("incompatibleSchedule", "Configure the backup user service as Type=oneshot with RemainAfterExit=no and disable the resident scheduler. The service must exit between attempts so its timer can activate it again.");
+            if (!service.SupportsBackupAttempts) return new("incompatibleSchedule", "Configure the backup user service as Type=oneshot with RemainAfterExit=no and disable the resident scheduler. The service must exit between attempts so its timer can activate it again.");
             var timer = await systemd.ShowTimerAsync(dashboard.BackupTimerUnit, token);
             if (timer.LoadState == "not-found") return new("missingUnit", "The backup user timer is missing. Install it for this user and reload the user systemd manager.");
             if (timer.LoadState == "masked") return new("masked", "The backup user timer is masked. Review its configuration and unmask it if scheduled attempts are intended.", false);

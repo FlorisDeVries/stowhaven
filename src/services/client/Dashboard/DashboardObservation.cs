@@ -5,13 +5,13 @@ namespace FlorisDeV.BackupClient.Dashboard;
 // Per-companion cache contains only a previously validated, sanitized reporting contract.
 // Ownership is always probed independently; cached telemetry never authorizes a start.
 internal sealed class DashboardObservation(DashboardOptions options, TimeProvider time, DashboardStartControl? control,
-    Func<FlorisDeV.BackupClient.Config.BackupClientOptions>? currentOptions = null)
+    Func<FlorisDeV.BackupClient.Config.BackupClientOptions>? currentOptions = null, string? clientBaseDirectory = null)
 {
     private DashboardSnapshot? _lastVerified;
 
     internal async Task<DashboardStatus> ReadAsync()
     {
-        var status = await DashboardReporting.ReadAsync(options, time, currentOptions);
+        var status = await DashboardReporting.ReadAsync(options, time, currentOptions, clientBaseDirectory);
         if (status.Snapshot is { } verified) _lastVerified = verified;
         else if (_lastVerified != null)
             status = status with { Snapshot = _lastVerified,

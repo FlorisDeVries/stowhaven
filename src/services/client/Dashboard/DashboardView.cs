@@ -19,13 +19,23 @@ internal static partial class DashboardView
     internal const string JavaScript = """
         'use strict';
         const status = document.getElementById('status'), notice = document.getElementById('notice'), details = document.getElementById('details');
+        let authorizationExpired = false;
+        function expireAuthorization() {
+          authorizationExpired = true;
+          sessionStorage.removeItem('stowhaven-session');
+          status.textContent = 'Authorization expired. Run open-dashboard to authorize this browser.';
+          notice.textContent = ''; details.replaceChildren(); startResult.textContent = '';
+          historyList.replaceChildren(); historyNotice.textContent = '';
+          clearRecentLogs(); renderScheduling(null);
+        }
         function authorization() { return {'Authorization':'Bearer ' + (sessionStorage.getItem('stowhaven-session') || '')}; }
         async function poll() {
           try {
             const response = await fetch('/api/status', {cache:'no-store',headers:authorization()});
-            if (response.status === 401) { status.textContent = 'Authorization expired. Run open-dashboard to authorize this browser.'; notice.textContent=''; details.replaceChildren(); clearRecentLogs(); renderScheduling(null); return; }
+            if (response.status === 401) { expireAuthorization(); return; }
             if (!response.ok) throw new Error();
             const data = await response.json();
+            if (authorizationExpired) return;
             renderScheduling(data.scheduling);
             details.replaceChildren(); notice.textContent = '';
             if (!data.snapshot) { status.textContent = data.message || 'Reporting unavailable.'; return; }
@@ -47,7 +57,9 @@ internal static partial class DashboardView
           startButton.disabled = true; startResult.textContent = 'Requesting backup execution…';
           try {
             const response = await fetch('/api/start', {method:'POST',headers:authorization()});
-            startResult.textContent = response.status === 401 ? 'Authorization expired. Run open-dashboard again.' : (await response.json()).message;
+            if (response.status === 401) { expireAuthorization(); return; }
+            const result = await response.json();
+            if (!authorizationExpired) startResult.textContent = result.message;
           } catch { startResult.textContent = 'Start could not be confirmed. Check the companion and backup user service before retrying.'; }
           finally { startButton.disabled = false; }
         });
@@ -55,7 +67,7 @@ internal static partial class DashboardView
         function recordActivity() {
           if (Date.now() - lastActivity < 60000) return;
           lastActivity = Date.now();
-          fetch('/api/activity',{method:'POST',headers:authorization()}).catch(() => {});
+          fetch('/api/activity',{method:'POST',headers:authorization()}).then(response => { if (response.status === 401) expireAuthorization(); }).catch(() => {});
         }
         window.addEventListener('pointerdown',recordActivity);
         window.addEventListener('keydown',recordActivity);

@@ -5,7 +5,7 @@ using FlorisDeV.BackupClient.Dashboard;
 
 namespace FlorisDeV.BackupClient.Tests.Integration;
 
-public sealed class DashboardInstalledConfigurationTests
+public partial class BackupServiceIntegrationTests
 {
     [Fact]
     public async Task InstalledObserverReloadsAtomicEditsToSharedConfigurationWithoutCreatingBackupState()
@@ -27,6 +27,16 @@ public sealed class DashboardInstalledConfigurationTests
             var config = Path.Combine(client, "appsettings.local.json");
             var reporting = Path.Combine(root, "reporting");
             var database = Path.Combine(root, "never-created.db");
+            var target = Directory.CreateDirectory(Path.Combine(root, "target")).FullName;
+            var clientIgnore = Path.Combine(client, ".backupignore");
+            await File.WriteAllTextAsync(clientIgnore, "*.tmp\n");
+            await File.WriteAllTextAsync(Path.Combine(payload, ".backupignore"), "*.tmp\n");
+            var producerOptions = new FlorisDeV.BackupClient.Config.BackupClientOptions
+            {
+                BackupTargets = new() { ["documents"] = target }, IgnoreFilePath = clientIgnore,
+                Dashboard = new() { Enabled = true, ReportingDirectory = reporting, MaximumBackupAge = TimeSpan.FromDays(1) }
+            };
+            await CreateFreshnessService(producerOptions, TimeProvider.System).RunAsync(default);
             async Task Configure(bool resident)
             {
                 var temporary = config + ".new";
@@ -34,10 +44,10 @@ public sealed class DashboardInstalledConfigurationTests
                 {
                     BackupClient = new
                     {
-                        Dashboard = new { Enabled = true, ReportingDirectory = reporting,
+                        Dashboard = new { Enabled = true, ReportingDirectory = reporting, MaximumBackupAge = "1.00:00:00",
                             LogDirectory = Path.Combine(root, "logs"), BackupServiceUnit = "stowhaven-synthetic-reload.service",
                             BackupTimerUnit = "stowhaven-synthetic-reload.timer" },
-                        Schedule = new { Enabled = resident }, BackupTargets = new Dictionary<string, string>(), IgnoreFilePath = ""
+                        Schedule = new { Enabled = resident }, BackupTargets = new Dictionary<string, string> { ["documents"] = target }, IgnoreFilePath = ".backupignore"
                     },
                     Database = new { FilePath = database }
                 }));
@@ -86,6 +96,11 @@ public sealed class DashboardInstalledConfigurationTests
                 Assert.Equal(expected, actual);
             }
             await ExpectScheduling("userSessionUnavailable");
+            var initial = await browser.GetFromJsonAsync<DashboardStatus>("/api/status");
+            Assert.Equal("fresh", initial!.Freshness!.State);
+            await File.WriteAllTextAsync(clientIgnore, "*.log\n");
+            var edited = await browser.GetFromJsonAsync<DashboardStatus>("/api/status");
+            Assert.Equal("configurationChanged", edited!.Freshness!.State);
             await Configure(true);
             await ExpectScheduling("incompatibleSchedule");
             await Configure(false);

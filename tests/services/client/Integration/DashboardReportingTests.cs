@@ -125,6 +125,57 @@ public partial class BackupServiceIntegrationTests
         Assert.Contains("incompatible", await browser.GetStringAsync("api/status"));
     }
 
+    [Theory]
+    [InlineData("outcome", "999")]
+    [InlineData("serverProcessing", "\"futureStatus\"")]
+    [InlineData("localCompletion", "999")]
+    [InlineData("cleanliness", "\"futureStatus\"")]
+    public async Task Dashboard_RunStatusesKeepVersionOneWireNamesAndRejectUnknownOrNumericValues(string field, string invalidJson)
+    {
+        var target = Path.Combine(_testRoot, "target"); Directory.CreateDirectory(target);
+        await File.WriteAllTextAsync(Path.Combine(target, "document.txt"), "synthetic");
+        var options = new DashboardOptions { Enabled = true, ReportingDirectory = Path.Combine(_testRoot, "reporting") };
+        var result = await CreateReportingService(target, options.ReportingDirectory).RunAsync(default);
+        var run = Assert.Single(result.Runs);
+        Assert.Equal(BackupRunOutcome.Succeeded, run.Outcome);
+        Assert.Equal(BackupServerProcessing.Succeeded, run.ServerProcessing);
+        Assert.Equal(BackupLocalCompletion.Completed, run.LocalCompletion);
+        Assert.Equal(BackupCleanliness.Clean, run.Cleanliness);
+        var path = Path.Combine(options.ReportingDirectory, "snapshot.json");
+        var snapshot = System.Text.Json.Nodes.JsonNode.Parse(await File.ReadAllTextAsync(path))!;
+        Assert.Equal(1, snapshot["schemaVersion"]!.GetValue<int>());
+        var storedRun = snapshot["runs"]![0]!;
+        Assert.Equal("succeeded", storedRun["outcome"]!.GetValue<string>());
+        Assert.Equal("succeeded", storedRun["serverProcessing"]!.GetValue<string>());
+        Assert.Equal("completed", storedRun["localCompletion"]!.GetValue<string>());
+        Assert.Equal("clean", storedRun["cleanliness"]!.GetValue<string>());
+        storedRun[field] = System.Text.Json.Nodes.JsonNode.Parse(invalidJson);
+        await File.WriteAllTextAsync(path, snapshot.ToJsonString());
+        await using var companion = await DashboardCompanion.StartAsync(options);
+        using var browser = new HttpClient { BaseAddress = companion.Address };
+        await DashboardTestAuthorization.AuthorizeAsync(browser, options);
+        using var status = JsonDocument.Parse(await browser.GetStringAsync("api/status"));
+        Assert.Equal("unavailable", status.RootElement.GetProperty("state").GetString());
+    }
+
+    [Fact]
+    public async Task Dashboard_ResultFilePreservesRunWireNamesAndRejectsInvalidTypedValues()
+    {
+        var target = Path.Combine(_testRoot, "target"); Directory.CreateDirectory(target);
+        await File.WriteAllTextAsync(Path.Combine(target, "document.txt"), "synthetic");
+        var result = await CreateReportingService(target, Path.Combine(_testRoot, "reporting")).RunAsync(default);
+        var path = Path.Combine(_testRoot, "result.json");
+        await result.WriteAsync(path);
+        using var json = JsonDocument.Parse(await File.ReadAllTextAsync(path));
+        var run = json.RootElement.GetProperty("runs")[0];
+        Assert.Equal("succeeded", run.GetProperty("outcome").GetString());
+        Assert.Equal("succeeded", run.GetProperty("serverProcessing").GetString());
+        Assert.Equal("completed", run.GetProperty("localCompletion").GetString());
+        Assert.Equal("clean", run.GetProperty("cleanliness").GetString());
+        var invalid = result with { Runs = [result.Runs[0] with { Outcome = (BackupRunOutcome)999 }] };
+        await Assert.ThrowsAsync<JsonException>(() => invalid.WriteAsync(path));
+    }
+
     private BackupService CreateReportingService(string target, string reporting)
     {
         var options = Options.Create(new BackupClientOptions

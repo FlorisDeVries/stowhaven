@@ -1,3 +1,4 @@
+using FlorisDeV.BackupClient.Models;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using FlorisDeV.BackupClient.Config;
@@ -9,11 +10,11 @@ namespace FlorisDeV.BackupClient.Dashboard;
 public sealed record DashboardCleanEvidence(Guid AttemptId, Guid? RunId, DateTimeOffset ScanStartedAt,
     DateTimeOffset CompletedAt, string SelectionFingerprint, string Outcome);
 public sealed record DashboardCompletedBackupEvidence(Guid AttemptId, Guid RunId, DateTimeOffset? ScanStartedAt,
-    DateTimeOffset? CompletedAt, string? SelectionFingerprint, string Outcome, string Cleanliness)
+    DateTimeOffset? CompletedAt, string? SelectionFingerprint, BackupServerProcessing Outcome, BackupCleanliness Cleanliness)
 {
     public DateTimeOffset? ServerCompletedAt { get; init; }
     public DateTimeOffset ServerCompletionObservedAt { get; init; }
-    public string LocalCompletion { get; init; } = "pending";
+    public BackupLocalCompletion LocalCompletion { get; init; } = BackupLocalCompletion.Pending;
 }
 public sealed record DashboardBackupEvidence(int SchemaVersion = 1)
 {
@@ -23,10 +24,17 @@ public sealed record DashboardBackupEvidence(int SchemaVersion = 1)
 }
 public sealed record DashboardFreshness(string State, double? AgeSeconds, double? MaximumAgeSeconds, string Message);
 
+internal sealed class DashboardReportingCompatibilityException() : InvalidOperationException("Reporting schema is unsupported. Upgrade the client and dashboard together; preserve the reporting files.");
+
 internal static class DashboardFreshnessReporting
 {
-    internal static string Selection(BackupClientOptions options) => DashboardReporting.Fingerprint(
-        options.GetEffectiveTargets(), BackupIgnoreParser.GetCombinedPatterns(options.IgnoreFilePath));
+    internal static string Selection(BackupClientOptions options, string? clientBaseDirectory = null)
+    {
+        var ignore = options.IgnoreFilePath;
+        if (!string.IsNullOrWhiteSpace(ignore) && !Path.IsPathRooted(ignore) && clientBaseDirectory != null)
+            ignore = Path.Combine(clientBaseDirectory, ignore);
+        return DashboardReporting.Fingerprint(options.GetEffectiveTargets(), BackupIgnoreParser.GetCombinedPatterns(ignore));
+    }
 
     internal static DashboardFreshness Project(DashboardBackupEvidence? evidence, DashboardOptions options,
         string? currentSelection, DateTimeOffset now)
@@ -54,10 +62,10 @@ internal static class DashboardFreshnessReporting
         var backup = evidence?.LastCompletedServerBackup;
         var validBackup = backup == null || backup.AttemptId != Guid.Empty && backup.RunId != Guid.Empty &&
             backup.ServerCompletionObservedAt != default && (backup.ScanStartedAt == null || backup.ServerCompletionObservedAt >= backup.ScanStartedAt) &&
-            backup.LocalCompletion is "pending" or "completed" &&
-            (backup.LocalCompletion == "completed" ? backup.CompletedAt != null && (backup.ScanStartedAt == null || backup.CompletedAt >= backup.ScanStartedAt) : backup.CompletedAt == null) &&
+            backup.LocalCompletion is BackupLocalCompletion.Pending or BackupLocalCompletion.Completed &&
+            (backup.LocalCompletion == BackupLocalCompletion.Completed ? backup.CompletedAt != null && (backup.ScanStartedAt == null || backup.CompletedAt >= backup.ScanStartedAt) : backup.CompletedAt == null) &&
             (backup.SelectionFingerprint == null || Regex.IsMatch(backup.SelectionFingerprint, "\\A[a-f0-9]{64}\\z")) &&
-            backup.Outcome is "succeeded" or "completedWithErrors" && backup.Cleanliness is "unknown" or "clean" or "degraded";
+            backup.Outcome is BackupServerProcessing.Succeeded or BackupServerProcessing.CompletedWithErrors && Enum.IsDefined(backup.Cleanliness);
         return evidence == null || evidence.SchemaVersion == 1 && Entry(evidence.LastCleanResult, false) &&
             Entry(evidence.LastCleanCheck, true) && validBackup;
     }
@@ -70,7 +78,7 @@ internal static class DashboardFreshnessReporting
         using var document = JsonDocument.Parse(text);
         if (document.RootElement.ValueKind != JsonValueKind.Object ||
             !document.RootElement.TryGetProperty("schemaVersion", out var version) || !version.TryGetInt32(out var schema) || schema != 1)
-            throw new InvalidOperationException("Unsupported clean evidence schema; preserve reporting files and upgrade the companion and client together.");
+            throw new DashboardReportingCompatibilityException();
         var value = JsonSerializer.Deserialize<DashboardBackupEvidence>(text, DashboardReporting.Json);
         if (value == null || !Valid(value)) throw new InvalidOperationException("Invalid clean evidence.");
         return value;
@@ -83,7 +91,7 @@ internal static class DashboardFreshnessReporting
         static DashboardCleanEvidence? Newer(DashboardCleanEvidence? old, DashboardCleanEvidence candidate)
             => old == null || candidate.ScanStartedAt > old.ScanStartedAt ||
                 candidate.ScanStartedAt == old.ScanStartedAt && candidate.CompletedAt >= old.CompletedAt ? candidate : old;
-        foreach (var run in snapshot.Runs.Where(r => r.ServerProcessing is "succeeded" or "completedWithErrors" &&
+        foreach (var run in snapshot.Runs.Where(r => r.HasCompletedServer &&
             r.ServerCompletionObservedAt != null))
         {
             var completed = new DashboardCompletedBackupEvidence(run.OriginAttemptId ?? snapshot.AttemptId, run.RunId,
@@ -94,10 +102,10 @@ internal static class DashboardFreshnessReporting
                 completed.ServerCompletionObservedAt == evidence.LastCompletedServerBackup.ServerCompletionObservedAt &&
                 (completed.ScanStartedAt ?? DateTimeOffset.MinValue) >= (evidence.LastCompletedServerBackup.ScanStartedAt ?? DateTimeOffset.MinValue))
                 evidence = evidence with { LastCompletedServerBackup = completed };
-            if (run.Cleanliness == "clean" && run.LocalCompletion == "completed" && run.CompletedAt != null)
+            if (run.Cleanliness == BackupCleanliness.Clean && run.LocalCompletion == BackupLocalCompletion.Completed && run.CompletedAt != null)
             {
                 var item = new DashboardCleanEvidence(completed.AttemptId, run.RunId, run.ScanStartedAt!.Value,
-                    run.CompletedAt.Value, run.SelectionFingerprint!, run.Outcome);
+                    run.CompletedAt.Value, run.SelectionFingerprint!, "succeeded");
                 evidence = evidence with { LastCleanResult = Newer(evidence.LastCleanResult, item) };
             }
         }

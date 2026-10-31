@@ -4,7 +4,10 @@ using System.Text.RegularExpressions;
 
 namespace FlorisDeV.BackupClient.Dashboard;
 
-public sealed record SystemdServiceState(string LoadState, string ActiveState, string Type, string? InvocationId = null, bool HasJob = false, bool RemainAfterExit = false);
+public sealed record SystemdServiceState(string LoadState, string ActiveState, string Type, string? InvocationId = null, bool HasJob = false, bool RemainAfterExit = false)
+{
+    internal bool SupportsBackupAttempts => Type == "oneshot" && !RemainAfterExit;
+}
 public sealed record SystemdTimerState(string LoadState, string ActiveState, string UnitFileState, DateTimeOffset? NextActivation, string? ServiceUnit = null);
 public interface ISystemdUserService
 {

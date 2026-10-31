@@ -11,7 +11,7 @@ public sealed partial class BackupExecutionProcessTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task AuthorizedStartConfirmsRealExecutionIncludingFastCompletedAttempts(bool finishBeforeStartReturns)
+    public async Task AuthorizedStartConfirmsRealExecutionFromCurrentUnitIncludingFastCompletedAttempts(bool finishBeforeStartReturns)
     {
         Directory.CreateDirectory(_root);
         var invocation = Guid.NewGuid().ToString("N");
@@ -22,8 +22,11 @@ public sealed partial class BackupExecutionProcessTests
             var process = Start(Path.Combine(_root, "state.db"), "service", invocation);
             await WaitForFile("service.entered");
             if (finishBeforeStartReturns) await process.WaitForExitAsync(token);
-        }) { State = new("loaded", "inactive", "oneshot", invocation) };
-        await using var companion = await DashboardCompanion.StartAsync(options.Dashboard, startControl: Control(options, runner));
+        }) { State = new("loaded", "inactive", "oneshot", invocation), ExpectedUnit = "stowhaven-synthetic-current.service" };
+        var current = options;
+        await using var companion = await DashboardCompanion.StartAsync(options.Dashboard, startControl: Control(options, runner), currentOptions: () => current);
+        current = new() { BackupTargets = new(), Dashboard = new() { Enabled = true,
+            ReportingDirectory = options.Dashboard.ReportingDirectory, BackupServiceUnit = runner.ExpectedUnit } };
         using var browser = await AuthorizedBrowser(companion, options.Dashboard);
         var response = await browser.PostAsync("api/start", null);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -38,6 +41,70 @@ public sealed partial class BackupExecutionProcessTests
             Assert.Equal("alreadyRunning", duplicate!.State);
             Assert.Equal(result.AttemptId, duplicate.AttemptId);
         }
+    }
+
+    [Theory]
+    [InlineData("resident", "incompatibleSchedule")]
+    [InlineData("unreadable", "configurationUnavailable")]
+    [InlineData("reportingDisabled", "reportingDisabled")]
+    [InlineData("reportingMoved", "configurationChanged")]
+    public async Task AuthorizedStartUsesCurrentConfigurationBeforeRequestingActivation(string change, string expected)
+    {
+        Directory.CreateDirectory(_root);
+        var options = ControlOptions();
+        var changed = false;
+        var activated = false;
+        var runner = new ControlledSystemd(_ => { activated = true; return Task.CompletedTask; });
+        BackupClientOptions Current() => !changed ? options : change switch
+        {
+            "unreadable" => throw new IOException("synthetic config unavailable"),
+            "reportingDisabled" => new() { BackupTargets = new(), Dashboard = new() { Enabled = false, ReportingDirectory = options.Dashboard.ReportingDirectory } },
+            "reportingMoved" => new() { BackupTargets = new(), Dashboard = new() { Enabled = true, ReportingDirectory = Path.Combine(_root, "moved-reporting") } },
+            _ => new() { BackupTargets = new(), Dashboard = options.Dashboard, Schedule = new() { Enabled = true } }
+        };
+        await using var companion = await DashboardCompanion.StartAsync(options.Dashboard,
+            startControl: Control(options, runner), currentOptions: Current);
+        using var browser = await AuthorizedBrowser(companion, options.Dashboard);
+        changed = true;
+        var result = await (await browser.PostAsync("api/start", null)).Content.ReadFromJsonAsync<DashboardStartResult>();
+        Assert.Equal(expected, result!.State);
+        Assert.False(activated);
+    }
+
+    [Fact]
+    public async Task AuthorizedStartRejectsChangedDatabaseConfigurationBeforeCreatingOrStartingAnything()
+    {
+        Directory.CreateDirectory(_root);
+        var options = ControlOptions();
+        var database = new DatabaseOptions { FilePath = Path.Combine(_root, "initial.db") };
+        var current = database;
+        var activated = false;
+        var runner = new ControlledSystemd(_ => { activated = true; return Task.CompletedTask; });
+        var control = new DashboardStartControl(database, options, runner, currentDatabase: () => current);
+        await using var companion = await DashboardCompanion.StartAsync(options.Dashboard, startControl: control);
+        using var browser = await AuthorizedBrowser(companion, options.Dashboard);
+        current = new() { FilePath = Path.Combine(_root, "changed.db") };
+        var result = await (await browser.PostAsync("api/start", null)).Content.ReadFromJsonAsync<DashboardStartResult>();
+        Assert.Equal("configurationChanged", result!.State);
+        Assert.Contains("Restart", result.Message);
+        Assert.False(activated);
+        Assert.False(File.Exists(database.FilePath));
+        Assert.False(File.Exists(current.FilePath));
+    }
+
+    [Fact]
+    public async Task AuthorizedStartRejectsServiceThatRemainsActiveAfterExit()
+    {
+        Directory.CreateDirectory(_root);
+        var options = ControlOptions();
+        var activated = false;
+        var runner = new ControlledSystemd(_ => { activated = true; return Task.CompletedTask; })
+            { State = new("loaded", "inactive", "oneshot", "", RemainAfterExit: true) };
+        await using var companion = await DashboardCompanion.StartAsync(options.Dashboard, startControl: Control(options, runner));
+        using var browser = await AuthorizedBrowser(companion, options.Dashboard);
+        var result = await (await browser.PostAsync("api/start", null)).Content.ReadFromJsonAsync<DashboardStartResult>();
+        Assert.Equal("incompatibleSchedule", result!.State);
+        Assert.False(activated);
     }
 
     [Fact]
@@ -166,7 +233,9 @@ public sealed partial class BackupExecutionProcessTests
     private sealed class ControlledSystemd(Func<CancellationToken, Task> start) : ISystemdUserService
     {
         public SystemdServiceState State { get; set; } = new("loaded", "inactive", "oneshot", Guid.NewGuid().ToString("N"));
-        public Task<SystemdServiceState> ShowAsync(string unit, CancellationToken token) => Task.FromResult(State);
+        public string? ExpectedUnit { get; init; }
+        public Task<SystemdServiceState> ShowAsync(string unit, CancellationToken token)
+            => Task.FromResult(ExpectedUnit == null || unit == ExpectedUnit ? State : new SystemdServiceState("not-found", "inactive", "oneshot"));
         public Task StartAsync(string unit, CancellationToken token) => start(token);
     }
     private sealed class StartClock : TimeProvider

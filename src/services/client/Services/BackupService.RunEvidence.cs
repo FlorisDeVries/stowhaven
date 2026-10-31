@@ -27,7 +27,7 @@ public partial class BackupService
         {
             RunId = pending.RunId, CommitId = pending.CommitId,
             AttemptIds = (evidence.AttemptIds ?? []).Append(attempt.Id).Distinct().TakeLast(100).ToArray(),
-            ServerProcessing = pending.CommitId.HasValue || pending.ManifestUploaded ? "pending" : "notSubmitted"
+            ServerProcessing = pending.CommitId.HasValue || pending.ManifestUploaded ? BackupServerProcessing.Pending : BackupServerProcessing.NotSubmitted
         };
         attempt.ScanBase = pending.Evidence;
         attempt.PendingHeader = pending with { Evidence = attempt.Runs[pending.RunId] };
@@ -41,12 +41,12 @@ public partial class BackupService
         if (!attempt.Runs.TryGetValue(runId, out var run))
             run = new BackupRunResult
             {
-                RunId = runId, OriginAttemptId = attempt.Id, AttemptIds = [attempt.Id], ServerProcessing = "notSubmitted",
+                RunId = runId, OriginAttemptId = attempt.Id, AttemptIds = [attempt.Id], ServerProcessing = BackupServerProcessing.NotSubmitted,
                 ScanStartedAt = attempt.Scan?.StartedAt, SelectionFingerprint = attempt.Scan?.SelectionFingerprint,
                 FilesSkipped = 0, FilesDeferred = 0, FilesFailed = 0, ScanCompleted = false
             };
         // Only the run currently being scanned receives this attempt's scan counters.
-        if (attempt.Stats is { } stats && run.LocalCompletion != "completed")
+        if (attempt.Stats is { } stats && run.LocalCompletion != BackupLocalCompletion.Completed)
         {
             var basis = attempt.ScanBase;
             run = run with
@@ -60,8 +60,8 @@ public partial class BackupService
         run = run with
         {
             CommitId = commitId ?? run.CommitId,
-            ServerProcessing = commitId != null && run.ServerProcessing is "unknown" or "notSubmitted" ? "pending" : run.ServerProcessing,
-            Cleanliness = run.FilesSkipped > 0 || run.FilesDeferred > 0 || run.FilesFailed > 0 ? "degraded" : run.Cleanliness
+            ServerProcessing = commitId != null && run.ServerProcessing is BackupServerProcessing.Unknown or BackupServerProcessing.NotSubmitted ? BackupServerProcessing.Pending : run.ServerProcessing,
+            Cleanliness = run.FilesSkipped > 0 || run.FilesDeferred > 0 || run.FilesFailed > 0 ? BackupCleanliness.Degraded : run.Cleanliness
         };
         attempt.Runs[runId] = run;
         PublishRunEvidence();
@@ -75,20 +75,19 @@ public partial class BackupService
         var failed = status.Status == CommitJobStatus.Failed;
         var errors = status.Status == CommitJobStatus.CompletedWithErrors;
         var degraded = errors || run.FilesSkipped > 0 || run.FilesDeferred > 0 || run.FilesFailed > 0;
-        var clean = !failed && localCompleted && !degraded && run.ScanCompleted == true &&
-            run.ScanStartedAt.HasValue && run.SelectionFingerprint != null && run.FilesSkipped == 0 && run.FilesDeferred == 0 && run.FilesFailed == 0;
+        var clean = !failed && localCompleted && !degraded && run.HasCleanScan;
         attempt.Runs[runId] = run with
         {
             CommitId = status.CommitId,
             CompletedAt = localCompleted ? run.CompletedAt ?? (timeProvider ?? TimeProvider.System).GetUtcNow() : run.CompletedAt,
             ServerCompletedAt = failed ? run.ServerCompletedAt : status.CompletedAt ?? run.ServerCompletedAt,
             ServerCompletionObservedAt = failed ? run.ServerCompletionObservedAt : run.ServerCompletionObservedAt ?? (timeProvider ?? TimeProvider.System).GetUtcNow(),
-            ServerProcessing = failed ? "failed" : errors ? "completedWithErrors" : "succeeded",
-            LocalCompletion = failed ? "notCompleted" : localCompleted ? "completed" : "pending",
-            Outcome = failed ? "failed" : !localCompleted ? "pending" : degraded ? "completedWithErrors" : "succeeded",
+            ServerProcessing = failed ? BackupServerProcessing.Failed : errors ? BackupServerProcessing.CompletedWithErrors : BackupServerProcessing.Succeeded,
+            LocalCompletion = failed ? BackupLocalCompletion.NotCompleted : localCompleted ? BackupLocalCompletion.Completed : BackupLocalCompletion.Pending,
+            Outcome = failed ? BackupRunOutcome.Failed : !localCompleted ? BackupRunOutcome.Pending : degraded ? BackupRunOutcome.CompletedWithErrors : BackupRunOutcome.Succeeded,
             FilesFailed = run.FilesFailed.HasValue ? run.FilesFailed - (run.ServerFilesFailed ?? 0) + (status.FilesFailed ?? 0) : null,
             ServerFilesFailed = status.FilesFailed,
-            Cleanliness = degraded ? "degraded" : clean ? "clean" : "unknown"
+            Cleanliness = degraded ? BackupCleanliness.Degraded : clean ? BackupCleanliness.Clean : BackupCleanliness.Unknown
         };
         PublishRunEvidence();
     }
@@ -96,7 +95,7 @@ public partial class BackupService
     private void ObserveDiscardedRun(Guid runId)
     {
         if (_attemptEvidence is not { } attempt) return;
-        attempt.Runs[runId] = attempt.Runs[runId] with { Outcome = "failed", LocalCompletion = "notCompleted" };
+        attempt.Runs[runId] = attempt.Runs[runId] with { Outcome = BackupRunOutcome.Failed, LocalCompletion = BackupLocalCompletion.NotCompleted };
         attempt.PendingHeader = null;
         attempt.ScanBase = null;
         PublishRunEvidence();
@@ -121,7 +120,7 @@ public partial class BackupService
     private BackupResult AttachEvidence(BackupResult result)
     {
         if (_attemptEvidence is not { } attempt) return result;
-        var degraded = attempt.Runs.Values.Any(x => x.Outcome is "failed" or "completedWithErrors" || x.Cleanliness == "degraded");
+        var degraded = attempt.Runs.Values.Any(x => x.Outcome is BackupRunOutcome.Failed or BackupRunOutcome.CompletedWithErrors || x.Cleanliness == BackupCleanliness.Degraded);
         return result with
         {
             AttemptId = attempt.Id, Runs = attempt.Runs.Values.ToArray(), CurrentScan = attempt.Scan,
