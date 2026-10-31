@@ -51,6 +51,16 @@ public partial class BackupServiceIntegrationTests
             Assert.False(snapshot.GetProperty("clientActive").GetBoolean());
             Assert.Equal("pending", snapshot.GetProperty("runs")[0].GetProperty("serverProcessing").GetString());
         }
+        var intermediate = await Service().RunAsync(default);
+        Assert.Equal(BackupOutcome.Pending, intermediate.Outcome);
+        var intermediateHeader = (await state.GetPendingBackupRunAsync(pending.DeviceId.Value))!;
+        Assert.Contains(intermediate.AttemptId, intermediateHeader.Evidence!.AttemptIds);
+        // A commit response lost before the header update is retried idempotently.
+        await state.SavePendingBackupRunAsync(intermediateHeader with { CommitId = null });
+        var stillPending = await Service().RunAsync(default);
+        Assert.Equal(BackupOutcome.Pending, stillPending.Outcome);
+        var retriedHeader = (await state.GetPendingBackupRunAsync(pending.DeviceId.Value))!;
+        Assert.Contains(stillPending.AttemptId, retriedHeader.Evidence!.AttemptIds);
         complete = true;
         var resumed = await Service().RunAsync(default);
         Assert.Equal(BackupOutcome.Succeeded, resumed.Outcome);
@@ -60,7 +70,7 @@ public partial class BackupServiceIntegrationTests
         Assert.Equal(run.ScanStartedAt, finished.ScanStartedAt);
         Assert.Equal("completed", finished.LocalCompletion);
         Assert.Equal("clean", finished.Cleanliness);
-        Assert.Equal(new[] { pending.AttemptId, resumed.AttemptId }, finished.AttemptIds);
+        Assert.Equal(new[] { pending.AttemptId, intermediate.AttemptId, stillPending.AttemptId, resumed.AttemptId }, finished.AttemptIds);
         Assert.Equal(1, resumed.FilesScanned);
         Assert.Null(await state.GetPendingBackupRunAsync(pending.DeviceId.Value));
         Assert.Equal(run.RunId, (await state.GetOrCreateDeviceStateAsync()).LastRunId);
@@ -133,6 +143,7 @@ public partial class BackupServiceIntegrationTests
         Assert.Equal(legacy ? null : 3, saved.FilesDeferred);
         Assert.Equal(legacy ? null : 4, saved.FilesFailed);
         Assert.Equal(legacy ? "unknown" : "degraded", saved.Cleanliness);
+        Assert.Equal(legacy ? null : true, saved.ScanCompleted);
         Assert.True(pending.CurrentScan!.Clean);
         if (newRun) await CreateSourceFileAsync("new.txt", "new clean work");
         complete = true;
@@ -285,6 +296,34 @@ public partial class BackupServiceIntegrationTests
         Assert.Equal("pending", run.GetProperty("serverProcessing").GetString());
         Assert.Equal("pending", run.GetProperty("localCompletion").GetString());
         Assert.NotEqual(Guid.Empty, run.GetProperty("commitId").GetGuid());
+    }
+
+    [Fact]
+    public async Task ExpiredUnsubmittedRun_RetainsItsFailedResultWhenReplacementRunSucceeds()
+    {
+        using var state = OpenState(Path.Combine(_testRoot, "expired.db"));
+        var device = (await state.GetOrCreateDeviceStateAsync()).DeviceId;
+        var run = Guid.NewGuid(); var origin = Guid.NewGuid();
+        await StageRunAsync(state, device, run, null);
+        var header = (await state.GetPendingBackupRunAsync(device))!;
+        await state.SavePendingBackupRunAsync(header with
+        {
+            ManifestUploaded = false,
+            UploadSasUrlInfo = new() { Url = header.UploadSasUrlInfo.Url, TtlMinutes = 60, ExpiresAt = DateTimeOffset.UtcNow.AddHours(-1) },
+            ManifestSasUrlInfo = new() { Url = header.ManifestSasUrlInfo.Url, TtlMinutes = 60, ExpiresAt = DateTimeOffset.UtcNow.AddHours(-1) },
+            Evidence = new BackupRunResult { RunId = run, OriginAttemptId = origin, AttemptIds = [origin],
+                ScanStartedAt = DateTimeOffset.UtcNow.AddDays(-1), SelectionFingerprint = new string('c', 64),
+                ScanCompleted = false, FilesSkipped = 1, FilesDeferred = 0, FilesFailed = 0, Cleanliness = "degraded" }
+        });
+        await CreateSourceFileAsync("replacement.txt", "synthetic");
+        var result = await CreateServiceWithState(state).RunAsync(default);
+        Assert.Equal(BackupOutcome.CompletedWithErrors, result.Outcome);
+        var expired = result.Runs.Single(x => x.RunId == run);
+        Assert.Equal("failed", expired.Outcome);
+        Assert.Equal("notCompleted", expired.LocalCompletion);
+        Assert.Equal("degraded", expired.Cleanliness);
+        Assert.Equal("clean", result.Runs.Single(x => x.RunId != run).Cleanliness);
+        Assert.Null(await state.GetPendingBackupRunAsync(device));
     }
 
 }

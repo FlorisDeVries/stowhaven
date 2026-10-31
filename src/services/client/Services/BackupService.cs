@@ -126,7 +126,7 @@ public partial class BackupService(
             SetupTelemetryBackupStart(activity, deviceId, targets);
 
             var pendingRun = await LoadUsablePendingRunAsync(deviceId, cancellationToken);
-            if (pendingRun != null) ObservePending(pendingRun);
+            if (pendingRun != null) await ObservePendingAsync(pendingRun, cancellationToken);
             CommitExecution? resumed = null;
             Guid? resumedRunId = pendingRun?.RunId;
             var finalizedPendingRun = false;
@@ -962,7 +962,9 @@ public partial class BackupService(
             return pendingRun;
         }
 
+        await ObservePendingAsync(pendingRun, cancellationToken);
         await backupStateService.ClearPendingBackupRunAsync(deviceId, pendingRun.RunId, cancellationToken);
+        ObserveDiscardedRun(pendingRun.RunId);
         LogPendingBackupRunExpired(pendingRun.RunId, pendingRun.ExpiresAt);
         return null;
     }
@@ -980,11 +982,8 @@ public partial class BackupService(
             }, cancellationToken);
             commitId = GetValidatedCommitId(pendingRun.DeviceId, pendingRun.RunId, commitResponse);
 
-            await backupStateService.SavePendingBackupRunAsync(pendingRun with
-            {
-                ManifestUploaded = true,
-                CommitId = commitId
-            }, cancellationToken);
+            await SavePendingRunAsync(pendingRun.DeviceId, pendingRun.RunId, pendingRun.StartedAt,
+                pendingRun.UploadSasUrlInfo, pendingRun.ManifestSasUrlInfo, true, commitId, cancellationToken);
         }
 
         var commitStatus = await WaitForCommitCompletionAsync(pendingRun.DeviceId, pendingRun.RunId, commitId.Value, cancellationToken);

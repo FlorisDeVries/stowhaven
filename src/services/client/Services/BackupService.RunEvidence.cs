@@ -18,7 +18,7 @@ public partial class BackupService
         public PendingBackupRun? PendingHeader { get; set; }
     }
 
-    private void ObservePending(PendingBackupRun pending)
+    private async Task ObservePendingAsync(PendingBackupRun pending, CancellationToken cancellationToken)
     {
         if (_attemptEvidence is not { } attempt) return;
         attempt.PendingHeader = pending;
@@ -30,6 +30,8 @@ public partial class BackupService
             ServerProcessing = pending.CommitId.HasValue || pending.ManifestUploaded ? "pending" : "notSubmitted"
         };
         attempt.ScanBase = pending.Evidence;
+        attempt.PendingHeader = pending with { Evidence = attempt.Runs[pending.RunId] };
+        await backupStateService.SavePendingBackupRunAsync(attempt.PendingHeader, cancellationToken);
         PublishRunEvidence();
     }
 
@@ -52,7 +54,7 @@ public partial class BackupService
                 FilesSkipped = run.FilesSkipped == null ? null : (basis?.FilesSkipped ?? 0) + stats.SkippedCount + stats.SkippedChangedCount,
                 FilesDeferred = run.FilesDeferred == null ? null : (basis?.FilesDeferred ?? 0) + stats.SkippedSasExpiredCount,
                 FilesFailed = run.FilesFailed == null ? null : (basis?.FilesFailed ?? 0) + stats.TotalUploadFailures + (run.ServerFilesFailed ?? 0),
-                ScanCompleted = basis == null ? attempt.Scan?.Completed == true : basis.ScanCompleted == true && attempt.Scan?.Completed == true
+                ScanCompleted = run.ScanCompleted == null ? null : basis == null ? attempt.Scan?.Completed == true : basis.ScanCompleted == true && attempt.Scan?.Completed == true
             };
         }
         run = run with
@@ -85,6 +87,15 @@ public partial class BackupService
             ServerFilesFailed = status.FilesFailed,
             Cleanliness = degraded ? "degraded" : clean ? "clean" : "unknown"
         };
+        PublishRunEvidence();
+    }
+
+    private void ObserveDiscardedRun(Guid runId)
+    {
+        if (_attemptEvidence is not { } attempt) return;
+        attempt.Runs[runId] = attempt.Runs[runId] with { Outcome = "failed", LocalCompletion = "notCompleted" };
+        attempt.PendingHeader = null;
+        attempt.ScanBase = null;
         PublishRunEvidence();
     }
 
