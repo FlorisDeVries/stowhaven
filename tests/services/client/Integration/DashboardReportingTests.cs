@@ -112,7 +112,7 @@ public partial class BackupServiceIntegrationTests
             using var status = JsonDocument.Parse(await browser.GetStringAsync("api/status"));
             Assert.Equal("available", status.RootElement.GetProperty("state").GetString());
             var snapshot = status.RootElement.GetProperty("snapshot");
-            Assert.Equal("cleanCheck", snapshot.GetProperty("result").GetString());
+            Assert.Contains(snapshot.GetProperty("result").GetString(), new[] { "active", "cleanCheck" });
             attempts.Add(snapshot.GetProperty("attemptId").GetGuid());
         }
         await writer;

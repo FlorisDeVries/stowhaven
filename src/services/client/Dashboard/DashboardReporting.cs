@@ -24,9 +24,10 @@ public sealed record DashboardSnapshot(
     public bool ClientActive { get; init; }
     public BackupRunResult[] Runs { get; init; } = [];
     public BackupScanEvidence? CurrentScan { get; init; }
+    public DashboardLiveProgress? Live { get; init; }
 }
 
-public sealed record DashboardStatus(string State, DashboardSnapshot? Snapshot = null, string? Message = null);
+public sealed record DashboardStatus(string State, DashboardSnapshot? Snapshot = null, string? Message = null, bool Stale = false);
 
 // Only this allow-listed portable contract reaches disk or HTTP. Never serialize BackupResult/state/configuration.
 internal static class DashboardReporting
@@ -34,6 +35,11 @@ internal static class DashboardReporting
     internal static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     internal const int SchemaVersion = 1;
     internal static string SafeTarget(string value) => Regex.IsMatch(value, "\\A[a-zA-Z0-9_.-]{1,64}\\z") ? value : "[redacted target]";
+
+    private static string[] SafeWarnings(DashboardLiveProgress progress)
+        => new[] { progress.FilesSkipped > 0 ? "Some files were skipped. Review the selected files and retry." : null,
+            progress.FilesDeferred > 0 ? "Some files were deferred and need another backup attempt." : null,
+            progress.FilesFailed > 0 ? "Some files failed to upload and need another backup attempt." : null }.OfType<string>().ToArray();
 
     internal static string Fingerprint(IReadOnlyDictionary<string, string> targets, string[]? exclusions)
     {
@@ -54,7 +60,7 @@ internal static class DashboardReporting
         await PrivateFiles.ReplaceAsync(path, JsonSerializer.Serialize(snapshot, Json));
     }
 
-    internal static async Task<DashboardStatus> ReadAsync(DashboardOptions options)
+    internal static async Task<DashboardStatus> ReadAsync(DashboardOptions options, TimeProvider? timeProvider = null)
     {
         try
         {
@@ -70,11 +76,23 @@ internal static class DashboardReporting
                 snapshot.StartedAt == default || snapshot.ObservedAt < snapshot.StartedAt ||
                 (snapshot.ScanStartedAt is { } scan && (scan < snapshot.StartedAt || scan > snapshot.ObservedAt)) ||
                 (snapshot.Result == "cleanCheck" && snapshot.ScanStartedAt == null) ||
+                (snapshot.Result == "active" && snapshot.Live is not { Active: true }) ||
                 !Regex.IsMatch(snapshot.SelectionFingerprint ?? "", "\\A[a-f0-9]{64}\\z") ||
-                !ValidRunEvidence(snapshot) || snapshot.FilesScanned < 0 || snapshot.Result is not ("cleanCheck" or "noChanges" or "succeeded" or "completedWithErrors" or "pending" or "failed") ||
+                !ValidRunEvidence(snapshot) || snapshot.FilesScanned < 0 || snapshot.Result is not ("cleanCheck" or "noChanges" or "succeeded" or "completedWithErrors" or "pending" or "failed" or "active") ||
                 snapshot.ServerBackupEvidence is not ("none" or "recorded" or "unknown"))
                 return new("unavailable", Message: "Reporting is invalid. Run the client again to record a new observation.");
-            return new("available", snapshot with { TargetNames = snapshot.TargetNames.Select(SafeTarget).ToArray() });
+            if (snapshot.Live is { } live && (live.HeartbeatAt < snapshot.StartedAt || live.HeartbeatAt > snapshot.ObservedAt ||
+                live.FilesUnchanged < 0 || live.FilesUploaded < 0 || live.FilesSkipped < 0 || live.FilesDeferred < 0 || live.FilesFailed < 0 ||
+                live.UploadedBytes < 0 || live.ElapsedSeconds < 0 || !double.IsFinite(live.ElapsedSeconds) ||
+                live.AverageBytesPerSecond < 0 || !double.IsFinite(live.AverageBytesPerSecond) ||
+                live.AverageFilesPerSecond < 0 || !double.IsFinite(live.AverageFilesPerSecond) ||
+                live.TotalFilesToScan < snapshot.FilesScanned || live.TotalBytesToUpload < live.UploadedBytes ||
+                live.UploadPercent != null || live.EstimatedSecondsRemaining != null))
+                return new("unavailable", Message: "Live reporting is invalid. Run the client again to record a new observation.");
+            return new("available", snapshot with { TargetNames = snapshot.TargetNames.Select(SafeTarget).ToArray(),
+                Live = snapshot.Live is { } progress ? progress with { CurrentTarget = progress.CurrentTarget == null ? null : SafeTarget(progress.CurrentTarget),
+                    Warnings = SafeWarnings(progress) } : null },
+                Stale: snapshot.Live is { Active: true } current && (timeProvider ?? TimeProvider.System).GetUtcNow() - current.HeartbeatAt > TimeSpan.FromSeconds(15));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException or NotSupportedException)
         { return new("unavailable", Message: "Reporting cannot be read. Check private reporting permissions and run the client again."); }
@@ -91,7 +109,7 @@ internal static class DashboardReporting
                 run.FilesSkipped < 0 || run.FilesDeferred < 0 || run.FilesFailed < 0 || run.ServerFilesFailed < 0 ||
                 run.Outcome is not ("pending" or "succeeded" or "completedWithErrors" or "failed") ||
                 run.ServerProcessing is not ("unknown" or "notSubmitted" or "pending" or "succeeded" or "completedWithErrors" or "failed") ||
-                run.LocalCompletion is not ("pending" or "completed") || run.Cleanliness is not ("unknown" or "clean" or "degraded") ||
+                run.LocalCompletion is not ("pending" or "completed" or "notCompleted") || run.Cleanliness is not ("unknown" or "clean" or "degraded") ||
                 (run.LocalCompletion == "completed" && run.ServerProcessing is not ("succeeded" or "completedWithErrors")) ||
                 (run.Cleanliness == "clean" && (run.LocalCompletion != "completed" || run.ServerProcessing != "succeeded" ||
                     run.ScanCompleted != true || run.ScanStartedAt == null || run.SelectionFingerprint == null ||

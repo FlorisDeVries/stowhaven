@@ -26,10 +26,11 @@ public partial class BackupService
         attempt.Runs[pending.RunId] = evidence with
         {
             RunId = pending.RunId, CommitId = pending.CommitId,
-            AttemptIds = evidence.AttemptIds.Append(attempt.Id).Distinct().ToArray(),
+            AttemptIds = (evidence.AttemptIds ?? []).Append(attempt.Id).Distinct().ToArray(),
             ServerProcessing = pending.CommitId.HasValue || pending.ManifestUploaded ? "pending" : "notSubmitted"
         };
         attempt.ScanBase = pending.Evidence;
+        PublishRunEvidence();
     }
 
     private BackupRunResult? CaptureRun(Guid runId, Guid? commitId)
@@ -38,7 +39,7 @@ public partial class BackupService
         if (!attempt.Runs.TryGetValue(runId, out var run))
             run = new BackupRunResult
             {
-                RunId = runId, OriginAttemptId = attempt.Id, AttemptIds = [attempt.Id],
+                RunId = runId, OriginAttemptId = attempt.Id, AttemptIds = [attempt.Id], ServerProcessing = "notSubmitted",
                 ScanStartedAt = attempt.Scan?.StartedAt, SelectionFingerprint = attempt.Scan?.SelectionFingerprint,
                 FilesSkipped = 0, FilesDeferred = 0, FilesFailed = 0, ScanCompleted = false
             };
@@ -61,6 +62,7 @@ public partial class BackupService
             Cleanliness = run.FilesSkipped > 0 || run.FilesDeferred > 0 || run.FilesFailed > 0 ? "degraded" : run.Cleanliness
         };
         attempt.Runs[runId] = run;
+        PublishRunEvidence();
         return run;
     }
 
@@ -77,12 +79,18 @@ public partial class BackupService
         {
             CommitId = status.CommitId,
             ServerProcessing = failed ? "failed" : errors ? "completedWithErrors" : "succeeded",
-            LocalCompletion = localCompleted ? "completed" : "pending",
+            LocalCompletion = failed ? "notCompleted" : localCompleted ? "completed" : "pending",
             Outcome = failed ? "failed" : !localCompleted ? "pending" : degraded ? "completedWithErrors" : "succeeded",
             FilesFailed = run.FilesFailed.HasValue ? run.FilesFailed - (run.ServerFilesFailed ?? 0) + (status.FilesFailed ?? 0) : null,
             ServerFilesFailed = status.FilesFailed,
             Cleanliness = degraded ? "degraded" : clean ? "clean" : "unknown"
         };
+        PublishRunEvidence();
+    }
+
+    private void PublishRunEvidence()
+    {
+        if (_attemptEvidence is { } attempt) _dashboardLive?.RunEvidence(attempt.Runs.Values.ToArray(), attempt.Scan);
     }
 
     private async Task PreserveInterruptedEvidenceAsync()

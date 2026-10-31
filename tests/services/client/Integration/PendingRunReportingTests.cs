@@ -248,4 +248,43 @@ public partial class BackupServiceIntegrationTests
         Assert.Equal(displayed, json.RootElement.GetProperty("snapshot").GetProperty("result").GetString());
     }
 
+    [Fact]
+    public async Task Dashboard_ReportsPendingRunWhileAwaitingServerCompletion()
+    {
+        var target = Path.Combine(_testRoot, "waiting-target"); Directory.CreateDirectory(target);
+        await File.WriteAllTextAsync(Path.Combine(target, "file.txt"), "synthetic");
+        using var state = OpenState(Path.Combine(_testRoot, "waiting.db"));
+        var options = Options.Create(new BackupClientOptions { BackupTargets = new() { ["documents"] = target },
+            Dashboard = new() { Enabled = true, ReportingDirectory = Path.Combine(_testRoot, "waiting-reporting") } });
+        var clock = new LiveClock();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _mockApiClient.Setup(x => x.GetCommitStatus(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
+            .Returns(async (Guid device, Guid commit, CancellationToken _) =>
+            {
+                entered.TrySetResult(); await release.Task;
+                return new CommitStatusResponse { DeviceId = device, RunId = _committedRuns[commit], CommitId = commit, Status = CommitJobStatus.Succeeded };
+            });
+        var scanner = new BackupScanner(new FileSystemService(NullLogger<FileSystemService>.Instance), state, NullLogger<BackupScanner>.Instance);
+        var service = new BackupService(NullLogger<BackupService>.Instance, _telemetry, _mockApiClient.Object, state, scanner, _testUploader, options, clock);
+        var attempt = service.RunAsync(default);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await using var companion = await DashboardCompanion.StartAsync(options.Value.Dashboard, clock);
+        using var browser = new HttpClient { BaseAddress = companion.Address };
+        await DashboardTestAuthorization.AuthorizeAsync(browser, options.Value.Dashboard);
+        JsonElement waiting;
+        try
+        {
+            clock.Advance(TimeSpan.FromSeconds(5));
+            await EventuallyAsync(async () => (await ReadLiveAsync(browser)).GetProperty("live").GetProperty("heartbeatAt").GetDateTimeOffset() == clock.GetUtcNow());
+            waiting = await ReadLiveAsync(browser);
+        }
+        finally { release.TrySetResult(); await attempt; }
+        Assert.True(waiting.GetProperty("clientActive").GetBoolean());
+        var run = Assert.Single(waiting.GetProperty("runs").EnumerateArray());
+        Assert.Equal("pending", run.GetProperty("serverProcessing").GetString());
+        Assert.Equal("pending", run.GetProperty("localCompletion").GetString());
+        Assert.NotEqual(Guid.Empty, run.GetProperty("commitId").GetGuid());
+    }
+
 }

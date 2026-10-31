@@ -35,7 +35,8 @@ public partial class BackupService(
     IBackupStateService backupStateService,
     IBackupScanner scanner,
     IFileUploader uploader,
-    IOptions<BackupClientOptions> backupOptions) : IBackupService
+    IOptions<BackupClientOptions> backupOptions,
+    TimeProvider? timeProvider = null) : IBackupService
 {
     private const int InitialScanProgressFileCount = 1000;
     private static readonly TimeSpan PendingRunSasSafetyWindow = TimeSpan.FromMinutes(5);
@@ -47,8 +48,9 @@ public partial class BackupService(
 
     public async Task<BackupResult> RunAsync(CancellationToken cancellationToken)
     {
+        _dashboardLive = null;
         var attemptId = Guid.NewGuid();
-        var startedAt = DateTimeOffset.UtcNow;
+        var startedAt = (timeProvider ?? TimeProvider.System).GetUtcNow();
         _attemptEvidence = new AttemptEvidence(attemptId);
         DateTimeOffset? scanStartedAt = null;
         string selection = "";
@@ -56,11 +58,24 @@ public partial class BackupService(
         BackupResult? result = null;
         try
         {
+            if (_options.Dashboard.Enabled)
+            {
+                try
+                {
+                    _dashboardLive = new DashboardLiveAttempt(_options.Dashboard, new DashboardSnapshot(
+                        DashboardReporting.SchemaVersion, attemptId, startedAt, null, startedAt, "active",
+                        _options.BackupTargets.Keys.Select(DashboardReporting.SafeTarget).ToArray(),
+                        DashboardReporting.Fingerprint(_options.BackupTargets, null), 0, "unknown") { ClientActive = true }, timeProvider ?? TimeProvider.System);
+                    await _dashboardLive.StartAsync();
+                }
+                catch (Exception ex) { logger.LogWarning("Optional dashboard reporting is unavailable ({ErrorType})", ex.GetType().Name); }
+            }
             result = await RunCoreAsync(cancellationToken, (scan, fingerprint, evidence) =>
             {
                 scanStartedAt = scan;
                 selection = fingerprint;
                 backupEvidence = evidence;
+                _dashboardLive?.ScanStarted(scan, fingerprint, evidence);
             });
             result = AttachEvidence(result);
             return result;
@@ -70,15 +85,20 @@ public partial class BackupService(
             // Reporting is optional: disk/permissions/version failures must never change backup results or recovery.
             try
             {
+                if (_dashboardLive != null) await _dashboardLive.DisposeAsync();
+                if (result != null) _dashboardLive?.Update(p => p with {
+                    FilesFailed = Math.Max(p.FilesFailed, result.FilesFailed), FilesSkipped = Math.Max(p.FilesSkipped, result.FilesSkipped),
+                    FilesDeferred = Math.Max(p.FilesDeferred, result.FilesDeferred) });
+                var finalLive = _dashboardLive?.Capture(false);
                 var clean = result is { Outcome: BackupOutcome.NoChanges, FilesSkipped: 0, FilesDeferred: 0, FilesFailed: 0 } && scanStartedAt != null;
                 if (_options.Dashboard.Enabled) await DashboardReporting.WriteAsync(_options.Dashboard, new DashboardSnapshot(
-                    DashboardReporting.SchemaVersion, attemptId, startedAt, scanStartedAt, DateTimeOffset.UtcNow,
+                    DashboardReporting.SchemaVersion, attemptId, startedAt, scanStartedAt, finalLive?.HeartbeatAt ?? (timeProvider ?? TimeProvider.System).GetUtcNow(),
                     clean ? "cleanCheck" : result == null ? "failed" : System.Text.Json.JsonNamingPolicy.CamelCase.ConvertName(result.Outcome.ToString()),
                     _options.BackupTargets.Keys.Select(DashboardReporting.SafeTarget).ToArray(),
                     selection.Length == 0 ? DashboardReporting.Fingerprint(_options.BackupTargets, null) : selection,
-                    result?.FilesScanned ?? 0,
+                    result?.FilesScanned ?? _dashboardLive?.FilesScanned ?? 0,
                     result is { RunId: not null, Outcome: BackupOutcome.Succeeded or BackupOutcome.CompletedWithErrors } ? "recorded" : backupEvidence)
-                    { Runs = _attemptEvidence?.Runs.Values.ToArray() ?? [], CurrentScan = _attemptEvidence?.Scan });
+                    { Live = finalLive, Runs = _attemptEvidence?.Runs.Values.ToArray() ?? [], CurrentScan = _attemptEvidence?.Scan });
             }
             catch (Exception ex)
             { logger.LogWarning("Optional dashboard reporting is unavailable ({ErrorType})", ex.GetType().Name); }
@@ -139,7 +159,7 @@ public partial class BackupService(
             // Step 1: Resolve exclusion patterns
             var excludePatterns = ResolveExclusionPatterns();
 
-            var scanTime = DateTimeOffset.UtcNow;
+            var scanTime = (timeProvider ?? TimeProvider.System).GetUtcNow();
             string? scanSelection = null;
             try { scanSelection = DashboardReporting.Fingerprint(targets, excludePatterns); }
             catch (Exception ex) { logger.LogWarning("Scan selection evidence is unavailable ({ErrorType})", ex.GetType().Name); }
@@ -331,6 +351,7 @@ public partial class BackupService(
         await foreach (var taggedFile in scanner.ScanAllTargetsAsync(targets, excludePatterns, cancellationToken))
         {
             stats.TotalScanned++;
+            _dashboardLive?.Update(p => p with { CurrentTarget = DashboardReporting.SafeTarget(taggedFile.TargetName) }, stats.TotalScanned);
 
             scannedPaths.Add(taggedFile.GetStoragePath());
             if (scannedPaths.Count >= scannedPathFlushSize)
@@ -357,6 +378,7 @@ public partial class BackupService(
                     break;
             }
 
+            ObserveLiveCounts(stats);
             var scanElapsed = scanStopwatch.Elapsed;
             if (ShouldLogScanProgress(stats.TotalScanned, scanElapsed, lastProgressElapsed))
             {
@@ -428,6 +450,7 @@ public partial class BackupService(
             }
         }
 
+        _dashboardLive?.Update(p => p with { Scanning = false, TotalFilesToScan = stats.TotalScanned });
         if (scannedPaths.Count > 0)
         {
             await backupStateService.AppendScannedPathsAsync(scannedPaths, cancellationToken);
@@ -539,7 +562,7 @@ public partial class BackupService(
 
         // Upload batch
         stats.TotalUploadAttempts += stableBatch.Count;
-        var uploadResult = await uploader.UploadFilesAsync(containerClient!, stableBatch, cancellationToken);
+        var uploadResult = await UploadObservedAsync(containerClient!, stableBatch, cancellationToken);
         var uploadedFiles = new List<TaggedFile>(uploadResult.Uploaded);
         var otherFailureCount = uploadResult.OtherFailureCount;
 
@@ -551,7 +574,7 @@ public partial class BackupService(
             (containerClient, manifestContainerClient, uploadSasUrlInfo, manifestSasUrlInfo, manifestBasePath, manifestIsPathEmbedded) =
                 (sas.ContainerClient, sas.ManifestContainerClient, sas.UploadSasUrlInfo, sas.ManifestSasUrlInfo, sas.ManifestBasePath, sas.ManifestIsPathEmbedded);
 
-            var retryResult = await uploader.UploadFilesAsync(containerClient!, uploadResult.SasExpiredFiles, cancellationToken);
+            var retryResult = await UploadObservedAsync(containerClient!, uploadResult.SasExpiredFiles, cancellationToken);
             uploadedFiles.AddRange(retryResult.Uploaded);
             otherFailureCount += retryResult.OtherFailureCount;
 
@@ -568,6 +591,7 @@ public partial class BackupService(
 
         var failedCount = otherFailureCount;
         stats.TotalUploadFailures += failedCount;
+        ObserveLiveCounts(stats);
 
         // Check failure threshold after each batch (early detection). SAS-expiry files are intentionally
         // excluded from the failure count above: they are recoverable and re-detected on the next run.
