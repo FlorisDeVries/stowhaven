@@ -18,6 +18,7 @@ public sealed class DashboardOptions
     public string LogDirectory { get; init; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "backup-client", "logs");
     public string BackupServiceUnit { get; init; } = "backup-client.service";
+    public TimeSpan? MaximumBackupAge { get; init; }
 }
 
 public sealed record DashboardSnapshot(
@@ -30,9 +31,15 @@ public sealed record DashboardSnapshot(
     public BackupScanEvidence? CurrentScan { get; init; }
     public DashboardLiveProgress? Live { get; init; }
     public DashboardDiagnostics Diagnostics { get; init; } = new();
+    public DashboardBackupEvidence? Evidence { get; init; }
 }
 
-public sealed record DashboardStatus(string State, DashboardSnapshot? Snapshot = null, string? Message = null, bool Stale = false);
+public sealed record DashboardStatus(string State, DashboardSnapshot? Snapshot = null, string? Message = null, bool Stale = false)
+{
+    public DashboardFreshness? Freshness { get; init; }
+    public string Observation { get; init; } = "unavailable";
+    public string ExecutionState { get; init; } = "unavailable";
+}
 
 // Only this allow-listed portable contract reaches disk or HTTP. Never serialize BackupResult/state/configuration.
 internal static class DashboardReporting
@@ -48,7 +55,12 @@ internal static class DashboardReporting
 
     internal static string Fingerprint(IReadOnlyDictionary<string, string> targets, string[]? exclusions)
     {
-        var selection = JsonSerializer.Serialize(new { Targets = targets.OrderBy(x => x.Key, StringComparer.Ordinal).Select(x => new { Name = x.Key, Path = x.Value, LocalExclusions = BackupIgnoreParser.GetCombinedPatterns(Path.Combine(x.Value, ".backupignore")) ?? [] }), Exclusions = exclusions ?? [] });
+        var selection = JsonSerializer.Serialize(targets.OrderBy(x => x.Key, StringComparer.Ordinal).Select(x => new
+        {
+            Name = x.Key, Path = Path.TrimEndingDirectorySeparator(Path.GetFullPath(x.Value)),
+            Exclusions = File.Exists(Path.Combine(x.Value, ".backupignore"))
+                ? BackupIgnoreParser.GetCombinedPatterns(Path.Combine(x.Value, ".backupignore")) ?? [] : exclusions ?? []
+        }));
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(selection))).ToLowerInvariant();
     }
 
@@ -65,11 +77,12 @@ internal static class DashboardReporting
             var current = await ReadAsync(options);
             if (current.State == "incompatible") return; // Older producers preserve newer data, too.
         }
+        snapshot = await DashboardFreshnessReporting.RecordAsync(options, snapshot);
         await PrivateFiles.ReplaceAsync(path, JsonSerializer.Serialize(snapshot, Json));
         if (!snapshot.ClientActive && snapshot.Result != "active") await DashboardHistory.RecordAsync(options, snapshot);
     }
 
-    internal static async Task<DashboardStatus> ReadAsync(DashboardOptions options, TimeProvider? timeProvider = null)
+    internal static async Task<DashboardStatus> ReadAsync(DashboardOptions options, TimeProvider? timeProvider = null, Func<FlorisDeV.BackupClient.Config.BackupClientOptions>? currentOptions = null)
     {
         try
         {
@@ -77,7 +90,20 @@ internal static class DashboardReporting
             var path = Path.Combine(options.ReportingDirectory, "snapshot.json");
             if (!File.Exists(path)) return new("empty", Message: "No backup attempt has been recorded.");
             var text = await PrivateFiles.ReadAsync(path);
-            return Decode(text, timeProvider);
+            var decoded = Decode(text, timeProvider);
+            if (decoded.State != "available") return decoded;
+            var snapshot = decoded.Snapshot!;
+            var evidence = await DashboardFreshnessReporting.ReadAsync(options) ?? snapshot.Evidence;
+            string? selection = null; // Historical observations cannot prove the resident companion's current selection.
+            var policy = options;
+            if (currentOptions != null)
+            {
+                try { var configured = currentOptions(); selection = DashboardFreshnessReporting.Selection(configured); policy = configured.Dashboard; }
+                catch { selection = null; }
+            }
+            return decoded with { Snapshot = snapshot with { Evidence = evidence,
+                ServerBackupEvidence = evidence?.LastCompletedServerBackup != null ? "recorded" : snapshot.ServerBackupEvidence },
+                Freshness = DashboardFreshnessReporting.Project(evidence, policy, selection, (timeProvider ?? TimeProvider.System).GetUtcNow()) };
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException or NotSupportedException)
         { return new("unavailable", Message: "Reporting cannot be read. Check private reporting permissions and run the client again."); }
@@ -88,7 +114,7 @@ internal static class DashboardReporting
         if (!doc.RootElement.TryGetProperty("schemaVersion", out var version) || !version.TryGetInt32(out var schema) || schema != SchemaVersion)
             return new("incompatible", Message: "Reporting schema is unsupported. Upgrade the client and dashboard together; preserve the reporting files.");
         var snapshot = JsonSerializer.Deserialize<DashboardSnapshot>(text, Json)!;
-        if (snapshot.AttemptId == Guid.Empty || snapshot.TargetNames == null ||
+        if (snapshot.AttemptId == Guid.Empty || snapshot.TargetNames == null || snapshot.TargetNames.Any(x => x == null) ||
             snapshot.StartedAt == default || snapshot.ObservedAt < snapshot.StartedAt ||
             (snapshot.ScanStartedAt is { } scan && (scan < snapshot.StartedAt || scan > snapshot.ObservedAt)) ||
             (snapshot.Result == "cleanCheck" && snapshot.ScanStartedAt == null) ||
@@ -115,12 +141,15 @@ internal static class DashboardReporting
     private static bool ValidRunEvidence(DashboardSnapshot snapshot)
     {
         static bool Fingerprint(string? value) => value == null || Regex.IsMatch(value, "\\A[a-f0-9]{64}\\z");
-        if (snapshot.Runs == null || snapshot.Runs.Length > 128) return false;
+        if (!DashboardFreshnessReporting.Valid(snapshot.Evidence) || snapshot.Runs == null || snapshot.Runs.Length > 128) return false;
         foreach (var run in snapshot.Runs)
         {
             if (run == null || run.RunId == Guid.Empty || run.CommitId == Guid.Empty || run.OriginAttemptId == Guid.Empty ||
                 run.AttemptIds == null || run.AttemptIds.Length > 100 || run.AttemptIds.Any(x => x == Guid.Empty) ||
-                run.ScanStartedAt > snapshot.ObservedAt || !Fingerprint(run.SelectionFingerprint) ||
+                run.ScanStartedAt > snapshot.ObservedAt || run.CompletedAt > snapshot.ObservedAt ||
+                run.ServerCompletionObservedAt > snapshot.ObservedAt ||
+                (run.ServerCompletionObservedAt != null && (run.ServerProcessing is not ("succeeded" or "completedWithErrors") || run.ServerCompletionObservedAt < run.ScanStartedAt)) ||
+                (run.CompletedAt != null && (run.LocalCompletion != "completed" || run.CompletedAt < run.ScanStartedAt)) || !Fingerprint(run.SelectionFingerprint) ||
                 run.FilesSkipped < 0 || run.FilesDeferred < 0 || run.FilesFailed < 0 || run.ServerFilesFailed < 0 ||
                 run.Outcome is not ("pending" or "succeeded" or "completedWithErrors" or "failed") ||
                 run.ServerProcessing is not ("unknown" or "notSubmitted" or "pending" or "succeeded" or "completedWithErrors" or "failed") ||

@@ -7,7 +7,7 @@ internal static partial class DashboardView
         function renderLive(s,data,rows) {
           const p=s.live;
           if (!p) return;
-          if (p.active) {
+          if (p.active && data.observation === 'fresh') {
             const activities=[];
             if(p.apiWaking) activities.push('API waking');
             if(p.scanning) activities.push('Scanning');

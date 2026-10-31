@@ -8,6 +8,9 @@ public sealed record BackupRunResult
     public Guid? OriginAttemptId { get; init; }
     public Guid[] AttemptIds { get; init; } = [];
     public DateTimeOffset? ScanStartedAt { get; init; }
+    public DateTimeOffset? CompletedAt { get; init; }
+    public DateTimeOffset? ServerCompletedAt { get; init; }
+    public DateTimeOffset? ServerCompletionObservedAt { get; init; }
     public string? SelectionFingerprint { get; init; }
     public int? FilesSkipped { get; init; }
     public int? FilesDeferred { get; init; }

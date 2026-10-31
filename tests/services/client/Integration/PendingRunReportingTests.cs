@@ -103,6 +103,16 @@ public partial class BackupServiceIntegrationTests
         Assert.Equal("completedWithErrors", evidence.GetProperty("serverProcessing").GetString());
         Assert.Equal("pending", evidence.GetProperty("localCompletion").GetString());
         Assert.Equal("pending", evidence.GetProperty("outcome").GetString());
+        var completed = snapshot.GetProperty("evidence").GetProperty("lastCompletedServerBackup");
+        Assert.Equal("recorded", snapshot.GetProperty("serverBackupEvidence").GetString());
+        Assert.Equal(run, completed.GetProperty("runId").GetGuid());
+        Assert.Equal("completedWithErrors", completed.GetProperty("outcome").GetString());
+        Assert.Equal("pending", completed.GetProperty("localCompletion").GetString());
+        Assert.Equal(JsonValueKind.Null, completed.GetProperty("completedAt").ValueKind);
+        Assert.Equal(JsonValueKind.Null, completed.GetProperty("serverCompletedAt").ValueKind);
+        Assert.NotEqual(default, completed.GetProperty("serverCompletionObservedAt").GetDateTimeOffset());
+        Assert.Equal(JsonValueKind.Null, snapshot.GetProperty("evidence").GetProperty("lastCleanResult").ValueKind);
+        Assert.Equal("unknown", json.RootElement.GetProperty("freshness").GetProperty("state").GetString());
         Assert.NotNull(await state.GetPendingBackupRunAsync(device));
     }
 

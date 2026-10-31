@@ -46,7 +46,7 @@ public static class FixtureProgram
         using var telemetry = new TelemetryProvider();
         var service = new BackupService(NullLogger<BackupService>.Instance, telemetry, api.Object, state,
             new BackupScanner(new FileSystemService(NullLogger<FileSystemService>.Instance), state, NullLogger<BackupScanner>.Instance),
-            new Mock<IFileUploader>().Object, Options.Create(new BackupClientOptions { BackupTargets = new() { ["test"] = target }, Dashboard = new() { Enabled = true, ReportingDirectory = Path.Combine(root, "reporting") } }));
+            new Mock<IFileUploader>().Object, Options.Create(new BackupClientOptions { BackupTargets = new() { ["test"] = target }, Dashboard = new() { Enabled = args.ElementAtOrDefault(3) != "unreported", ReportingDirectory = Path.Combine(root, "reporting") } }));
         try
         {
             if (args.ElementAtOrDefault(3) == "request")
@@ -59,7 +59,13 @@ public static class FixtureProgram
                 }, new RequestFixture(root, label, invocation, async () => { await service.RunAsync(default); }), TimeSpan.FromSeconds(2));
                 Console.WriteLine((await control.StartAsync()).State); return 0;
             }
-            Console.WriteLine((await service.RunAsync(default)).Outcome); return 0;
+            Console.WriteLine((await service.RunAsync(default)).Outcome);
+            if (args.ElementAtOrDefault(3) == "linger")
+            {
+                await File.WriteAllTextAsync(Path.Combine(root, label + ".finished"), "finished");
+                while (!File.Exists(Path.Combine(root, label + ".exit"))) await Task.Delay(20);
+            }
+            return 0;
         }
         catch (Exception ex) { Console.WriteLine(ex.GetType().Name); return 10; }
     }

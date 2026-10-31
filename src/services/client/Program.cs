@@ -17,8 +17,8 @@ if (args.FirstOrDefault() is "dashboard" or "open-dashboard")
 {
     var configuration = new ConfigurationBuilder()
         .SetBasePath(AppContext.BaseDirectory)
-        .AddJsonFile("appsettings.json", optional: true)
-        .AddJsonFile("appsettings.local.json", optional: true)
+        .AddJsonFile("appsettings.json", optional: true, reloadOnChange: true)
+        .AddJsonFile("appsettings.local.json", optional: true, reloadOnChange: true)
         .AddEnvironmentVariables()
         .AddCommandLine(args.Skip(1).Where(argument => argument != "--print-url").ToArray())
         .Build();
@@ -29,7 +29,8 @@ if (args.FirstOrDefault() is "dashboard" or "open-dashboard")
         {
             await using var companion = await DashboardCompanion.StartAsync(options, startControl: new DashboardStartControl(
                 configuration.GetSection("Database").Get<FlorisDeV.BackupClient.Config.DatabaseOptions>() ?? new(),
-                configuration.GetSection("BackupClient").Get<FlorisDeV.BackupClient.Config.BackupClientOptions>() ?? new() { BackupTargets = new() }));
+                configuration.GetSection("BackupClient").Get<FlorisDeV.BackupClient.Config.BackupClientOptions>() ?? new() { BackupTargets = new() }),
+                currentOptions: () => configuration.GetSection("BackupClient").Get<FlorisDeV.BackupClient.Config.BackupClientOptions>() ?? new() { BackupTargets = new() });
             Console.WriteLine($"Stowhaven dashboard companion listening at {companion.Address}. Run open-dashboard to authorize your browser.");
             await companion.WaitForShutdownAsync();
         }

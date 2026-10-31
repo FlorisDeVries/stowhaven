@@ -80,6 +80,9 @@ public partial class BackupService
         attempt.Runs[runId] = run with
         {
             CommitId = status.CommitId,
+            CompletedAt = localCompleted ? run.CompletedAt ?? (timeProvider ?? TimeProvider.System).GetUtcNow() : run.CompletedAt,
+            ServerCompletedAt = failed ? run.ServerCompletedAt : status.CompletedAt ?? run.ServerCompletedAt,
+            ServerCompletionObservedAt = failed ? run.ServerCompletionObservedAt : run.ServerCompletionObservedAt ?? (timeProvider ?? TimeProvider.System).GetUtcNow(),
             ServerProcessing = failed ? "failed" : errors ? "completedWithErrors" : "succeeded",
             LocalCompletion = failed ? "notCompleted" : localCompleted ? "completed" : "pending",
             Outcome = failed ? "failed" : !localCompleted ? "pending" : degraded ? "completedWithErrors" : "succeeded",

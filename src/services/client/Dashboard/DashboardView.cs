@@ -26,16 +26,18 @@ internal static partial class DashboardView
             if (!response.ok) throw new Error();
             const data = await response.json();
             details.replaceChildren(); notice.textContent = '';
-            if (data.state !== 'available') { status.textContent = data.message || 'Reporting unavailable.'; return; }
+            if (!data.snapshot) { status.textContent = data.message || 'Reporting unavailable.'; return; }
             const s = data.snapshot;
-            status.textContent = ({cleanCheck:'Clean check — no changes to back up.',noChanges:'No changes to back up.',pending:'Pending server completion. The client is inactive; the next backup attempt will reconcile this work.',succeeded:'Backup succeeded: server and local completion confirmed.',completedWithErrors:'Backup completed with errors.',failed:'Backup attempt failed.'})[s.result] || 'Backup observation unavailable.';
+            status.textContent = 'Last recorded attempt: ' + (({cleanCheck:'Clean check — no changes to back up.',noChanges:'No changes to back up.',pending:'Pending server completion; the next backup attempt will reconcile this work.',succeeded:'Backup succeeded: server and local completion confirmed.',completedWithErrors:'Backup completed with errors.',failed:'Backup attempt failed.'})[s.result] || 'Active at the recorded observation.');
             if (s.serverBackupEvidence === 'none') notice.textContent = 'No backup has been created yet.';
             else if (s.serverBackupEvidence === 'unknown') notice.textContent = 'Completed server backup history is unknown.';
             const rows = [['Attempt',s.attemptId],['Targets',s.targetNames.join(', ')],['Files examined',s.filesScanned],['Scan started',s.scanStartedAt ? new Date(s.scanStartedAt).toLocaleString() : 'Not observed'],['Recorded',new Date(s.observedAt).toLocaleString()],['Server backup',s.serverBackupEvidence === 'recorded' ? 'Previously recorded by the client; cleanliness is unknown.' : s.serverBackupEvidence]];
             renderRuns(s,rows);
             renderLive(s,data,rows);
+            renderFreshness(s,data,rows);
+            renderObservation(data,rows);
             for (const [name,value] of rows) { const dt=document.createElement('dt'), dd=document.createElement('dd'); dt.textContent=name; dd.textContent=value; details.append(dt,dd); }
-          } catch { status.textContent = 'Companion unavailable. The last observation cannot currently be read.'; details.replaceChildren(); notice.textContent=''; }
+          } catch { status.textContent = 'Companion unavailable. Displayed details are the last verified observation; current activity and completion are unknown.'; notice.textContent=''; }
           finally { window.setTimeout(poll,1000); }
         }
         const startButton = document.getElementById('start'), startResult = document.getElementById('start-result');
@@ -67,5 +69,5 @@ internal static partial class DashboardView
           await poll();
         }
         connect();
-        """ + RunJavaScript + LiveJavaScript + LogsJavaScript + HistoryJavaScript;
+        """ + RunJavaScript + LiveJavaScript + FreshnessJavaScript + ObservationJavaScript + LogsJavaScript + HistoryJavaScript;
 }

@@ -149,6 +149,9 @@ public partial class BackupServiceIntegrationTests
         Assert.Equal(1, diagnostics.GetProperty("skipped").GetInt32());
         Assert.False(diagnostics.GetProperty("truncated").GetBoolean());
         Assert.Equal(3, diagnostics.GetProperty("entries").GetArrayLength());
+        using var finalStatus = JsonDocument.Parse(await reconnected.GetStringAsync("api/status"));
+        Assert.Equal("unknown", finalStatus.RootElement.GetProperty("freshness").GetProperty("state").GetString());
+        Assert.Equal(JsonValueKind.Null, finalStatus.RootElement.GetProperty("snapshot").GetProperty("evidence").GetProperty("lastCleanResult").ValueKind);
     }
 
     private static async Task<JsonElement> ReadLiveAsync(HttpClient browser)

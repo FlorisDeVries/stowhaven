@@ -34,6 +34,10 @@ The first command stays running. The second opens an authorized browser tab. A h
 
 The browser polls once per second. The client coalesces live observations to at most one per second and keeps sending heartbeats during quiet work; the final outcome is recorded immediately after stopping the heartbeat. After 15 seconds without a heartbeat the view labels the observation stale, without declaring the process stopped. Streaming scans and transfers have unknown totals, so the view does not invent percentages or completion estimates. Reloading the same tab preserves its origin-scoped session; sessions are not cookies and are never sent to other local ports. Authorization ends after companion restart or 12 hours without keyboard/pointer activity. Passive polling does not extend it. Run `open-dashboard` again to authorize. Closing the browser or stopping the companion with Ctrl+C leaves backup execution alone.
 
+Each response distinguishes fresh observations, recorded terminal results, stale heartbeats, confirmed interruption, and unavailable observations. Execution ownership is probed separately against the actual database inode without creating or initializing backup state. An occupied lock protects against duplicate starts even when reporting is stale or unreadable. The recorded execution's kernel process start identity and current inode-lock owner must match before activity is attributed to that attempt; a PID alone can be reused. Missing or unverifiable ownership information never proves interruption or completion. An ended execution without a recorded final result is interrupted, retaining its last counters and run evidence as historical information.
+
+While the companion remains running, malformed, missing, unreadable or unsupported reporting retains its last validated snapshot with an explicit unavailable/compatibility notice. Unreachable companion requests retain the browser's already displayed evidence with a warning. These retained details never establish current activity or new success. Restart reads durable supported reporting afresh and requires browser reauthorization; a stopped companion cannot maintain an in-memory copy of a reporting file that is subsequently lost. Unsupported schemas and incomplete staging files are preserved rather than interpreted or promoted.
+
 Use **Open recent logs** during or after an attempt to inspect additional diagnostic context, and **Refresh recent logs** to fetch newer entries. This protected read uses the same bearer session and expiry as status. It reads at most 32 KiB from each of the two newest daily `backup-client-YYYYMMDD.log` files, returning at most 200 complete entries and 32,768 text characters. Older, oversized, partial and unrecognizable entries are omitted and the view indicates truncation. Whole entries containing credential, URL, SAS, recovery or other recognized secret material are replaced with a redaction marker, including multiline values. The companion creates no raw or sanitized log cache. The client's daily rotation and fourteen-file retention remain unchanged.
 
 The default source is the client's existing `backup-client/logs` directory under LocalApplicationData. `Dashboard.LogDirectory` is a local configuration option for isolated deployments/tests, and must identify trusted, user-owned client log storage. HTTP requests cannot select paths, sources or larger limits. Symlinks, hardlink aliases, nonregular files and unsafe writable parent directories are rejected. Missing logs suggest running an attempt; empty/incomplete logs suggest retrying; rotation races suggest reopening; unreadable logs suggest checking permissions. The companion never creates or changes the log directory or source permissions.
@@ -108,7 +112,65 @@ dotnet test tests/services/client/FlorisDeV.BackupClient.Tests.csproj -m:1 \
   --filter 'FullyQualifiedName~PendingRun_ExitsInactive|FullyQualifiedName~Dashboard_ReportsPendingRunWhile|FullyQualifiedName~PendingEvidence_Preserves'
 ```
 
-These public-orchestration tests use real temporary SQLite/reporting files, synthetic targets, a controlled server boundary, and the real authorized companion interface. They do not launch the configured backup executable. Run records here describe the latest attempt and the runs it handled; bounded historical browsing and freshness evaluation are separate slices.
+These public-orchestration tests use real temporary SQLite/reporting files, synthetic targets, a controlled server boundary, and the real authorized companion interface. They do not launch the configured backup executable. Run records describe the attempt and the runs it handled. Freshness evidence is retained independently of attempt-history limits.
+
+## Backup freshness
+
+Set `BackupClient:Dashboard:MaximumBackupAge` explicitly, for example
+`"1.00:00:00"` for one day. Its default is `null`: the dashboard shows the age
+without a fresh/overdue judgment. Only a positive duration enables a judgment.
+Timer activity and old success timestamps cannot establish freshness.
+
+The latest attempt, last clean check and last completed server backup are
+separate observations. A failed attempt stays visible alongside an earlier
+clean result. A clean check with no changes can refresh the clean baseline,
+including an empty first scan, while prominently retaining “No completed server
+backup exists yet.” A check never establishes that a restore test happened.
+Completed backups with errors remain visible as completed backups and do not
+refresh the clean baseline. Unintended skipped, deferred or failed files prevent
+a clean result; explicitly excluded files do not.
+
+Age starts at the original scan time, with completion recorded separately.
+Delayed reconciliation does not redate that scan. A clean new run can establish
+freshness even when the same attempt also reconciles older degraded work and
+therefore ends with errors. A completed current clean no-changes scan likewise
+stands on its own evidence. Missing legacy scan/cleanliness evidence remains
+unknown.
+
+Validated server completion also remains visible when local completion is still
+pending. The dashboard labels that distinction explicitly; it does not establish
+a successful backup or a clean result. A server-provided completion timestamp is
+shown when available, separately from when the client first confirmed completion
+and when it recorded local completion. A missing server timestamp stays unknown.
+
+The private, versioned `clean-evidence.json` keeps the latest clean result, clean
+check and completed server backup separately from rolling attempt observations.
+It contains only IDs, scan/completion times, selection hashes and outcome labels;
+no credentials or target paths. Optional reporting failures never fail backups.
+Unknown schema versions are preserved for a matching client/companion upgrade.
+
+The companion recomputes the effective selection on each status request, reading
+target-level ignore rules with the same override behavior as the scanner.
+`appsettings.json` and `appsettings.local.json` reload while it runs. Target or
+effective exclusion changes preserve historical evidence and show a
+configuration-changed explanation until a clean result covers the selection.
+Environment and command-line configuration changes take effect after restarting
+the companion. If current configuration cannot be read, it cannot judge the
+current selection as fresh.
+
+The deterministic freshness demonstration uses controlled time, actual temporary
+files (including locked and explicitly excluded files), the public backup
+orchestrator and authorized companion HTTP:
+
+```bash
+dotnet test tests/services/client/FlorisDeV.BackupClient.Tests.csproj --no-restore -m:1 \
+  --filter FullyQualifiedName~Dashboard_Freshness
+```
+
+It covers a fresh clean check, overdue observations, later failed attempts with
+retained clean evidence, live effective-selection edits, delayed completion,
+degraded old work with a clean new run and honest legacy uncertainty. The browser
+renders these same separate evidence fields and scan/completion times.
 
 ## Starting a backup safely
 
@@ -161,6 +223,16 @@ compete for the same inode reservation, with no delayed backup after the winning
 attempt finishes. Authorized HTTP cases exercise active and fast completed
 execution confirmation, errors, browser expiry and concurrent browser starts.
 The systemd boundary is controlled in these deterministic tests.
+
+`ObservationsRecoverAfterCompanionRestartAndDistinguishSilenceFromConfirmedClientDeath`
+also authorizes a polling HTTP browser equivalent, observes a stale heartbeat
+while the real process still owns execution, rejects a duplicate start, stops
+and restarts the real companion, reconnects to the same recorded attempt, then
+forcibly kills the client and observes interruption. A subsequent real test
+process acquires execution and records a clean check. Additional cases keep a
+historical process alive while a different process owns execution, simulate PID
+reuse, lose reporting files, and encounter incompatible schemas. Polling a
+missing database verifies that observation creates no backup state.
 
 A genuine CLI/service/browser smoke against isolated published binaries and
 unique real user units remains part of the final installation verification.
