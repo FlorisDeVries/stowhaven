@@ -1,6 +1,141 @@
-# Local dashboard development preview
+# Local dashboard
 
 The optional Linux dashboard is a separate, persistent observer. It reads private client reporting and remains available between backup invocations. An authorized operator can request the existing systemd user backup service with **Start backup**. The companion does not execute backup work itself or change your service/timer. The live view shows API waking, scanning, uploading, file counts, successful transfer bytes and average transfer rates. Scanning and uploading can appear together. Attempt outcomes distinguish no changes, pending, succeeded, completed with errors, and failed. Each server-backed run shows its own identity, originating/handling attempts, commit identity, server processing, local completion, original scan time, and cleanliness.
+
+## Install and open on Linux
+
+Use a published Linux client build, .NET 10 when publishing, Bash, Python 3 for
+companion configuration, and systemd 251 or newer with a running user session.
+For a first installation, run this **inside the published directory**:
+
+```bash
+bash ./install.sh --with-dashboard
+backup-client-open-dashboard
+```
+
+The existing interactive client setup and daily 02:00 user timer remain the
+normal installation workflow. `--with-dashboard` additionally enables reporting
+in the private local configuration and enables a separate persistent
+`backup-client-dashboard.service`. Without that flag, no companion is installed.
+The backup service remains short-lived (`Type=oneshot`, pending exit status 2),
+and the companion neither owns nor schedules backup execution.
+
+For an **already configured client**, add `Dashboard.Enabled=true` to its existing
+`appsettings.local.json` as shown below, preserve all other settings, and keep
+that file mode 0600. Then run the new published installer's companion-only mode:
+
+```bash
+bash ./install.sh --dashboard-only
+backup-client-open-dashboard
+```
+
+This requires reporting to be enabled already and never runs configure/login,
+changes the backup service/timer, or rewrites the client's local configuration.
+Normal backups record reporting even when the companion is stopped. The first
+open authorizes one local browser tab; it works while the backup client is idle.
+On a headless machine use `backup-client-open-dashboard --print-url` and paste
+its secret, one-minute URL into a browser on the same machine. Restarting the
+companion requires opening again; closing the browser has no effect on backups.
+
+The default companion payload is `~/.local/share/backup-client-dashboard`,
+separate from `~/.local/share/backup-client`. It shares only a link to the private
+client configuration. Its unit uses the backup installation as WorkingDirectory,
+so existing relative client paths resolve consistently. Prefer absolute state,
+reporting, log, target and recovery paths. The installed open command uses this
+same companion payload and configuration.
+
+## Disable, remove, upgrade and roll back
+
+Run lifecycle commands from the same published build or the retained installer
+with the same directory/prefix overrides used for installation:
+
+```bash
+bash ./install.sh --disable-dashboard
+bash ./install.sh --dashboard-only      # reinstall/enable the companion
+bash ./install.sh --remove-dashboard
+```
+
+Disable stops and disables only the companion. Remove also removes its unit and
+open command. Both preserve the backup service/timer, active backups, SQLite
+state, pending work, reporting history, clean evidence, logs and configuration.
+The companion payload is retained for rollback; remove that separate payload
+manually when no longer needed. Later scheduled or manual backup attempts still
+reconcile pending runs. Removal does not opt out of reporting; set
+`Dashboard.Enabled=false` separately if that is intended.
+
+For a companion-only upgrade or compatible rollback, use the chosen published
+version's `--dashboard-only`. It stops only the old companion before replacing
+its separate payload, so it can be performed during an active or pending backup.
+Reopen the browser afterward. The installer never interprets or deletes reporting.
+Published dashboard packages include capability metadata bound to the actual
+bundle, or to both apphost and DLL. The installer rejects missing, incompatible
+or mixed payloads before running any command; it never probes an older binary
+with an unrecognized dashboard/help/version argument.
+
+For a full client upgrade, record the current timer enabled/active state, stop
+only your backup timer to prevent a new invocation, and wait for the current
+backup attempt to finish. Preserve a private copy of the old published build,
+local configuration, database and reporting. Run the new normal installer
+(`--with-dashboard` if desired), complete its existing configure workflow, and
+restore your intended timer enabled/active state. Do not replace a backup payload
+while its process is running. Pending runs and client state must stay together.
+
+| Contract | This build | Compatible upgrade/rollback requirement |
+| --- | --- | --- |
+| SQLite backup state | `PRAGMA user_version=3` | Chosen client must explicitly support schema 3 and existing pending records. |
+| Portable snapshot, history and clean evidence | schema 1 | Client producer and companion reader must support schema 1. |
+| Browser authorization | per companion instance | Reopen after every companion replacement/restart. |
+
+Upgrade the client and companion together when the reporting contract changes.
+An older reader presented with a newer schema shows explicit compatibility
+advice and preserves the bytes, including after restart. A producer encountering
+unsupported newer reporting likewise preserves it; optional reporting failure
+cannot fail a backup. Install a matching reader/producer instead of deleting or
+editing reporting. Rollback is supported only between builds compatible with
+the existing SQLite and reporting schemas. A reporting rollback is not a database
+downgrade; never overwrite live/pending state with an earlier copy. Stop and
+resolve compatibility before invoking an older backup client.
+
+## Installation configuration and troubleshooting
+
+The installer supports absolute `BACKUP_CLIENT_INSTALL_DIR`,
+`BACKUP_CLIENT_DASHBOARD_INSTALL_DIR`, `BACKUP_CLIENT_BIN_DIR`,
+`BACKUP_CLIENT_SYSTEMD_USER_DIR`, and `BACKUP_CLIENT_UNIT_PREFIX` overrides.
+The default prefix is `backup-client`; a custom prefix controls both backup unit
+names and the `<prefix>-open-dashboard` command. Set the matching service/timer
+names in an already configured client's dashboard section. Companion-only
+installation supplies the same names to its command line without editing that
+configuration. Installation directories must be separate and non-nested; spaces
+are supported. Quotes, backslashes, control characters, `%`, `$` and backticks
+are rejected before writing files. Prefixes allow letters, digits, underscores
+and hyphens. `BACKUP_CLIENT_SCHEDULE_TIME` uses `HH:MM:SS`.
+
+A custom unit directory holds persistent unit files; `systemctl enable` links
+those files into the actual user manager's standard search path. Changing a
+child process's HOME/XDG settings does not relocate a running manager.
+`BACKUP_CLIENT_SYSTEMD_LAUNCHER` optionally supplies an absolute executable
+wrapper for managed processes, useful for explicitly controlled deployment
+environments. A wrapper must forward the manager's actual `INVOCATION_ID` for
+start confirmation and must not launch backups inside the companion.
+
+- **Service/session unavailable:** run `systemctl --user status backup-client-dashboard.service`
+  as the installing user. A user manager and bus must be available; installation
+  failure prints retry guidance. For operation after logout, review
+  `loginctl enable-linger` for that user. The installer does not change linger.
+- **Open command fails:** confirm the companion is active under the same account,
+  then open again. A plain loopback URL is not authorization. Use `--print-url`
+  when desktop browser launching is unavailable; never put it in logs or tickets.
+- **Backup start cannot be confirmed:** inspect the exact backup unit journal,
+  private reporting permissions, matching database path and actual invocation
+  receipt. An accepted systemd job alone does not establish execution.
+- **Scheduling incompatible:** use a oneshot service and matching timer with
+  `Schedule.Enabled=false` and `RemainAfterExit=no`. The resident scheduler is
+  unsupported. Inspect actual enabled/activity/next-activation fields separately.
+- **Reporting/history/logs unavailable:** ensure matching absolute paths and
+  private ownership/permissions. Open recent logs and expand history diagnostics
+  for bounded, redacted context; a missing snapshot is not evidence of success.
+- **Unsupported schema:** preserve all files and install matching client and
+  companion versions. Do not clear pending state or reporting to silence it.
 
 For an existing configured client, add this section alongside `BackupTargets` in `appsettings.local.json` next to the executable:
 
@@ -73,7 +208,7 @@ env -i PATH="$PATH" DOTNET_ENVIRONMENT=Production \
   "$demo_root/client/FlorisDeV.BackupClient" open-dashboard --print-url
 ```
 
-Paste the URL into a local browser within one minute. This fresh observer shows **No backup attempt has been recorded.** The automated clean-check demonstration above separately proves the genuine reporting-to-authorized-browser path, including the prominent **No backup has been created yet** message for an empty first check. Installation and a real installed-client backup smoke are delivered in later slices. Only the observer commands are run against this fresh publication; do not invoke a no-argument client as part of this demo. Stop the observer with Ctrl+C and remove the private demo directory when finished.
+Paste the URL into a local browser within one minute. This fresh observer shows **No backup attempt has been recorded.** The automated clean-check demonstration above separately proves the genuine reporting-to-authorized-browser path, including the prominent **No backup has been created yet** message for an empty first check. The installation procedure below runs the observer as an independent user service. Only the observer commands are run against this fresh publication; do not invoke a no-argument client as part of this demo. Stop the observer with Ctrl+C and remove the private demo directory when finished.
 
 The focused automated checks are:
 
@@ -81,7 +216,7 @@ The focused automated checks are:
 dotnet test tests/services/client/FlorisDeV.BackupClient.Tests.csproj --filter FullyQualifiedName~Dashboard
 ```
 
-Reporting failures do not fail backups. If observations are unavailable, check the companion is running under the same account, the absolute directory matches, and private permissions/parents are safe. Unsupported schema versions show explicit upgrade guidance and are preserved by both reader and producer. Upgrade client and companion together; preserve reporting data when rolling back. Older readers will refuse newer schemas. Do not copy backup state or credentials into reporting files. This preview does not install a service; installation is delivered separately.
+Reporting failures do not fail backups. If observations are unavailable, check the companion is running under the same account, the absolute directory matches, and private permissions/parents are safe. Unsupported schema versions show explicit upgrade guidance and are preserved by both reader and producer. Upgrade client and companion together; preserve reporting data when rolling back. Older readers will refuse newer schemas. Do not copy backup state or credentials into reporting files. Use the opt-in installer below to keep the companion available between logins, subject to your user-session policy.
 
 For a controlled long-work demonstration of the real public backup orchestration, use:
 
@@ -325,4 +460,7 @@ The subprocess cases use temporary synthetic unit names and an explicitly
 nonexistent user bus as fallback. They verify machine-readable next activation,
 unknown values, masked units, and an actual `systemctl` unavailable-session read;
 no case starts a backup or changes installed units. Actual installation and
-activation verification uses the isolated smoke procedure described above.
+activation verification uses the isolated smoke procedure below.
+
+The complete installed-system demonstration and its preparation/review gate are
+documented in [the testing guide](TESTING.md#installed-companion-with-real-systemd).

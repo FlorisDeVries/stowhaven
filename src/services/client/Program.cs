@@ -15,10 +15,16 @@ using Microsoft.Extensions.Logging;
 // Observation commands deliberately bypass the backup host, credentials and resident scheduler.
 if (args.FirstOrDefault() is "dashboard" or "open-dashboard")
 {
+    // The installed companion shares the client's configuration via a symlink.
+    // Watch its target directory so atomic client-config replacements reload.
+    var localConfiguration = new FileInfo(Path.Combine(AppContext.BaseDirectory, "appsettings.local.json"));
+    var localConfigurationPath = localConfiguration.FullName;
+    if (localConfiguration.Exists && localConfiguration.ResolveLinkTarget(returnFinalTarget: true) is { } target)
+        localConfigurationPath = target.FullName;
     var configuration = new ConfigurationBuilder()
         .SetBasePath(AppContext.BaseDirectory)
         .AddJsonFile("appsettings.json", optional: true, reloadOnChange: true)
-        .AddJsonFile("appsettings.local.json", optional: true, reloadOnChange: true)
+        .AddJsonFile(localConfigurationPath, optional: true, reloadOnChange: true)
         .AddEnvironmentVariables()
         .AddCommandLine(args.Skip(1).Where(argument => argument != "--print-url").ToArray())
         .Build();

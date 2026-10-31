@@ -47,4 +47,28 @@
             <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
         </Content>
     </ItemGroup>
+
+    <!-- A non-executing capability check prevents an old/mixed payload from
+         treating an unknown dashboard command as a backup invocation. -->
+    <Target Name="WriteDashboardContract" AfterTargets="Publish">
+        <PropertyGroup>
+            <DashboardContractLayout>assemblies</DashboardContractLayout>
+            <DashboardContractLayout Condition="'$(PublishSingleFile)' == 'true'">singleFile</DashboardContractLayout>
+        </PropertyGroup>
+        <ItemGroup>
+            <DashboardContractArtifacts Include="$(PublishDir)$(AssemblyName)$(_NativeExecutableExtension)"
+                                        Condition="Exists('$(PublishDir)$(AssemblyName)$(_NativeExecutableExtension)')" />
+            <DashboardContractArtifacts Include="$(PublishDir)$(TargetFileName)"
+                                        Condition="'$(PublishSingleFile)' != 'true' and Exists('$(PublishDir)$(TargetFileName)')" />
+        </ItemGroup>
+        <GetFileHash Files="@(DashboardContractArtifacts)" Algorithm="SHA256">
+            <Output TaskParameter="Items" ItemName="DashboardContractHashes" />
+        </GetFileHash>
+        <PropertyGroup>
+            <DashboardContractFiles>@(DashboardContractHashes->'&quot;%(Filename)%(Extension)&quot;: &quot;%(FileHash)&quot;', ',')</DashboardContractFiles>
+        </PropertyGroup>
+        <WriteLinesToFile File="$(PublishDir)dashboard-contract.json"
+                          Lines="{ &quot;reportingSchemaVersion&quot;: 1, &quot;backupStateSchemaVersion&quot;: 3, &quot;layout&quot;: &quot;$(DashboardContractLayout)&quot;, &quot;files&quot;: { $(DashboardContractFiles) } }"
+                          Overwrite="true" />
+    </Target>
 </Project>
