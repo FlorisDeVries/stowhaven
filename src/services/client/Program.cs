@@ -27,7 +27,9 @@ if (args.FirstOrDefault() is "dashboard" or "open-dashboard")
     {
         if (args[0] == "dashboard")
         {
-            await using var companion = await DashboardCompanion.StartAsync(options);
+            await using var companion = await DashboardCompanion.StartAsync(options, startControl: new DashboardStartControl(
+                configuration.GetSection("Database").Get<FlorisDeV.BackupClient.Config.DatabaseOptions>() ?? new(),
+                configuration.GetSection("BackupClient").Get<FlorisDeV.BackupClient.Config.BackupClientOptions>() ?? new() { BackupTargets = new() }));
             Console.WriteLine($"Stowhaven dashboard companion listening at {companion.Address}. Run open-dashboard to authorize your browser.");
             await companion.WaitForShutdownAsync();
         }

@@ -12,6 +12,19 @@ public sealed class DashboardHttpTests : IDisposable
     private static HttpClient Browser(DashboardCompanion companion) => new(new HttpClientHandler { UseProxy = false }) { BaseAddress = companion.Address };
 
     [Fact]
+    public async Task BackupStartRequiresBrowserAuthorizationAndOriginProtection()
+    {
+        await using var companion = await DashboardCompanion.StartAsync(Options);
+        using var browser = Browser(companion);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await browser.PostAsync("api/start", null)).StatusCode);
+        await DashboardTestAuthorization.AuthorizeAsync(browser, Options);
+        browser.DefaultRequestHeaders.Add("Origin", "https://unrelated.example");
+        Assert.Equal(HttpStatusCode.Forbidden, (await browser.PostAsync("api/start", null)).StatusCode);
+        browser.DefaultRequestHeaders.Remove("Origin");
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, (await browser.PostAsync("api/start", null)).StatusCode);
+    }
+
+    [Fact]
     public async Task PrivateStatusRequiresSameUserGrantAndRejectsHostileWebsites()
     {
         await using var companion = await DashboardCompanion.StartAsync(Options);
