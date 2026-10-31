@@ -29,6 +29,7 @@ public sealed record DashboardSnapshot(
     public BackupRunResult[] Runs { get; init; } = [];
     public BackupScanEvidence? CurrentScan { get; init; }
     public DashboardLiveProgress? Live { get; init; }
+    public DashboardDiagnostics Diagnostics { get; init; } = new();
 }
 
 public sealed record DashboardStatus(string State, DashboardSnapshot? Snapshot = null, string? Message = null, bool Stale = false);
@@ -38,7 +39,7 @@ internal static class DashboardReporting
 {
     internal static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     internal const int SchemaVersion = 1;
-    internal static string SafeTarget(string value) => Regex.IsMatch(value, "\\A[a-zA-Z0-9_.-]{1,64}\\z") ? value : "[redacted target]";
+    internal static string SafeTarget(string value) => Regex.IsMatch(value, "\\A[a-zA-Z0-9_.-]{1,64}\\z") && !DashboardDiagnosticCollector.SensitiveName(value) ? value : "[redacted target]";
 
     private static string[] SafeWarnings(DashboardLiveProgress progress)
         => new[] { progress.FilesSkipped > 0 ? "Some files were skipped. Review the selected files and retry." : null,
@@ -53,7 +54,10 @@ internal static class DashboardReporting
 
     internal static async Task WriteAsync(DashboardOptions options, DashboardSnapshot snapshot)
     {
-        if (!ValidRunEvidence(snapshot)) throw new InvalidOperationException("Invalid run evidence cannot be reported.");
+        // Validate the same allow-list used by readers before any value reaches persistence.
+        var verified = Decode(JsonSerializer.Serialize(snapshot, Json));
+        if (verified.State != "available") throw new InvalidOperationException("Invalid evidence cannot be reported.");
+        snapshot = verified.Snapshot!;
         PrivateFiles.EnsureDirectory(options.ReportingDirectory);
         var path = Path.Combine(options.ReportingDirectory, "snapshot.json");
         if (File.Exists(path))
@@ -62,6 +66,7 @@ internal static class DashboardReporting
             if (current.State == "incompatible") return; // Older producers preserve newer data, too.
         }
         await PrivateFiles.ReplaceAsync(path, JsonSerializer.Serialize(snapshot, Json));
+        if (!snapshot.ClientActive && snapshot.Result != "active") await DashboardHistory.RecordAsync(options, snapshot);
     }
 
     internal static async Task<DashboardStatus> ReadAsync(DashboardOptions options, TimeProvider? timeProvider = null)
@@ -72,35 +77,41 @@ internal static class DashboardReporting
             var path = Path.Combine(options.ReportingDirectory, "snapshot.json");
             if (!File.Exists(path)) return new("empty", Message: "No backup attempt has been recorded.");
             var text = await PrivateFiles.ReadAsync(path);
-            using var doc = JsonDocument.Parse(text);
-            if (!doc.RootElement.TryGetProperty("schemaVersion", out var version) || !version.TryGetInt32(out var schema) || schema != SchemaVersion)
-                return new("incompatible", Message: "Reporting schema is unsupported. Upgrade the client and dashboard together; preserve the reporting files.");
-            var snapshot = JsonSerializer.Deserialize<DashboardSnapshot>(text, Json)!;
-            if (snapshot.AttemptId == Guid.Empty || snapshot.TargetNames == null ||
-                snapshot.StartedAt == default || snapshot.ObservedAt < snapshot.StartedAt ||
-                (snapshot.ScanStartedAt is { } scan && (scan < snapshot.StartedAt || scan > snapshot.ObservedAt)) ||
-                (snapshot.Result == "cleanCheck" && snapshot.ScanStartedAt == null) ||
-                (snapshot.Result == "active" && snapshot.Live is not { Active: true }) ||
-                !Regex.IsMatch(snapshot.SelectionFingerprint ?? "", "\\A[a-f0-9]{64}\\z") ||
-                !ValidRunEvidence(snapshot) || snapshot.FilesScanned < 0 || snapshot.Result is not ("cleanCheck" or "noChanges" or "succeeded" or "completedWithErrors" or "pending" or "failed" or "active") ||
-                snapshot.ServerBackupEvidence is not ("none" or "recorded" or "unknown"))
-                return new("unavailable", Message: "Reporting is invalid. Run the client again to record a new observation.");
-            if (snapshot.Live is { } live && (live.HeartbeatAt < snapshot.StartedAt || live.HeartbeatAt > snapshot.ObservedAt ||
-                live.FilesUnchanged < 0 || live.FilesUploaded < 0 || live.FilesSkipped < 0 || live.FilesDeferred < 0 || live.FilesFailed < 0 ||
-                live.UploadedBytes < 0 || live.ElapsedSeconds < 0 || !double.IsFinite(live.ElapsedSeconds) ||
-                live.AverageBytesPerSecond < 0 || !double.IsFinite(live.AverageBytesPerSecond) ||
-                live.AverageFilesPerSecond < 0 || !double.IsFinite(live.AverageFilesPerSecond) ||
-                live.TotalFilesToScan < snapshot.FilesScanned || live.TotalBytesToUpload < live.UploadedBytes ||
-                live.UploadPercent != null || live.EstimatedSecondsRemaining != null))
-                return new("unavailable", Message: "Live reporting is invalid. Run the client again to record a new observation.");
-            return new("available", snapshot with { TargetNames = snapshot.TargetNames.Select(SafeTarget).ToArray(),
-                Live = snapshot.Live is { } progress ? progress with { CurrentTarget = progress.CurrentTarget == null ? null : SafeTarget(progress.CurrentTarget),
-                    Warnings = SafeWarnings(progress) } : null },
-                Stale: snapshot.Live is { Active: true } current && (timeProvider ?? TimeProvider.System).GetUtcNow() - current.HeartbeatAt > TimeSpan.FromSeconds(15));
+            return Decode(text, timeProvider);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException or NotSupportedException)
         { return new("unavailable", Message: "Reporting cannot be read. Check private reporting permissions and run the client again."); }
     }
+    internal static DashboardStatus Decode(string text, TimeProvider? timeProvider = null)
+    {
+        using var doc = JsonDocument.Parse(text);
+        if (!doc.RootElement.TryGetProperty("schemaVersion", out var version) || !version.TryGetInt32(out var schema) || schema != SchemaVersion)
+            return new("incompatible", Message: "Reporting schema is unsupported. Upgrade the client and dashboard together; preserve the reporting files.");
+        var snapshot = JsonSerializer.Deserialize<DashboardSnapshot>(text, Json)!;
+        if (snapshot.AttemptId == Guid.Empty || snapshot.TargetNames == null ||
+            snapshot.StartedAt == default || snapshot.ObservedAt < snapshot.StartedAt ||
+            (snapshot.ScanStartedAt is { } scan && (scan < snapshot.StartedAt || scan > snapshot.ObservedAt)) ||
+            (snapshot.Result == "cleanCheck" && snapshot.ScanStartedAt == null) ||
+            (snapshot.Result == "active" && snapshot.Live is not { Active: true }) ||
+            !Regex.IsMatch(snapshot.SelectionFingerprint ?? "", "\\A[a-f0-9]{64}\\z") ||
+            !ValidRunEvidence(snapshot) || !DashboardDiagnostics.Valid(snapshot.Diagnostics, snapshot) || snapshot.FilesScanned < 0 || snapshot.Result is not ("cleanCheck" or "noChanges" or "succeeded" or "completedWithErrors" or "pending" or "failed" or "active") ||
+            snapshot.ServerBackupEvidence is not ("none" or "recorded" or "unknown"))
+            return new("unavailable", Message: "Reporting is invalid. Run the client again to record a new observation.");
+        if (snapshot.Live is { } live && (live.HeartbeatAt < snapshot.StartedAt || live.HeartbeatAt > snapshot.ObservedAt ||
+            live.FilesUnchanged < 0 || live.FilesUploaded < 0 || live.FilesSkipped < 0 || live.FilesDeferred < 0 || live.FilesFailed < 0 ||
+            live.UploadedBytes < 0 || live.ElapsedSeconds < 0 || !double.IsFinite(live.ElapsedSeconds) ||
+            live.AverageBytesPerSecond < 0 || !double.IsFinite(live.AverageBytesPerSecond) ||
+            live.AverageFilesPerSecond < 0 || !double.IsFinite(live.AverageFilesPerSecond) ||
+            live.TotalFilesToScan < snapshot.FilesScanned || live.TotalBytesToUpload < live.UploadedBytes ||
+            live.UploadPercent != null || live.EstimatedSecondsRemaining != null))
+            return new("unavailable", Message: "Live reporting is invalid. Run the client again to record a new observation.");
+        return new("available", snapshot with { TargetNames = snapshot.TargetNames.Select(SafeTarget).ToArray(),
+            Live = snapshot.Live is { } progress ? progress with { CurrentTarget = progress.CurrentTarget == null ? null : SafeTarget(progress.CurrentTarget),
+                Warnings = SafeWarnings(progress) } : null },
+            Stale: snapshot.Live is { Active: true } current && (timeProvider ?? TimeProvider.System).GetUtcNow() - current.HeartbeatAt > TimeSpan.FromSeconds(15));
+
+    }
+
     private static bool ValidRunEvidence(DashboardSnapshot snapshot)
     {
         static bool Fingerprint(string? value) => value == null || Regex.IsMatch(value, "\\A[a-f0-9]{64}\\z");
@@ -108,7 +119,7 @@ internal static class DashboardReporting
         foreach (var run in snapshot.Runs)
         {
             if (run == null || run.RunId == Guid.Empty || run.CommitId == Guid.Empty || run.OriginAttemptId == Guid.Empty ||
-                run.AttemptIds == null || run.AttemptIds.Length > 10000 || run.AttemptIds.Any(x => x == Guid.Empty) ||
+                run.AttemptIds == null || run.AttemptIds.Length > 100 || run.AttemptIds.Any(x => x == Guid.Empty) ||
                 run.ScanStartedAt > snapshot.ObservedAt || !Fingerprint(run.SelectionFingerprint) ||
                 run.FilesSkipped < 0 || run.FilesDeferred < 0 || run.FilesFailed < 0 || run.ServerFilesFailed < 0 ||
                 run.Outcome is not ("pending" or "succeeded" or "completedWithErrors" or "failed") ||

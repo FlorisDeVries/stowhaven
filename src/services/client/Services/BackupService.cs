@@ -50,6 +50,7 @@ public partial class BackupService(
     {
         using var execution = BackupExecutionGuard.Acquire(backupStateService.DatabasePath);
         _dashboardLive = null;
+        _diagnostics = _options.Dashboard.Enabled ? new DashboardDiagnosticCollector(timeProvider ?? TimeProvider.System) : null;
         var attemptId = Guid.NewGuid();
         var startedAt = (timeProvider ?? TimeProvider.System).GetUtcNow();
         _attemptEvidence = new AttemptEvidence(attemptId);
@@ -115,7 +116,8 @@ public partial class BackupService(
                     selection.Length == 0 ? DashboardReporting.Fingerprint(_options.BackupTargets, null) : selection,
                     result?.FilesScanned ?? _dashboardLive?.FilesScanned ?? 0,
                     result is { RunId: not null, Outcome: BackupOutcome.Succeeded or BackupOutcome.CompletedWithErrors } ? "recorded" : backupEvidence)
-                    { Live = finalLive, Runs = _attemptEvidence?.Runs.Values.ToArray() ?? [], CurrentScan = _attemptEvidence?.Scan });
+                    { Live = finalLive, Runs = _attemptEvidence?.Runs.Values.ToArray() ?? [], CurrentScan = _attemptEvidence?.Scan,
+                        Diagnostics = _diagnostics?.Capture() ?? new() });
             }
             catch (Exception ex)
             { logger.LogWarning("Optional dashboard reporting is unavailable ({ErrorType})", ex.GetType().Name); }
@@ -392,6 +394,7 @@ public partial class BackupService(
                     break;
                 case FileChangeType.Skipped:
                     stats.SkippedCount++;
+                    Diagnose("skipped", taggedFile);
                     break;
             }
 
@@ -564,6 +567,7 @@ public partial class BackupService(
         foreach (var changed in changedFiles)
         {
             stats.SkippedChangedCount++;
+            Diagnose("changed", changed);
             LogFileChangedDuringBackup(changed.Metadata.FilePath, changed.Metadata.SizeBytes, GetCurrentFileSize(changed.Metadata.FilePath));
         }
 
@@ -602,6 +606,7 @@ public partial class BackupService(
                 // single batch slower than a whole token lifetime). Defer them to the next run instead
                 // of counting them toward the failure threshold and aborting an otherwise healthy backup.
                 stats.SkippedSasExpiredCount += stillExpired;
+                foreach (var file in retryResult.SasExpiredFiles) Diagnose("deferred", file);
                 LogSasExpiredUnrecovered(stillExpired, runId.Value);
             }
         }
@@ -897,6 +902,7 @@ public partial class BackupService(
     {
         string? continuationToken = null;
         var failedFilesRead = 0;
+        var diagnosticSamples = new List<string>();
 
         do
         {
@@ -927,6 +933,7 @@ public partial class BackupService(
                 cancellationToken);
 
             failedFilesRead += page.Files.Count;
+            diagnosticSamples.AddRange(page.Files.Take(Math.Max(0, 100 - diagnosticSamples.Count)).Select(file => file.LogicalPath));
             continuationToken = page.NextContinuationToken;
         } while (!string.IsNullOrWhiteSpace(continuationToken));
 
@@ -937,6 +944,9 @@ public partial class BackupService(
             throw new InvalidOperationException(
                 $"Commit {commitId} reported {expectedFailedFiles} failed file(s), but the failed-file endpoint returned {failedFilesRead}");
         }
+        // Only publish after the existing identity, status, paging and total-count checks all pass.
+        foreach (var path in diagnosticSamples) DiagnoseServerRejected(path);
+        _diagnostics?.Missing("serverRejected", failedFilesRead - diagnosticSamples.Count);
     }
 
     /// <summary>

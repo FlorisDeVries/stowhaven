@@ -132,6 +132,12 @@ public sealed class DashboardCompanion : IAsyncDisposable
                 if (!Authorized(context, activity: false)) return Results.Unauthorized();
                 return Results.Json(await DashboardReporting.ReadAsync(options, time), DashboardReporting.Json);
             });
+            app.MapGet("/api/history", async (HttpContext context) =>
+            {
+                if (!Authorized(context, activity: false)) return Results.Unauthorized();
+                if (context.Request.QueryString.HasValue) return Results.BadRequest();
+                return Results.Json(await DashboardHistory.ReadAsync(options), DashboardReporting.Json);
+            });
             app.MapGet("/api/logs", async (HttpContext context) =>
             {
                 if (!Authorized(context, activity: false)) return Results.Unauthorized();

@@ -26,7 +26,7 @@ public partial class BackupService
         attempt.Runs[pending.RunId] = evidence with
         {
             RunId = pending.RunId, CommitId = pending.CommitId,
-            AttemptIds = (evidence.AttemptIds ?? []).Append(attempt.Id).Distinct().ToArray(),
+            AttemptIds = (evidence.AttemptIds ?? []).Append(attempt.Id).Distinct().TakeLast(100).ToArray(),
             ServerProcessing = pending.CommitId.HasValue || pending.ManifestUploaded ? "pending" : "notSubmitted"
         };
         attempt.ScanBase = pending.Evidence;

@@ -9,6 +9,7 @@ internal static partial class DashboardView
         <p id="status" role="status">Connecting to your local companion…</p><p id="notice" class="notice"></p>
         <button id="start" type="button">Start backup</button><p id="start-result" role="status"></p>
         <dl id="details"></dl><p class="footnote">A clean check examines the selected files. It does not create a server backup or test restoration.</p>
+        <section><h2>Recent backup attempts</h2><button id="open-history" type="button">Open or refresh history</button><p id="history-notice" role="status"></p><div id="attempts"></div></section>
         <section><h2>Recent client logs</h2><button id="open-logs" type="button">Open recent logs</button><p id="logs-notice" role="status"></p><pre id="logs" hidden></pre></section></main></body></html>
         """;
     internal const string Css = """
@@ -66,5 +67,5 @@ internal static partial class DashboardView
           await poll();
         }
         connect();
-        """ + RunJavaScript + LiveJavaScript + LogsJavaScript;
+        """ + RunJavaScript + LiveJavaScript + LogsJavaScript + HistoryJavaScript;
 }

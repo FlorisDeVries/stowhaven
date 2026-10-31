@@ -19,6 +19,8 @@ public partial class BackupService
         try
         {
             var result = await uploader.UploadFilesAsync(client, files, token);
+            foreach (var file in result.FailedFiles.Take(result.OtherFailureCount)) Diagnose("failed", file);
+            _diagnostics?.Missing("failed", Math.Max(0, result.OtherFailureCount - result.FailedFiles.Count));
             _dashboardLive?.Update(p => p with { FilesUploaded = p.FilesUploaded + result.Uploaded.Count,
                 UploadedBytes = p.UploadedBytes + result.Uploaded.Sum(file => file.GetUploadSizeBytes()) });
             return result;

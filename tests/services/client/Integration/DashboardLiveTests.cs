@@ -90,7 +90,7 @@ public partial class BackupServiceIntegrationTests
             .Returns(async (Azure.Storage.Blobs.BlobContainerClient client, IReadOnlyList<TaggedFile> files, CancellationToken token) => {
                 if (++uploads == 1) {
                     uploadEntered.SetResult(); await uploadRelease.Task;
-                    return new UploadBatchResult(files.Take(98).Select(f => f with { UploadSizeBytes = 5 }).ToArray(), [files[98]], 1);
+                    return new UploadBatchResult(files.Take(98).Select(f => f with { UploadSizeBytes = 5 }).ToArray(), [files[98]], 1) { FailedFiles = [files[99]] };
                 }
                 if (uploads == 2) return new UploadBatchResult([], files, 0);
                 return new UploadBatchResult(files, [], 0);
@@ -142,6 +142,13 @@ public partial class BackupServiceIntegrationTests
         Assert.Equal(493, terminal.GetProperty("uploadedBytes").GetInt64());
         Assert.Equal(103, terminal.GetProperty("totalFilesToScan").GetInt32());
         Assert.Equal(3, terminal.GetProperty("warnings").GetArrayLength());
+        using var history = JsonDocument.Parse(await reconnected.GetStringAsync("api/history"));
+        var diagnostics = history.RootElement.GetProperty("attempts")[0].GetProperty("diagnostics");
+        Assert.Equal(1, diagnostics.GetProperty("failed").GetInt32());
+        Assert.Equal(1, diagnostics.GetProperty("deferred").GetInt32());
+        Assert.Equal(1, diagnostics.GetProperty("skipped").GetInt32());
+        Assert.False(diagnostics.GetProperty("truncated").GetBoolean());
+        Assert.Equal(3, diagnostics.GetProperty("entries").GetArrayLength());
     }
 
     private static async Task<JsonElement> ReadLiveAsync(HttpClient browser)
