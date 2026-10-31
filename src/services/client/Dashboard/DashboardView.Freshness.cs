@@ -19,10 +19,13 @@ internal static partial class DashboardView
           clean('Last clean result',e.lastCleanResult);
           clean('Last clean check',e.lastCleanCheck);
           const backup=e.lastCompletedServerBackup;
-          rows.push(['Last completed server backup',backup ? backup.runId+' · '+backup.outcome+' · cleanliness '+backup.cleanliness : s.serverBackupEvidence === 'none' ? 'No completed server backup exists yet' : 'Unknown — historical timestamps cannot establish cleanliness']);
+          rows.push(['Last completed server backup',backup ? backup.runId+' · server '+backup.outcome+' · local '+backup.localCompletion+' · cleanliness '+backup.cleanliness : s.serverBackupEvidence === 'none' ? 'No completed server backup exists yet' : 'Unknown — historical timestamps cannot establish cleanliness']);
           if(backup) rows.push(['Server backup scan started',backup.scanStartedAt ? new Date(backup.scanStartedAt).toLocaleString() : 'Unknown (legacy evidence)'],
-            ['Server backup completed',new Date(backup.completedAt).toLocaleString()]);
-          if(!backup && s.serverBackupEvidence === 'none') notice.textContent=(notice.textContent ? notice.textContent+' ' : '')+'No completed server backup exists yet.';
+            ['Server completion time',backup.serverCompletedAt ? new Date(backup.serverCompletedAt).toLocaleString() : 'Not provided by server'],
+            ['Server completion observed',new Date(backup.serverCompletionObservedAt).toLocaleString()],
+            ['Local completion recorded',backup.completedAt ? new Date(backup.completedAt).toLocaleString() : 'Pending — successful backup completion is not established']);
+          if(backup) notice.textContent=f && f.state === 'configurationChanged' ? f.message : '';
+          if(!backup && s.serverBackupEvidence === 'none') notice.textContent=(f && f.state === 'configurationChanged' ? f.message+' ' : '')+'No completed server backup exists yet.';
         }
         """;
 }

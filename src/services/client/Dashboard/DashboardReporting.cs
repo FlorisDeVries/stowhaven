@@ -14,6 +14,9 @@ public sealed class DashboardOptions
     public string ReportingDirectory { get; init; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "backup-client", "reporting");
     public int Port { get; init; } = 0;
+    // Local configuration only. HTTP callers cannot select a directory or file.
+    public string LogDirectory { get; init; } = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "backup-client", "logs");
     public string BackupServiceUnit { get; init; } = "backup-client.service";
     public TimeSpan? MaximumBackupAge { get; init; }
 }
@@ -33,6 +36,8 @@ public sealed record DashboardSnapshot(
 public sealed record DashboardStatus(string State, DashboardSnapshot? Snapshot = null, string? Message = null, bool Stale = false)
 {
     public DashboardFreshness? Freshness { get; init; }
+    public string Observation { get; init; } = "unavailable";
+    public string ExecutionState { get; init; } = "unavailable";
 }
 
 // Only this allow-listed portable contract reaches disk or HTTP. Never serialize BackupResult/state/configuration.
@@ -84,7 +89,7 @@ internal static class DashboardReporting
             if (!doc.RootElement.TryGetProperty("schemaVersion", out var version) || !version.TryGetInt32(out var schema) || schema != SchemaVersion)
                 return new("incompatible", Message: "Reporting schema is unsupported. Upgrade the client and dashboard together; preserve the reporting files.");
             var snapshot = JsonSerializer.Deserialize<DashboardSnapshot>(text, Json)!;
-            if (snapshot.AttemptId == Guid.Empty || snapshot.TargetNames == null ||
+            if (snapshot.AttemptId == Guid.Empty || snapshot.TargetNames == null || snapshot.TargetNames.Any(x => x == null) ||
                 snapshot.StartedAt == default || snapshot.ObservedAt < snapshot.StartedAt ||
                 (snapshot.ScanStartedAt is { } scan && (scan < snapshot.StartedAt || scan > snapshot.ObservedAt)) ||
                 (snapshot.Result == "cleanCheck" && snapshot.ScanStartedAt == null) ||
@@ -109,7 +114,9 @@ internal static class DashboardReporting
                 try { var configured = currentOptions(); selection = DashboardFreshnessReporting.Selection(configured); policy = configured.Dashboard; }
                 catch { selection = null; }
             }
-            return new DashboardStatus("available", snapshot with { Evidence = evidence, TargetNames = snapshot.TargetNames.Select(SafeTarget).ToArray(),
+            return new DashboardStatus("available", snapshot with { Evidence = evidence,
+                ServerBackupEvidence = evidence?.LastCompletedServerBackup != null ? "recorded" : snapshot.ServerBackupEvidence,
+                TargetNames = snapshot.TargetNames.Select(SafeTarget).ToArray(),
                 Live = snapshot.Live is { } progress ? progress with { CurrentTarget = progress.CurrentTarget == null ? null : SafeTarget(progress.CurrentTarget),
                     Warnings = SafeWarnings(progress) } : null },
                 Stale: snapshot.Live is { Active: true } current && (timeProvider ?? TimeProvider.System).GetUtcNow() - current.HeartbeatAt > TimeSpan.FromSeconds(15))
@@ -127,6 +134,8 @@ internal static class DashboardReporting
             if (run == null || run.RunId == Guid.Empty || run.CommitId == Guid.Empty || run.OriginAttemptId == Guid.Empty ||
                 run.AttemptIds == null || run.AttemptIds.Length > 10000 || run.AttemptIds.Any(x => x == Guid.Empty) ||
                 run.ScanStartedAt > snapshot.ObservedAt || run.CompletedAt > snapshot.ObservedAt ||
+                run.ServerCompletionObservedAt > snapshot.ObservedAt ||
+                (run.ServerCompletionObservedAt != null && (run.ServerProcessing is not ("succeeded" or "completedWithErrors") || run.ServerCompletionObservedAt < run.ScanStartedAt)) ||
                 (run.CompletedAt != null && (run.LocalCompletion != "completed" || run.CompletedAt < run.ScanStartedAt)) || !Fingerprint(run.SelectionFingerprint) ||
                 run.FilesSkipped < 0 || run.FilesDeferred < 0 || run.FilesFailed < 0 || run.ServerFilesFailed < 0 ||
                 run.Outcome is not ("pending" or "succeeded" or "completedWithErrors" or "failed") ||

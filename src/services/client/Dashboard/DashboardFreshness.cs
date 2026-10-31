@@ -9,7 +9,12 @@ namespace FlorisDeV.BackupClient.Dashboard;
 public sealed record DashboardCleanEvidence(Guid AttemptId, Guid? RunId, DateTimeOffset ScanStartedAt,
     DateTimeOffset CompletedAt, string SelectionFingerprint, string Outcome);
 public sealed record DashboardCompletedBackupEvidence(Guid AttemptId, Guid RunId, DateTimeOffset? ScanStartedAt,
-    DateTimeOffset CompletedAt, string? SelectionFingerprint, string Outcome, string Cleanliness);
+    DateTimeOffset? CompletedAt, string? SelectionFingerprint, string Outcome, string Cleanliness)
+{
+    public DateTimeOffset? ServerCompletedAt { get; init; }
+    public DateTimeOffset ServerCompletionObservedAt { get; init; }
+    public string LocalCompletion { get; init; } = "pending";
+}
 public sealed record DashboardBackupEvidence(int SchemaVersion = 1)
 {
     public DashboardCleanEvidence? LastCleanResult { get; init; }
@@ -48,7 +53,9 @@ internal static class DashboardFreshnessReporting
              (item.Outcome == "cleanCheck" ? item.RunId == null : item.RunId != null));
         var backup = evidence?.LastCompletedServerBackup;
         var validBackup = backup == null || backup.AttemptId != Guid.Empty && backup.RunId != Guid.Empty &&
-            backup.CompletedAt != default && (backup.ScanStartedAt == null || backup.CompletedAt >= backup.ScanStartedAt) &&
+            backup.ServerCompletionObservedAt != default && (backup.ScanStartedAt == null || backup.ServerCompletionObservedAt >= backup.ScanStartedAt) &&
+            backup.LocalCompletion is "pending" or "completed" &&
+            (backup.LocalCompletion == "completed" ? backup.CompletedAt != null && (backup.ScanStartedAt == null || backup.CompletedAt >= backup.ScanStartedAt) : backup.CompletedAt == null) &&
             (backup.SelectionFingerprint == null || Regex.IsMatch(backup.SelectionFingerprint, "\\A[a-f0-9]{64}\\z")) &&
             backup.Outcome is "succeeded" or "completedWithErrors" && backup.Cleanliness is "unknown" or "clean" or "degraded";
         return evidence == null || evidence.SchemaVersion == 1 && Entry(evidence.LastCleanResult, false) &&
@@ -76,19 +83,21 @@ internal static class DashboardFreshnessReporting
         static DashboardCleanEvidence? Newer(DashboardCleanEvidence? old, DashboardCleanEvidence candidate)
             => old == null || candidate.ScanStartedAt > old.ScanStartedAt ||
                 candidate.ScanStartedAt == old.ScanStartedAt && candidate.CompletedAt >= old.CompletedAt ? candidate : old;
-        foreach (var run in snapshot.Runs.Where(r => r.LocalCompletion == "completed" &&
-            r.ServerProcessing is "succeeded" or "completedWithErrors" && r.CompletedAt != null))
+        foreach (var run in snapshot.Runs.Where(r => r.ServerProcessing is "succeeded" or "completedWithErrors" &&
+            r.ServerCompletionObservedAt != null))
         {
             var completed = new DashboardCompletedBackupEvidence(run.OriginAttemptId ?? snapshot.AttemptId, run.RunId,
-                run.ScanStartedAt, run.CompletedAt!.Value, run.SelectionFingerprint, run.Outcome, run.Cleanliness);
-            if (evidence.LastCompletedServerBackup == null || completed.CompletedAt > evidence.LastCompletedServerBackup.CompletedAt ||
-                completed.CompletedAt == evidence.LastCompletedServerBackup.CompletedAt &&
+                run.ScanStartedAt, run.CompletedAt, run.SelectionFingerprint, run.ServerProcessing, run.Cleanliness)
+            { LocalCompletion = run.LocalCompletion, ServerCompletedAt = run.ServerCompletedAt,
+                ServerCompletionObservedAt = run.ServerCompletionObservedAt!.Value };
+            if (evidence.LastCompletedServerBackup == null || completed.ServerCompletionObservedAt > evidence.LastCompletedServerBackup.ServerCompletionObservedAt ||
+                completed.ServerCompletionObservedAt == evidence.LastCompletedServerBackup.ServerCompletionObservedAt &&
                 (completed.ScanStartedAt ?? DateTimeOffset.MinValue) >= (evidence.LastCompletedServerBackup.ScanStartedAt ?? DateTimeOffset.MinValue))
                 evidence = evidence with { LastCompletedServerBackup = completed };
-            if (run.Cleanliness == "clean")
+            if (run.Cleanliness == "clean" && run.LocalCompletion == "completed" && run.CompletedAt != null)
             {
                 var item = new DashboardCleanEvidence(completed.AttemptId, run.RunId, run.ScanStartedAt!.Value,
-                    completed.CompletedAt, run.SelectionFingerprint!, run.Outcome);
+                    run.CompletedAt.Value, run.SelectionFingerprint!, run.Outcome);
                 evidence = evidence with { LastCleanResult = Newer(evidence.LastCleanResult, item) };
             }
         }
@@ -99,6 +108,7 @@ internal static class DashboardFreshnessReporting
         }
         if (evidence != previous)
             await PrivateFiles.ReplaceAsync(Path.Combine(options.ReportingDirectory, "clean-evidence.json"), JsonSerializer.Serialize(evidence, DashboardReporting.Json));
-        return snapshot with { Evidence = evidence };
+        return snapshot with { Evidence = evidence,
+            ServerBackupEvidence = evidence.LastCompletedServerBackup != null ? "recorded" : snapshot.ServerBackupEvidence };
     }
 }

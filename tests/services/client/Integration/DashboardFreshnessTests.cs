@@ -98,13 +98,17 @@ public partial class BackupServiceIntegrationTests
                 Dashboard = new() { Enabled = true, MaximumBackupAge = TimeSpan.FromHours(1), ReportingDirectory = Path.Combine(_testRoot, "fresh-reporting") } };
             var clock = new LiveClock();
             var complete = false;
+            Guid originalRun = default;
+            var originalServerCompletion = clock.GetUtcNow().AddMinutes(30);
             _mockApiClient.Setup(x => x.GetCommitStatus(It.IsAny<Guid>(), It.IsAny<Guid>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync((Guid device, Guid commit, CancellationToken _) => new CommitStatusResponse
-                { DeviceId = device, RunId = _committedRuns[commit], CommitId = commit, Status = complete ? CommitJobStatus.Succeeded : CommitJobStatus.Processing });
+                { DeviceId = device, RunId = _committedRuns[commit], CommitId = commit, Status = complete ? CommitJobStatus.Succeeded : CommitJobStatus.Processing,
+                    CompletedAt = complete ? _committedRuns[commit] == originalRun ? originalServerCompletion : clock.GetUtcNow() : null });
             var service = CreateFreshnessService(options, clock);
             var first = await service.RunAsync(default);
             Assert.Equal(BackupOutcome.Pending, first.Outcome);
             var originalScan = first.CurrentScan!.StartedAt;
+            originalRun = first.RunId!.Value;
             await using var companion = await DashboardCompanion.StartAsync(options.Dashboard, clock, currentOptions: () => options);
             using var browser = new HttpClient { BaseAddress = companion.Address };
             await DashboardTestAuthorization.AuthorizeAsync(browser, options.Dashboard);
@@ -130,6 +134,9 @@ public partial class BackupServiceIntegrationTests
             Assert.Equal(clock.GetUtcNow(), evidence.GetProperty("lastCleanResult").GetProperty("completedAt").GetDateTimeOffset());
             Assert.Equal(JsonValueKind.Null, evidence.GetProperty("lastCleanCheck").ValueKind);
             Assert.Equal("succeeded", evidence.GetProperty("lastCompletedServerBackup").GetProperty("outcome").GetString());
+            Assert.Equal(degradedOriginal ? clock.GetUtcNow() : originalServerCompletion,
+                evidence.GetProperty("lastCompletedServerBackup").GetProperty("serverCompletedAt").GetDateTimeOffset());
+            Assert.Equal(clock.GetUtcNow(), evidence.GetProperty("lastCompletedServerBackup").GetProperty("serverCompletionObservedAt").GetDateTimeOffset());
         }
         finally { locked?.Dispose(); }
     }
