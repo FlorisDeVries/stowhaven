@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using FlorisDeV.BackupClient.Dashboard;
 using System.Net;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
@@ -45,6 +46,43 @@ public partial class BackupService(
         => (await RunAsync(cancellationToken)).Outcome != BackupOutcome.Failed;
 
     public async Task<BackupResult> RunAsync(CancellationToken cancellationToken)
+    {
+        var attemptId = Guid.NewGuid();
+        var startedAt = DateTimeOffset.UtcNow;
+        DateTimeOffset? scanStartedAt = null;
+        string selection = "";
+        string backupEvidence = "unknown";
+        BackupResult? result = null;
+        try
+        {
+            result = await RunCoreAsync(cancellationToken, (scan, fingerprint, evidence) =>
+            {
+                scanStartedAt = scan;
+                selection = fingerprint;
+                backupEvidence = evidence;
+            });
+            return result;
+        }
+        finally
+        {
+            // Reporting is optional: disk/permissions/version failures must never change backup results or recovery.
+            try
+            {
+                var clean = result is { Outcome: BackupOutcome.NoChanges, FilesSkipped: 0, FilesDeferred: 0, FilesFailed: 0 } && scanStartedAt != null;
+                if (_options.Dashboard.Enabled) await DashboardReporting.WriteAsync(_options.Dashboard, new DashboardSnapshot(
+                    DashboardReporting.SchemaVersion, attemptId, startedAt, scanStartedAt, DateTimeOffset.UtcNow,
+                    clean ? "cleanCheck" : result == null ? "failed" : System.Text.Json.JsonNamingPolicy.CamelCase.ConvertName(result.Outcome.ToString()),
+                    _options.BackupTargets.Keys.Select(DashboardReporting.SafeTarget).ToArray(),
+                    selection.Length == 0 ? DashboardReporting.Fingerprint(_options.BackupTargets, null) : selection,
+                    result?.FilesScanned ?? 0,
+                    result is { RunId: not null, Outcome: BackupOutcome.Succeeded or BackupOutcome.CompletedWithErrors } ? "recorded" : backupEvidence));
+            }
+            catch (Exception ex)
+            { logger.LogWarning("Optional dashboard reporting is unavailable ({ErrorType})", ex.GetType().Name); }
+        }
+    }
+
+    private async Task<BackupResult> RunCoreAsync(CancellationToken cancellationToken, Action<DateTimeOffset, string, string> observeScan)
     {
         var stopwatch = Stopwatch.StartNew();
         var metricTags = new TagList { { "operation.name", "Backup" } };
@@ -95,6 +133,16 @@ public partial class BackupService(
 
             // Step 1: Resolve exclusion patterns
             var excludePatterns = ResolveExclusionPatterns();
+
+            if (_options.Dashboard.Enabled)
+            {
+                try
+                {
+                    observeScan(DateTimeOffset.UtcNow, DashboardReporting.Fingerprint(targets, excludePatterns),
+                        deviceState.LastRunId.HasValue ? "recorded" : "none");
+                }
+                catch (Exception ex) { logger.LogWarning("Optional dashboard selection reporting is unavailable ({ErrorType})", ex.GetType().Name); }
+            }
 
             // Step 2: Scan, hash, batch, and upload files
             var processingResult = await ProcessFilesAsync(

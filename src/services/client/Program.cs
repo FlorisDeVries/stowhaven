@@ -1,4 +1,6 @@
-﻿using System.Reflection;
+using System.Reflection;
+using System.Diagnostics;
+using FlorisDeV.BackupClient.Dashboard;
 using FlorisDeV.BackupClient;
 using FlorisDeV.BackupClient.Clients.BackupApi;
 using FlorisDeV.BackupClient.Services;
@@ -9,6 +11,40 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+
+// Observation commands deliberately bypass the backup host, credentials and resident scheduler.
+if (args.FirstOrDefault() is "dashboard" or "open-dashboard")
+{
+    var configuration = new ConfigurationBuilder()
+        .SetBasePath(AppContext.BaseDirectory)
+        .AddJsonFile("appsettings.json", optional: true)
+        .AddJsonFile("appsettings.local.json", optional: true)
+        .AddEnvironmentVariables()
+        .AddCommandLine(args.Skip(1).Where(argument => argument != "--print-url").ToArray())
+        .Build();
+    var options = configuration.GetSection("BackupClient:Dashboard").Get<DashboardOptions>() ?? new();
+    try
+    {
+        if (args[0] == "dashboard")
+        {
+            await using var companion = await DashboardCompanion.StartAsync(options);
+            Console.WriteLine($"Stowhaven dashboard companion listening at {companion.Address}. Run open-dashboard to authorize your browser.");
+            await companion.WaitForShutdownAsync();
+        }
+        else
+        {
+            var url = await DashboardCompanion.OpenAsync(options);
+            if (args.Contains("--print-url", StringComparer.Ordinal)) Console.WriteLine(url);
+            else Process.Start(new ProcessStartInfo(url.ToString()) { UseShellExecute = true });
+        }
+    }
+    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or HttpRequestException or System.ComponentModel.Win32Exception or NotSupportedException or TaskCanceledException)
+    {
+        Console.Error.WriteLine($"Dashboard unavailable ({ex.GetType().Name}). Start the companion in this user account and check its private reporting directory. Use open-dashboard --print-url when no browser launcher is available.");
+        Environment.ExitCode = 1;
+    }
+    return;
+}
 
 var logFilePath = Path.Combine(
     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
