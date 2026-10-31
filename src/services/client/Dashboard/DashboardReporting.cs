@@ -14,6 +14,7 @@ public sealed class DashboardOptions
     public string ReportingDirectory { get; init; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "backup-client", "reporting");
     public int Port { get; init; } = 0;
+    public string BackupServiceUnit { get; init; } = "backup-client.service";
 }
 
 public sealed record DashboardSnapshot(

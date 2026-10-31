@@ -48,6 +48,7 @@ public partial class BackupService(
 
     public async Task<BackupResult> RunAsync(CancellationToken cancellationToken)
     {
+        using var execution = BackupExecutionGuard.Acquire(backupStateService.DatabasePath);
         _dashboardLive = null;
         var attemptId = Guid.NewGuid();
         var startedAt = (timeProvider ?? TimeProvider.System).GetUtcNow();
@@ -56,6 +57,17 @@ public partial class BackupService(
         string selection = "";
         string backupEvidence = "unknown";
         BackupResult? result = null;
+        BackupExecutionReceipt? receipt = null;
+        try
+        {
+            if (_options.Dashboard.Enabled)
+            {
+                var invocation = Environment.GetEnvironmentVariable("INVOCATION_ID");
+                receipt = new(attemptId, execution.Identity, Guid.TryParseExact(invocation, "N", out _) ? invocation : null, startedAt);
+                await BackupExecutionReceipt.WriteAsync(_options.Dashboard, receipt);
+            }
+        }
+        catch (Exception ex) { logger.LogWarning("Optional execution acknowledgment is unavailable ({ErrorType})", ex.GetType().Name); }
         try
         {
             if (_options.Dashboard.Enabled)
@@ -82,6 +94,11 @@ public partial class BackupService(
         }
         finally
         {
+            try
+            {
+                if (receipt != null) await BackupExecutionReceipt.WriteAsync(_options.Dashboard, receipt with { CompletedAt = (timeProvider ?? TimeProvider.System).GetUtcNow() });
+            }
+            catch (Exception ex) { logger.LogWarning("Optional execution acknowledgment is unavailable ({ErrorType})", ex.GetType().Name); }
             // Reporting is optional: disk/permissions/version failures must never change backup results or recovery.
             try
             {

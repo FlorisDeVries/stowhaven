@@ -7,6 +7,7 @@ internal static partial class DashboardView
         <title>Stowhaven local dashboard</title><link rel="stylesheet" href="/dashboard.css"><script defer src="/dashboard.js"></script></head>
         <body><main><p class="eyebrow">STOWHAVEN · LOCAL CLIENT</p><h1>Backup observations</h1>
         <p id="status" role="status">Connecting to your local companion…</p><p id="notice" class="notice"></p>
+        <button id="start" type="button">Start backup</button><p id="start-result" role="status"></p>
         <dl id="details"></dl><p class="footnote">A clean check examines the selected files. It does not create a server backup or test restoration.</p></main></body></html>
         """;
     internal const string Css = """
@@ -35,6 +36,15 @@ internal static partial class DashboardView
           } catch { status.textContent = 'Companion unavailable. The last observation cannot currently be read.'; details.replaceChildren(); notice.textContent=''; }
           finally { window.setTimeout(poll,1000); }
         }
+        const startButton = document.getElementById('start'), startResult = document.getElementById('start-result');
+        startButton.addEventListener('click', async () => {
+          startButton.disabled = true; startResult.textContent = 'Requesting backup execution…';
+          try {
+            const response = await fetch('/api/start', {method:'POST',headers:authorization()});
+            startResult.textContent = response.status === 401 ? 'Authorization expired. Run open-dashboard again.' : (await response.json()).message;
+          } catch { startResult.textContent = 'Start could not be confirmed. Check the companion and backup user service before retrying.'; }
+          finally { startButton.disabled = false; }
+        });
         let lastActivity = 0;
         function recordActivity() {
           if (Date.now() - lastActivity < 60000) return;

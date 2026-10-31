@@ -1,6 +1,6 @@
 # Local dashboard development preview
 
-The optional Linux dashboard is a separate, persistent observer. It reads private client reporting and remains available between backup invocations. It does not start backups or change your service/timer. The live view shows API waking, scanning, uploading, file counts, successful transfer bytes and average transfer rates. Scanning and uploading can appear together. Attempt outcomes distinguish no changes, pending, succeeded, completed with errors, and failed. Each server-backed run shows its own identity, originating/handling attempts, commit identity, server processing, local completion, original scan time, and cleanliness.
+The optional Linux dashboard is a separate, persistent observer. It reads private client reporting and remains available between backup invocations. An authorized operator can request the existing systemd user backup service with **Start backup**. The companion does not execute backup work itself or change your service/timer. The live view shows API waking, scanning, uploading, file counts, successful transfer bytes and average transfer rates. Scanning and uploading can appear together. Attempt outcomes distinguish no changes, pending, succeeded, completed with errors, and failed. Each server-backed run shows its own identity, originating/handling attempts, commit identity, server processing, local completion, original scan time, and cleanliness.
 
 For an existing configured client, add this section alongside `BackupTargets` in `appsettings.local.json` next to the executable:
 
@@ -94,3 +94,63 @@ dotnet test tests/services/client/FlorisDeV.BackupClient.Tests.csproj -m:1 \
 ```
 
 These public-orchestration tests use real temporary SQLite/reporting files, synthetic targets, a controlled server boundary, and the real authorized companion interface. They do not launch the configured backup executable. Run records here describe the latest attempt and the runs it handled; bounded historical browsing and freshness evaluation are separate slices.
+
+## Starting a backup safely
+
+The companion and backup service must load the same `Database:FilePath` and
+`BackupClient:Dashboard:ReportingDirectory`, and reporting must be enabled in the
+backup client. Use an absolute database path so different working directories do
+not select different state. `BackupClient:Dashboard:BackupServiceUnit` defaults to
+`backup-client.service`; a custom installation can set its own `.service` unit.
+The supported arrangement is a `Type=oneshot` systemd user service and timer,
+with `BackupClient:Schedule:Enabled=false`.
+
+**Start backup** requests `systemctl --user start --no-block --job-mode=fail`.
+“Execution confirmed” means the client acquired the shared state-file guard and
+recorded a new attempt for that systemd invocation. An attempt that finishes
+quickly is also confirmed. Acceptance by systemd alone is insufficient: if
+execution cannot be confirmed, check the service journal, matching configuration
+and private reporting permissions before retrying. The browser shows explicit
+guidance for missing units, unavailable user sessions, denied activation and
+incompatible resident scheduling. No error falls back to directly launching the
+backup client.
+
+Every `RunAsync` invocation, including CLI and timer execution, must acquire
+whole-attempt ownership before reading or mutating backup state. On Linux this
+uses native `flock` on the actual database inode, recognizing hard links, leaf
+and parent-directory symlinks and relative aliases. SQLite connection closure
+does not release ownership. A separate open-file-description byte lock reserves
+start requests without preventing the child from acquiring execution ownership.
+Duplicates return immediately and queue no follow-up work. Owner exit or process
+death releases both guards; do not delete a database or lock file to “unlock” it.
+Keep backup state on a local filesystem; NFS/SMB state storage is unsupported.
+
+## Reproducible contention and recovery demonstration
+
+Run the dedicated test process fixture through the public orchestration and
+control tests; it creates only temporary synthetic targets, SQLite state and
+private reporting. It does not load client configuration, user secrets or the
+installed services:
+
+```bash
+dotnet restore tests/services/client/FlorisDeV.BackupClient.Tests.csproj -m:1
+dotnet test tests/services/client/FlorisDeV.BackupClient.Tests.csproj --no-restore -m:1 \
+  --filter FullyQualifiedName~BackupExecutionProcessTests
+```
+
+The demonstration holds one real process after SQLite has opened/closed its
+connections, competes with a second process through each path alias, verifies
+immediate rejection, forcibly kills the owner, then confirms a new process can
+finish a clean check with recoverable state. Separate requesting processes
+compete for the same inode reservation, with no delayed backup after the winning
+attempt finishes. Authorized HTTP cases exercise active and fast completed
+execution confirmation, errors, browser expiry and concurrent browser starts.
+The systemd boundary is controlled in these deterministic tests.
+
+A genuine CLI/service/browser smoke against isolated published binaries and
+unique real user units remains part of the final installation verification.
+Do not run a backup smoke using existing binaries with environment-only overrides:
+development user secrets can override them. Use a reviewed fresh publication
+with a unique UserSecretsId, scrubbed environment, explicit temporary paths and
+synthetic local services. Never start or change the installed backup units as a
+development demonstration.

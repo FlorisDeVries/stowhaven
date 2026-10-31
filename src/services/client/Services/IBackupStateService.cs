@@ -8,6 +8,9 @@ namespace FlorisDeV.BackupClient.Services;
 /// </summary>
 public interface IBackupStateService
 {
+    /// <summary>Actual configured SQLite file used for whole-attempt execution protection.</summary>
+    string DatabasePath { get; }
+
     /// <summary>
     /// Atomically promotes accepted files, applies deletions, records completion and clears the journal.
     /// The caller must first validate the server's successful outcome and finish rejected-file pruning.

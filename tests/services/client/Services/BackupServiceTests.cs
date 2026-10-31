@@ -37,6 +37,7 @@ public partial class BackupServiceTests : IDisposable
         // Create a temporary directory for tests to avoid validation errors
         _testDirectory = Path.Combine(Path.GetTempPath(), $"backup-test-{Guid.NewGuid():N}");
         Directory.CreateDirectory(_testDirectory);
+        _mockStateService.SetupGet(x => x.DatabasePath).Returns(Path.Combine(_testDirectory, "state.db"));
 
         _options = Options.Create(new BackupClientOptions
         {
