@@ -44,10 +44,9 @@ fi
 [[ "$SCHEDULE_TIME" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$ ]] || fail 'Schedule time must be HH:MM:SS.'
 if [[ "$WITH_DASHBOARD" == true ]]; then
     command -v python3 >/dev/null || fail 'python3 is required to validate private dashboard configuration.'
-    python3 - "$SCRIPT_DIR" <<'PY'
+    python3 - "$SCRIPT_DIR" "$MODE" "$INSTALL_DIR" <<'PY'
 import hashlib, json, pathlib, sys
-root = pathlib.Path(sys.argv[1])
-try:
+def validate_payload(root):
     contract = json.loads((root / 'dashboard-contract.json').read_text())
     executable = 'FlorisDeV.BackupClient'
     expected = {executable} if contract['layout'] == 'singleFile' else {executable, executable + '.dll'}
@@ -56,8 +55,15 @@ try:
         contract['layout'] not in ('singleFile', 'assemblies') or set(files) != expected or
         any(digest.lower() != hashlib.sha256((root / name).read_bytes()).hexdigest() for name, digest in files.items())):
         raise ValueError('Incompatible or mixed payload')
-except (OSError, ValueError, KeyError, TypeError, AttributeError):
-    sys.exit('Use a complete compatible published dashboard build (reporting schema 1, backup state schema 3). Capability metadata is missing, incompatible or does not match the assembly; no client was executed.')
+
+payloads = [(pathlib.Path(sys.argv[1]), 'Use a complete compatible published dashboard build (reporting schema 1, backup state schema 3).')]
+if sys.argv[2] == 'dashboard':
+    payloads.append((pathlib.Path(sys.argv[3]), 'Upgrade the installed backup client from a complete compatible published build before --dashboard-only (reporting schema 1, backup state schema 3).'))
+for root, guidance in payloads:
+    try:
+        validate_payload(root)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        sys.exit(guidance + ' Capability metadata is missing, incompatible or does not match the assembly; no client was executed and no installation files were changed.')
 PY
 fi
 COMPANION_UNIT="$UNIT_PREFIX-dashboard.service"

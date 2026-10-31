@@ -63,13 +63,17 @@ manually when no longer needed. Later scheduled or manual backup attempts still
 reconcile pending runs. Removal does not opt out of reporting; set
 `Dashboard.Enabled=false` separately if that is intended.
 
-For a companion-only upgrade or compatible rollback, use the chosen published
-version's `--dashboard-only`. It stops only the old companion before replacing
-its separate payload, so it can be performed during an active or pending backup.
+For a companion-only upgrade or compatible rollback, first ensure the installed
+backup client supports dashboard reporting, shared execution protection and start
+acknowledgments. Then use the chosen published version's `--dashboard-only`.
+It stops only the old companion before replacing its separate payload, so it can
+be performed during an active or pending backup.
 Reopen the browser afterward. The installer never interprets or deletes reporting.
 Published dashboard packages include capability metadata bound to the actual
-bundle, or to both apphost and DLL. The installer rejects missing, incompatible
-or mixed payloads before running any command; it never probes an older binary
+bundle, or to both apphost and DLL. For `--dashboard-only`, the installed backup
+client must also carry matching capability metadata; older clients must be upgraded
+before adding the companion. The installer rejects missing, incompatible or mixed
+payloads before running any command; it never probes an older binary
 with an unrecognized dashboard/help/version argument.
 
 For a full client upgrade, record the current timer enabled/active state, stop

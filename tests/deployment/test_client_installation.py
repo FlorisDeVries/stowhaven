@@ -32,6 +32,8 @@ class ClientInstallationTests(unittest.TestCase):
         systemctl.chmod(0o755)
         self.install = self.root / "installed"
         self.install.mkdir(mode=0o700)
+        for name in ("FlorisDeV.BackupClient", "FlorisDeV.BackupClient.dll", "dashboard-contract.json"):
+            shutil.copy(self.publish / name, self.install / name)
         self.config = self.install / "appsettings.local.json"
         self.config.write_text(json.dumps({"BackupClient": {"Dashboard": {"Enabled": True}}}))
         self.config.chmod(0o600)
@@ -48,14 +50,15 @@ class ClientInstallationTests(unittest.TestCase):
                             "BACKUP_CLIENT_SYSTEMD_USER_DIR": str(self.units),
                             "BACKUP_CLIENT_UNIT_PREFIX": "test-backup"}
 
-    def write_contract(self, single_file=False):
+    def write_contract(self, single_file=False, root=None):
+        root = root or self.publish
         names = ["FlorisDeV.BackupClient"]
         if not single_file:
             names.append("FlorisDeV.BackupClient.dll")
-        (self.publish / "dashboard-contract.json").write_text(json.dumps({
+        (root / "dashboard-contract.json").write_text(json.dumps({
             "reportingSchemaVersion": 1, "backupStateSchemaVersion": 3,
             "layout": "singleFile" if single_file else "assemblies",
-            "files": {name: hashlib.sha256((self.publish / name).read_bytes()).hexdigest() for name in names}}))
+            "files": {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in names}}))
 
     def run_installer(self, *arguments):
         return subprocess.run(["bash", str(self.publish / "install.sh"), *arguments],
@@ -161,7 +164,8 @@ class ClientInstallationTests(unittest.TestCase):
 
     def test_companion_upgrade_and_rollback_leave_backup_payload_and_newer_reporting_untouched(self):
         backup = self.install / "FlorisDeV.BackupClient"
-        backup.write_bytes(b"existing backup executable")
+        backup.write_bytes(b"existing compatible backup executable")
+        self.write_contract(root=self.install)
         history = self.install / "newer-reporting.json"
         history.write_text('{"schemaVersion":999,"future":"preserve"}')
         before = {path: path.read_bytes() for path in (backup, history, self.config)}
@@ -212,6 +216,35 @@ esac
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse((self.root / "client-calls").exists())
         self.assertFalse((self.root / "systemctl-calls").exists())
+
+    def test_companion_only_rejects_incompatible_installed_client_before_writes_or_execution(self):
+        marker = self.install / "dashboard-contract.json"
+        original = marker.read_bytes()
+        assembly = self.install / "FlorisDeV.BackupClient.dll"
+        original_assembly = assembly.read_bytes()
+        state = self.install / "state.db"
+        state.write_bytes(b"preserved pending work")
+        before = {path: path.read_bytes() for path in (self.config, state, *self.units.iterdir())}
+        for incompatibility in ("missing", "mixed", "unsupported"):
+            with self.subTest(incompatibility=incompatibility):
+                marker.write_bytes(original)
+                assembly.write_bytes(original_assembly)
+                if incompatibility == "missing":
+                    marker.unlink()
+                elif incompatibility == "mixed":
+                    assembly.write_bytes(b"old client without execution protection")
+                else:
+                    contract = json.loads(original)
+                    contract["reportingSchemaVersion"] = 999
+                    marker.write_text(json.dumps(contract))
+                result = self.run_installer("--dashboard-only")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Upgrade the installed backup client", result.stderr)
+                self.assertEqual({path: path.read_bytes() for path in before}, before)
+                self.assertFalse((self.root / "bin").exists())
+                self.assertFalse((self.root / "installed-dashboard").exists())
+                self.assertFalse((self.root / "client-calls").exists())
+                self.assertFalse((self.root / "systemctl-calls").exists())
 
     def test_remove_after_disable_can_remove_external_unit_already_missing_from_manager(self):
         unit = self.units / "test-backup-dashboard.service"
