@@ -31,7 +31,7 @@ public static class FixtureProgram
             var options = new BackupClientOptions { BackupTargets = new(), Dashboard = new()
             {
                 ReportingDirectory = Path.Combine(root, "reporting"),
-                BackupServiceUnit = "stowhaven-synthetic.service", BackupTimerUnit = "stowhaven-synthetic.timer"
+                BackupServiceUnit = "stowhaven-synthetic.service", BackupTimerUnit = args.ElementAtOrDefault(4) ?? "stowhaven-synthetic.timer"
             } };
             await using var companion = await DashboardCompanion.StartAsync(options.Dashboard,
                 startControl: new(new() { FilePath = Path.Combine(root, "unused.db") }, options));

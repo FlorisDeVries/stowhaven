@@ -163,6 +163,69 @@ public sealed class DashboardSchedulingTests : IDisposable
         Assert.Equal(JsonValueKind.Null, schedule.GetProperty("nextActivation").ValueKind);
     }
 
+    [Fact]
+    public async Task ConfiguredUnitsSelectAnIsolatedInstallationAndFollowConfigurationReload()
+    {
+        var current = Options();
+        var systemd = new SchedulingSystemd();
+        await using var companion = await DashboardCompanion.StartAsync(current.Dashboard,
+            startControl: new(new() { FilePath = Path.Combine(_root, "unused.db") }, current, systemd), currentOptions: () => current);
+        using var browser = new HttpClient { BaseAddress = companion.Address };
+        await DashboardTestAuthorization.AuthorizeAsync(browser, current.Dashboard);
+        Assert.Equal("enabled", (await browser.GetFromJsonAsync<JsonElement>("api/status")).GetProperty("scheduling").GetProperty("state").GetString());
+        current = new() { BackupTargets = new(), Dashboard = new()
+        {
+            ReportingDirectory = current.Dashboard.ReportingDirectory,
+            BackupServiceUnit = "stowhaven-smoke-unique.service", BackupTimerUnit = "stowhaven-smoke-unique.timer"
+        } };
+        systemd.ExpectedService = "stowhaven-smoke-unique.service";
+        systemd.ExpectedTimer = "stowhaven-smoke-unique.timer";
+        systemd.Timer = systemd.Timer with { ServiceUnit = "stowhaven-smoke-unique.service", UnitFileState = "disabled", NextActivation = null };
+        var schedule = (await browser.GetFromJsonAsync<JsonElement>("api/status")).GetProperty("scheduling");
+        Assert.Equal("disabled", schedule.GetProperty("state").GetString());
+        Assert.False(schedule.GetProperty("enabled").GetBoolean());
+    }
+
+    [Theory]
+    [InlineData("../other.timer")]
+    [InlineData("*.timer")]
+    [InlineData("backup-client.service")]
+    [InlineData("stowhaven-synthetic.timer;touch forbidden")]
+    public async Task ConfiguredTimerMustBeAnExactUnitWithoutPathsOrShellSyntax(string unit)
+    {
+        using var browser = await SubprocessBrowser("LoadState=loaded\nActiveState=inactive\nType=oneshot\n", "", timerUnit: unit);
+        var text = await browser.GetStringAsync("api/status");
+        var schedule = JsonSerializer.Deserialize<JsonElement>(text).GetProperty("scheduling");
+        Assert.Equal("invalidUnit", schedule.GetProperty("state").GetString());
+        Assert.DoesNotContain(unit, text);
+        Assert.False(File.Exists(Path.Combine(_root, "unused.db")));
+        Assert.Single(await File.ReadAllLinesAsync(Path.Combine(_root, "commands.log"))); // Only the valid service read reached the boundary.
+    }
+
+    [Fact]
+    public async Task OversizedSchedulerOutputIsUnavailableWithoutForwardingRawData()
+    {
+        var secret = "synthetic-secret-not-for-dashboard";
+        using var browser = await SubprocessBrowser("LoadState=loaded\nActiveState=inactive\nType=oneshot\n", new string('x', 17000) + secret);
+        var text = await browser.GetStringAsync("api/status");
+        var schedule = JsonSerializer.Deserialize<JsonElement>(text).GetProperty("scheduling");
+        Assert.Equal("schedulerUnavailable", schedule.GetProperty("state").GetString());
+        Assert.DoesNotContain(secret, text);
+        Assert.Contains("too much", schedule.GetProperty("message").GetString());
+    }
+
+    [Fact]
+    public async Task UnresponsiveSchedulerCommandIsBoundedAndDoesNotExposeRawErrors()
+    {
+        Directory.CreateDirectory(_root);
+        await File.WriteAllTextAsync(Path.Combine(_root, "timer.delay"), "delay");
+        using var browser = await SubprocessBrowser("LoadState=loaded\nActiveState=inactive\nType=oneshot\n", "");
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var schedule = (await browser.GetFromJsonAsync<JsonElement>("api/status", deadline.Token)).GetProperty("scheduling");
+        Assert.Equal("userSessionUnavailable", schedule.GetProperty("state").GetString());
+        Assert.Contains("did not respond", schedule.GetProperty("message").GetString());
+    }
+
     private async Task<JsonElement> Status(SchedulingSystemd systemd, BackupClientOptions? backup = null)
     {
         backup ??= Options();
@@ -173,7 +236,7 @@ public sealed class DashboardSchedulingTests : IDisposable
         return await browser.GetFromJsonAsync<JsonElement>("api/status");
     }
 
-    private async Task<HttpClient> SubprocessBrowser(string serviceOutput, string timerOutput, bool unavailableBus = false)
+    private async Task<HttpClient> SubprocessBrowser(string serviceOutput, string timerOutput, bool unavailableBus = false, string? timerUnit = null)
     {
         Directory.CreateDirectory(_root);
         if (!unavailableBus)
@@ -184,7 +247,7 @@ public sealed class DashboardSchedulingTests : IDisposable
             await File.WriteAllTextAsync(Path.Combine(_root, "timer.output"), timerOutput);
             await File.WriteAllTextAsync(executable, """
                 #!/usr/bin/python3
-                import pathlib, sys
+                import pathlib, sys, time
                 root = pathlib.Path(__file__).resolve().parent.parent
                 args = sys.argv[1:]
                 with (root / 'commands.log').open('a') as log: log.write(repr(args) + '\n')
@@ -197,6 +260,7 @@ public sealed class DashboardSchedulingTests : IDisposable
                 if unit.endswith('.timer') and '--timestamp=unix' not in args:
                     print('Machine readable timestamp required', file=sys.stderr)
                     sys.exit(1)
+                if unit.endswith('.timer') and (root / 'timer.delay').exists(): time.sleep(30)
                 print((root / ('timer.output' if unit.endswith('.timer') else 'service.output')).read_text(), end='')
                 """);
             if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(executable, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
@@ -204,6 +268,7 @@ public sealed class DashboardSchedulingTests : IDisposable
         var start = new ProcessStartInfo("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
         foreach (var argument in new[] { "exec", "--runtimeconfig", Path.Combine(AppContext.BaseDirectory, "FlorisDeV.BackupClient.Tests.runtimeconfig.json"), "--depsfile", Path.Combine(AppContext.BaseDirectory, "FlorisDeV.BackupClient.Tests.deps.json"), typeof(FixtureProgram).Assembly.Location, _root, Path.Combine(_root, "unused.db"), "schedule", "scheduleHttp" })
             start.ArgumentList.Add(argument);
+        if (timerUnit != null) start.ArgumentList.Add(timerUnit);
         if (!unavailableBus) start.Environment["PATH"] = Path.Combine(_root, "commands") + Path.PathSeparator + start.Environment["PATH"];
         // This also prevents accidentally reading the actual manager if a fixture command is absent.
         start.Environment["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=" + Path.Combine(_root, "nonexistent-bus");
@@ -216,6 +281,13 @@ public sealed class DashboardSchedulingTests : IDisposable
             await Task.Delay(20, timeout.Token);
         }
         var browser = new HttpClient { BaseAddress = new Uri(await File.ReadAllTextAsync(Path.Combine(_root, "schedule.ready"))) };
+        Assert.Equal(HttpStatusCode.Unauthorized, (await browser.GetAsync("api/status")).StatusCode);
+        using (var hostile = new HttpRequestMessage(HttpMethod.Get, "api/status"))
+        {
+            hostile.Headers.Add("Origin", "http://hostile.example");
+            Assert.Equal(HttpStatusCode.Forbidden, (await browser.SendAsync(hostile)).StatusCode);
+        }
+        Assert.False(File.Exists(Path.Combine(_root, "commands.log")));
         await DashboardTestAuthorization.AuthorizeAsync(browser, Options().Dashboard);
         return browser;
     }
@@ -229,10 +301,12 @@ public sealed class DashboardSchedulingTests : IDisposable
         public SystemdServiceState Service { get; set; } = new("loaded", "inactive", "oneshot");
         public SystemdTimerState Timer { get; set; } = new("loaded", "active", "enabled", DateTimeOffset.Parse("2031-11-02T01:30:00Z"), "backup-client.service");
         public string? Error { get; init; }
+        public string ExpectedService { get; set; } = "backup-client.service";
+        public string ExpectedTimer { get; set; } = "backup-client.timer";
         public Task<SystemdServiceState> ShowAsync(string unit, CancellationToken token)
-            => Task.FromResult(Service);
+        { Assert.Equal(ExpectedService, unit); return Task.FromResult(Service); }
         public Task<SystemdTimerState> ShowTimerAsync(string unit, CancellationToken token)
-            => Error != null ? throw new SystemdControlException(Error, "Check the synthetic user units and session.") : Task.FromResult(Timer);
+        { Assert.Equal(ExpectedTimer, unit); return Error != null ? throw new SystemdControlException(Error, "Check the synthetic user units and session.") : Task.FromResult(Timer); }
         public Task StartAsync(string unit, CancellationToken token)
             => throw new InvalidOperationException("Reading scheduler state must never start a backup.");
     }

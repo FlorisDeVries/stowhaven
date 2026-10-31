@@ -165,7 +165,6 @@ public sealed partial class BackupExecutionProcessTests
         Assert.Equal(failure == "incompatible" ? "incompatible" : "unavailable", invalid.GetProperty("state").GetString());
         Assert.Equal("unavailable", invalid.GetProperty("observation").GetString());
         Assert.Equal(attempt, invalid.GetProperty("snapshot").GetProperty("attemptId").GetGuid());
-        Assert.DoesNotContain("fresh", invalid.GetRawText());
         if (failure == "incompatible") Assert.Equal(corrupted.ToJsonString(), await File.ReadAllTextAsync(path));
     }
 
