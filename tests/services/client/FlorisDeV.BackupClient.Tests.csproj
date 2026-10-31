@@ -24,6 +24,8 @@
     </ItemGroup>
 
     <ItemGroup>
+        <Compile Remove="ProcessFixture/**/*.cs" />
+        <ProjectReference Include="ProcessFixture/ProcessFixture.csproj" />
         <ProjectReference Include="..\..\..\src\services\client\FlorisDeV.BackupClient.csproj" />
     </ItemGroup>
 

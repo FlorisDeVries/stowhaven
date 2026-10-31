@@ -106,13 +106,16 @@ public partial class BackupStateService : IBackupStateService, IDisposable
         }
     }
 
+    public string DatabasePath { get; }
+
     public BackupStateService(
         IOptions<DatabaseOptions> options,
         ILogger<BackupStateService> logger)
     {
         _logger = logger;
 
-        var databasePath = options.Value.GetDatabasePath();
+        var databasePath = Path.GetFullPath(options.Value.GetDatabasePath());
+        DatabasePath = databasePath;
 
         var directory = Path.GetDirectoryName(databasePath);
         if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
