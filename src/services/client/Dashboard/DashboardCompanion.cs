@@ -124,6 +124,12 @@ public sealed class DashboardCompanion : IAsyncDisposable
                 if (!Authorized(context, activity: false)) return Results.Unauthorized();
                 return Results.Json(await DashboardReporting.ReadAsync(options, time), DashboardReporting.Json);
             });
+            app.MapGet("/api/logs", async (HttpContext context) =>
+            {
+                if (!Authorized(context, activity: false)) return Results.Unauthorized();
+                if (context.Request.QueryString.HasValue) return Results.BadRequest();
+                return Results.Json(await DashboardRecentLogs.ReadAsync(options, context.RequestAborted), DashboardReporting.Json);
+            });
             await app.StartAsync(cancellationToken);
             var address = new Uri(app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single());
             expectedOrigin = address.GetLeftPart(UriPartial.Authority);

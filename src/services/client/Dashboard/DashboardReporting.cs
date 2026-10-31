@@ -14,6 +14,9 @@ public sealed class DashboardOptions
     public string ReportingDirectory { get; init; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "backup-client", "reporting");
     public int Port { get; init; } = 0;
+    // Local configuration only. HTTP callers cannot select a directory or file.
+    public string LogDirectory { get; init; } = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "backup-client", "logs");
 }
 
 public sealed record DashboardSnapshot(
