@@ -380,6 +380,10 @@ uses native `flock` on the actual database inode, recognizing hard links, leaf
 and parent-directory symlinks and relative aliases. SQLite connection closure
 does not release ownership. A separate open-file-description byte lock reserves
 start requests without preventing the child from acquiring execution ownership.
+The companion and backup client must run as the same user in the same PID
+namespace with readable `/proc/locks`. Observation reads that kernel lock table
+without acquiring execution ownership; read or parse failures leave activity
+unavailable. Kernel `flock` remains the authority for excluding duplicate attempts.
 Duplicates return immediately and queue no follow-up work. Owner exit or process
 death releases both guards; do not delete a database or lock file to “unlock” it.
 Keep backup state on a local filesystem; NFS/SMB state storage is unsupported.

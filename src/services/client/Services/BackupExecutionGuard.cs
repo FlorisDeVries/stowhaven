@@ -15,13 +15,16 @@ public sealed class BackupAlreadyRunningException() : InvalidOperationException(
 internal sealed class BackupExecutionGuard : IDisposable
 {
     private readonly SafeFileHandle _handle;
-    private BackupExecutionGuard(SafeFileHandle handle) => _handle = handle;
+    private readonly bool _launchReservation;
+    private int _disposed;
+    private BackupExecutionGuard(SafeFileHandle handle, bool launchReservation = false)
+        => (_handle, _launchReservation) = (handle, launchReservation);
 
     internal static BackupExecutionGuard Acquire(string databasePath)
         => TryAcquire(databasePath, launchReservation: false) ?? throw new BackupAlreadyRunningException();
 
-    // Observation never creates a database or initializes backup state. A read-only descriptor
-    // can probe flock on Linux, independently of SQLite's own locks.
+    // Observation never acquires execution ownership: even a brief exclusive probe
+    // can reject a real backup attempt. Read the kernel's lock table instead.
     internal static (string? Identity, bool Active, int? OwnerProcessId) Observe(string databasePath)
     {
         if (!OperatingSystem.IsLinux()) throw new PlatformNotSupportedException();
@@ -32,34 +35,35 @@ internal sealed class BackupExecutionGuard : IDisposable
             if (error == 2) return (null, false, null);
             throw Failure("observe execution protection", error);
         }
-        using var probe = new BackupExecutionGuard(new SafeFileHandle((IntPtr)descriptor, ownsHandle: true));
-        var identity = probe.Identity;
-        if (Flock(probe._handle, 2 | 4) == 0) return (identity, false, null);
-        var lockError = Marshal.GetLastPInvokeError();
-        if (lockError == 11) return (identity, true, ObserveOwner(identity));
-        throw Failure("observe execution protection", lockError);
+        using var probe = new SafeFileHandle((IntPtr)descriptor, ownsHandle: true);
+        var identity = Identify(probe);
+        var owner = ObserveOwner(identity);
+        return (identity, owner != null, owner);
     }
 
     private static int? ObserveOwner(string identity)
     {
         // /proc/locks identifies FLOCK's owner and actual device+inode. PID alone cannot
         // associate an acknowledgment with whichever execution currently owns the database.
-        // See https://man7.org/linux/man-pages/man5/proc_locks.5.html
-        try
+        // Read/permission errors propagate: an inaccessible lock table cannot establish idle.
+        foreach (var line in File.ReadLines("/proc/locks"))
         {
-            foreach (var line in File.ReadLines("/proc/locks"))
-            {
-                var fields = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                if (fields.Length != 8 || fields[1] != "FLOCK" || fields[3] != "WRITE" ||
-                    fields[6] != "0" || fields[7] != "EOF" || !int.TryParse(fields[4], out var pid) || pid <= 0) continue;
-                var device = fields[5].Split(':');
-                if (device.Length == 3 && ulong.TryParse(device[0], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var major) &&
-                    ulong.TryParse(device[1], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var minor) &&
-                    ulong.TryParse(device[2], NumberStyles.None, CultureInfo.InvariantCulture, out var inode) &&
-                    $"{major:x}:{minor:x}:{inode:x}" == identity) return pid;
-            }
+            var fields = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (!fields.Contains("FLOCK") || fields.Length > 1 && fields[1] == "->") continue; // Waiting requests do not own the lock.
+            if (fields.Length != 8 || fields[1] != "FLOCK" || fields[3] is not ("READ" or "WRITE") ||
+                fields[6] != "0" || fields[7] != "EOF")
+                throw new IOException("Cannot interpret execution protection ownership.");
+            if (fields[3] != "WRITE") continue;
+            var device = fields[5].Split(':');
+            if (device.Length != 3 || !ulong.TryParse(device[0], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var major) ||
+                !ulong.TryParse(device[1], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var minor) ||
+                !ulong.TryParse(device[2], NumberStyles.None, CultureInfo.InvariantCulture, out var inode))
+                throw new IOException("Cannot interpret execution protection ownership.");
+            if ($"{major:x}:{minor:x}:{inode:x}" != identity) continue;
+            if (!int.TryParse(fields[4], out var pid) || pid <= 0)
+                throw new IOException("Cannot identify the execution protection owner.");
+            return pid;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
         return null;
     }
 
@@ -99,7 +103,7 @@ internal sealed class BackupExecutionGuard : IDisposable
             // execution flock against the service being started. SQLite's lock bytes are at 1 GiB.
             var reservation = new FileLock { Type = 1, Whence = 0, Start = 0, Length = 1 };
             var result = launchReservation ? Fcntl(handle, 37, ref reservation) : Flock(handle, 2 | 4);
-            if (result == 0) return new(handle);
+            if (result == 0) return new(handle, launchReservation);
             var error = Marshal.GetLastPInvokeError();
             if (error == (OperatingSystem.IsMacOS() ? 35 : 11) || (launchReservation && error == 13)) { handle.Dispose(); return null; }
             throw Failure("acquire execution protection", error);
@@ -107,14 +111,12 @@ internal sealed class BackupExecutionGuard : IDisposable
         catch { handle.Dispose(); throw; }
     }
 
-    internal string Identity
+    internal string Identity => Identify(_handle);
+    private static string Identify(SafeFileHandle handle)
     {
-        get
-        {
-            if (!OperatingSystem.IsLinux()) return OperatingSystem.IsWindows() ? "windows" : "macos";
-            if (Statx(_handle, "", 0x1000, 0x7ff, out var value) != 0) throw Failure("identify state", Marshal.GetLastPInvokeError());
-            return $"{value.DeviceMajor:x}:{value.DeviceMinor:x}:{value.Inode:x}";
-        }
+        if (!OperatingSystem.IsLinux()) return OperatingSystem.IsWindows() ? "windows" : "macos";
+        if (Statx(handle, "", 0x1000, 0x7ff, out var value) != 0) throw Failure("identify state", Marshal.GetLastPInvokeError());
+        return $"{value.DeviceMajor:x}:{value.DeviceMinor:x}:{value.Inode:x}";
     }
     [StructLayout(LayoutKind.Explicit, Size = 256)] private struct LinuxStat
     {
@@ -123,7 +125,20 @@ internal sealed class BackupExecutionGuard : IDisposable
         [FieldOffset(140)] public uint DeviceMinor;
     }
     [DllImport("libc", EntryPoint = "statx", SetLastError = true)] private static extern int Statx(SafeFileHandle fd, string path, int flags, uint mask, out LinuxStat value);
-    public void Dispose() => _handle.Dispose();
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+        try
+        {
+            if (OperatingSystem.IsWindows()) return;
+            // CLOEXEC closes inherited descriptors only after exec. Release our
+            // lock explicitly so a child in that window cannot retain ownership.
+            var release = new FileLock { Type = 2, Whence = 0, Start = 0, Length = 1 }; // F_UNLCK
+            var result = _launchReservation ? Fcntl(_handle, 37, ref release) : Flock(_handle, 8); // LOCK_UN
+            if (result != 0) throw Failure("release execution protection", Marshal.GetLastPInvokeError());
+        }
+        finally { _handle.Dispose(); }
+    }
     private static IOException Failure(string operation, int error) => new($"Cannot {operation} for backup state. Check state permissions and local filesystem locking support.", new Win32Exception(error));
     [StructLayout(LayoutKind.Sequential)] private struct WindowsOverlapped
     {

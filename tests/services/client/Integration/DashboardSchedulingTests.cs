@@ -226,6 +226,18 @@ public sealed class DashboardSchedulingTests : IDisposable
         Assert.Contains("did not respond", schedule.GetProperty("message").GetString());
     }
 
+    [Fact]
+    public async Task SubprocessReadinessIsInvisibleUntilItsCompleteAddressCanBeConsumed()
+    {
+        var startup = SubprocessBrowser("LoadState=loaded\nActiveState=inactive\nType=oneshot\n", "", pauseReadiness: true);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        while (!File.Exists(Path.Combine(_root, "schedule.writing"))) await Task.Delay(10, timeout.Token);
+        try { Assert.False(File.Exists(Path.Combine(_root, "schedule.ready")), "A partially written address must not be published as ready."); }
+        finally { await File.WriteAllTextAsync(Path.Combine(_root, "schedule.publish"), "publish"); }
+        using var browser = await startup;
+        Assert.Equal(HttpStatusCode.OK, (await browser.GetAsync("api/status")).StatusCode);
+    }
+
     private async Task<JsonElement> Status(SchedulingSystemd systemd, BackupClientOptions? backup = null)
     {
         backup ??= Options();
@@ -236,7 +248,7 @@ public sealed class DashboardSchedulingTests : IDisposable
         return await browser.GetFromJsonAsync<JsonElement>("api/status");
     }
 
-    private async Task<HttpClient> SubprocessBrowser(string serviceOutput, string timerOutput, bool unavailableBus = false, string? timerUnit = null)
+    private async Task<HttpClient> SubprocessBrowser(string serviceOutput, string timerOutput, bool unavailableBus = false, string? timerUnit = null, bool pauseReadiness = false)
     {
         Directory.CreateDirectory(_root);
         if (!unavailableBus)
@@ -268,7 +280,8 @@ public sealed class DashboardSchedulingTests : IDisposable
         var start = new ProcessStartInfo("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
         foreach (var argument in new[] { "exec", "--runtimeconfig", Path.Combine(AppContext.BaseDirectory, "FlorisDeV.BackupClient.Tests.runtimeconfig.json"), "--depsfile", Path.Combine(AppContext.BaseDirectory, "FlorisDeV.BackupClient.Tests.deps.json"), typeof(FixtureProgram).Assembly.Location, _root, Path.Combine(_root, "unused.db"), "schedule", "scheduleHttp" })
             start.ArgumentList.Add(argument);
-        if (timerUnit != null) start.ArgumentList.Add(timerUnit);
+        if (timerUnit != null || pauseReadiness) start.ArgumentList.Add(timerUnit ?? "stowhaven-synthetic.timer");
+        if (pauseReadiness) start.ArgumentList.Add("pauseReady");
         if (!unavailableBus) start.Environment["PATH"] = Path.Combine(_root, "commands") + Path.PathSeparator + start.Environment["PATH"];
         // This also prevents accidentally reading the actual manager if a fixture command is absent.
         start.Environment["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=" + Path.Combine(_root, "nonexistent-bus");

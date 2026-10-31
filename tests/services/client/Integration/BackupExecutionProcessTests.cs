@@ -50,6 +50,20 @@ public sealed partial class BackupExecutionProcessTests : IDisposable
         Assert.Contains("NoChanges", await later.StandardOutput.ReadToEndAsync());
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SequentialAttemptsReleaseOwnershipWhileAnInheritedDescriptorRemainsOpen(bool startRequest)
+    {
+        Directory.CreateDirectory(_root);
+        var child = Start(Path.Combine(_root, "state.db"), "sequential", mode: startRequest ? "retainedReservation" : "retainedDescriptor");
+        await child.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(15));
+        var output = await child.StandardOutput.ReadToEndAsync();
+        Assert.True(child.ExitCode == 0, output + await child.StandardError.ReadToEndAsync());
+        Assert.Equal(startRequest ? new[] { "started", "started" } : new[] { "NoChanges", "NoChanges" },
+            output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+    }
+
     private Process Start(string database, string label, string? invocationId = null, string? mode = null, bool unavailableUserBus = false)
     {
         var start = new ProcessStartInfo("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };

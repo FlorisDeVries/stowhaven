@@ -35,7 +35,16 @@ public static class FixtureProgram
             } };
             await using var companion = await DashboardCompanion.StartAsync(options.Dashboard,
                 startControl: new(new() { FilePath = Path.Combine(root, "unused.db") }, options));
-            await File.WriteAllTextAsync(Path.Combine(root, "schedule.ready"), companion.Address.ToString());
+            var readyPath = Path.Combine(root, "schedule.ready.tmp");
+            if (args.ElementAtOrDefault(5) == "pauseReady")
+            {
+                // Hold the ordinary create-before-write window open deterministically.
+                await File.WriteAllTextAsync(readyPath, "");
+                await File.WriteAllTextAsync(Path.Combine(root, "schedule.writing"), "writing");
+                while (!File.Exists(Path.Combine(root, "schedule.publish"))) await Task.Delay(10);
+            }
+            await File.WriteAllTextAsync(readyPath, companion.Address.ToString());
+            File.Move(readyPath, Path.Combine(root, "schedule.ready"));
             while (!File.Exists(Path.Combine(root, "schedule.release"))) await Task.Delay(20);
             return 0;
         }
@@ -63,6 +72,34 @@ public static class FixtureProgram
             new Mock<IFileUploader>().Object, Options.Create(new BackupClientOptions { BackupTargets = new() { ["test"] = target }, Dashboard = new() { Enabled = args.ElementAtOrDefault(3) != "unreported", ReportingDirectory = Path.Combine(root, "reporting") } }));
         try
         {
+            if (args.ElementAtOrDefault(3) is "retainedDescriptor" or "retainedReservation")
+            {
+                // dup retains the same kernel open-file description, exactly as the
+                // fork-to-exec window of a concurrent process launch does.
+                var startRequest = args[3] == "retainedReservation";
+                var invocation = Guid.NewGuid().ToString("N");
+                Environment.SetEnvironmentVariable("INVOCATION_ID", invocation);
+                var control = new DashboardStartControl(new() { FilePath = database }, new()
+                {
+                    BackupTargets = new(), Dashboard = new() { Enabled = true, ReportingDirectory = Path.Combine(root, "reporting") }
+                }, new RequestFixture(root, label, invocation, async () => { await service.RunAsync(default); }));
+                async Task<string> Run() => startRequest ? (await control.StartAsync()).State : (await service.RunAsync(default)).Outcome.ToString();
+                var first = Run();
+                while (!File.Exists(Path.Combine(root, label + (startRequest ? ".requested" : ".entered")))) await Task.Delay(10);
+                var retained = Directory.EnumerateFiles("/proc/self/fd")
+                    .Where(path => new FileInfo(path).LinkTarget == database).ToArray()
+                    .Select(path => DuplicateDescriptor(int.Parse(Path.GetFileName(path)))).ToArray();
+                if (retained.Length == 0 || retained.Any(fd => fd < 0)) throw new IOException("Cannot retain the synthetic database descriptor.");
+                try
+                {
+                    await File.WriteAllTextAsync(Path.Combine(root, label + ".release"), "release");
+                    await File.WriteAllTextAsync(Path.Combine(root, label + ".launch"), "launch");
+                    Console.WriteLine(await first);
+                    Console.WriteLine(await Run());
+                }
+                finally { foreach (var descriptor in retained) CloseDescriptor(descriptor); }
+                return 0;
+            }
             if (args.ElementAtOrDefault(3) == "request")
             {
                 var invocation = Guid.NewGuid().ToString("N");
@@ -83,6 +120,11 @@ public static class FixtureProgram
         }
         catch (Exception ex) { Console.WriteLine(ex.GetType().Name); return 10; }
     }
+    [System.Runtime.InteropServices.DllImport("libc", EntryPoint = "dup")]
+    private static extern int DuplicateDescriptor(int descriptor);
+    [System.Runtime.InteropServices.DllImport("libc", EntryPoint = "close")]
+    private static extern int CloseDescriptor(int descriptor);
+
     private sealed class RequestFixture(string root, string label, string invocation, Func<Task> run) : ISystemdUserService
     {
         public Task<SystemdServiceState> ShowAsync(string unit, CancellationToken token) => Task.FromResult(new SystemdServiceState("loaded", "inactive", "oneshot", invocation));

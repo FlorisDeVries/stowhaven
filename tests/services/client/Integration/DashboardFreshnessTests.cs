@@ -261,6 +261,45 @@ public partial class BackupServiceIntegrationTests
         Assert.Equal(valid.Snapshot.Evidence.LastCleanResult, incompatible.Snapshot.Evidence!.LastCleanResult);
     }
 
+    [Fact]
+    public async Task Dashboard_ContinuousObservationCannotPreventSequentialBackupAttempts()
+    {
+        var target = Path.Combine(_testRoot, "target"); Directory.CreateDirectory(target);
+        var options = new BackupClientOptions { BackupTargets = new() { ["documents"] = target } };
+        var service = CreateFreshnessService(options, TimeProvider.System);
+        Assert.Equal(BackupOutcome.NoChanges, (await service.RunAsync(default)).Outcome);
+        var dashboard = new DashboardOptions { Enabled = true, ReportingDirectory = Path.Combine(_testRoot, "observations") };
+        var systemd = new Mock<ISystemdUserService>();
+        systemd.Setup(x => x.ShowAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new SystemdControlException("schedulerUnavailable", "Synthetic manager boundary."));
+        await using var companion = await DashboardCompanion.StartAsync(dashboard,
+            startControl: new(new() { FilePath = Path.Combine(_testRoot, "fresh-state.db") }, options, systemd.Object));
+        using var browser = new HttpClient { BaseAddress = companion.Address };
+        await DashboardTestAuthorization.AuthorizeAsync(browser, dashboard);
+        using var stop = new CancellationTokenSource();
+        var reads = 0;
+        var observers = Enumerable.Range(0, 16).Select(_ => Task.Run(async () =>
+        {
+            try
+            {
+                while (!stop.IsCancellationRequested)
+                {
+                    await browser.GetStringAsync("api/status", stop.Token);
+                    Interlocked.Increment(ref reads);
+                }
+            }
+            catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
+        })).ToArray();
+        try
+        {
+            using var startupTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            while (Volatile.Read(ref reads) < 16) await Task.Delay(1, startupTimeout.Token);
+            for (var attempt = 0; attempt < 200; attempt++)
+                Assert.Equal(BackupOutcome.NoChanges, (await service.RunAsync(default)).Outcome);
+        }
+        finally { stop.Cancel(); await Task.WhenAll(observers); }
+    }
+
     private BackupService CreateFreshnessService(BackupClientOptions options, TimeProvider clock)
     {
         var state = new BackupStateService(Options.Create(new DatabaseOptions { FilePath = Path.Combine(_testRoot, "fresh-state.db") }), NullLogger<BackupStateService>.Instance);
