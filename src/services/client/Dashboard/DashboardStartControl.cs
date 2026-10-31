@@ -11,6 +11,8 @@ public sealed class DashboardStartControl(DatabaseOptions database, BackupClient
     private readonly ISystemdUserService _systemd = systemd ?? new SystemdUserService();
     private readonly TimeSpan _timeout = confirmationTimeout ?? TimeSpan.FromSeconds(10);
     internal string DatabasePath => database.GetDatabasePath();
+    internal BackupClientOptions BackupOptions => backup;
+    internal ISystemdUserService Systemd => _systemd;
 
     public async Task<DashboardStartResult> StartAsync(CancellationToken token = default)
     {

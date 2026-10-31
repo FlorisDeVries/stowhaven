@@ -120,6 +120,7 @@ public sealed class DashboardCompanion : IAsyncDisposable
             app.MapPost("/api/activity", (HttpContext context) =>
                 Authorized(context, activity: true) ? Results.NoContent() : Results.Unauthorized());
             var observations = new DashboardObservation(options, time, startControl);
+            var scheduling = new DashboardScheduling(options, startControl);
             app.MapPost("/api/start", async (HttpContext context) =>
             {
                 if (!Authorized(context, activity: true)) return Results.Unauthorized();
@@ -131,7 +132,8 @@ public sealed class DashboardCompanion : IAsyncDisposable
             app.MapGet("/api/status", async (HttpContext context) =>
             {
                 if (!Authorized(context, activity: false)) return Results.Unauthorized();
-                return Results.Json(await observations.ReadAsync(), DashboardReporting.Json);
+                var status = await observations.ReadAsync();
+                return Results.Json(status with { Scheduling = await scheduling.ReadAsync(context.RequestAborted) }, DashboardReporting.Json);
             });
             app.MapGet("/api/logs", async (HttpContext context) =>
             {

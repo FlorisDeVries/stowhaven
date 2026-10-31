@@ -18,6 +18,7 @@ public sealed class DashboardOptions
     public string LogDirectory { get; init; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "backup-client", "logs");
     public string BackupServiceUnit { get; init; } = "backup-client.service";
+    public string BackupTimerUnit { get; init; } = "backup-client.timer";
 }
 
 public sealed record DashboardSnapshot(
@@ -35,6 +36,7 @@ public sealed record DashboardStatus(string State, DashboardSnapshot? Snapshot =
 {
     public string Observation { get; init; } = "unavailable";
     public string ExecutionState { get; init; } = "unavailable";
+    public DashboardSchedulingStatus? Scheduling { get; init; }
 }
 
 // Only this allow-listed portable contract reaches disk or HTTP. Never serialize BackupResult/state/configuration.
