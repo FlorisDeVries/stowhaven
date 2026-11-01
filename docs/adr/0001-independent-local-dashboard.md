@@ -1,0 +1,3 @@
+# Keep the local dashboard independent of backup processes
+
+The Linux client currently runs as a short-lived systemd user service, while the local dashboard must remain available between backups and after a backup process crashes. Preserve the backup service and timer and introduce an opt-in persistent dashboard companion that observes progress and requests starts. Keeping separate lifetimes adds a reporting boundary and another service to install, but lets backups continue when the dashboard stops and preserves the existing scheduling lifecycle instead of moving backup execution into a resident dashboard host.

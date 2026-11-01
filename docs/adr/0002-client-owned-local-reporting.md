@@ -1,0 +1,3 @@
+# Use client-owned files for local dashboard observations
+
+Backups must report progress without a running dashboard, and observations must remain useful after either process restarts. The client owns a versioned, sanitized reporting contract in private local JSON files, with atomic snapshot replacement and bounded history; the dashboard reads it and serves an authenticated polling interface. This adds explicit compatibility, retention, and stale-observation handling, but keeps reporting portable and independent of both a resident dashboard connection and the client's credential-bearing backup state.
