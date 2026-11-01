@@ -13,7 +13,11 @@ namespace FlorisDeV.BackupClient.Services;
 public sealed record UploadBatchResult(
     IReadOnlyList<TaggedFile> Uploaded,
     IReadOnlyList<TaggedFile> SasExpiredFiles,
-    int OtherFailureCount);
+    int OtherFailureCount)
+{
+    // File identity only. Exceptions and storage authorization never cross the reporting seam.
+    public IReadOnlyList<TaggedFile> FailedFiles { get; init; } = [];
+}
 
 /// <summary>
 /// Handles parallel file uploads to Azure Blob Storage with retry logic and progress tracking.

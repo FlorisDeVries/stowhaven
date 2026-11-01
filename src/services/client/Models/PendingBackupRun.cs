@@ -21,6 +21,7 @@ public sealed record PendingBackupRun
     public required SasUrlInfo ManifestSasUrlInfo { get; init; }
     public bool ManifestUploaded { get; init; }
     public Guid? CommitId { get; init; }
+    public BackupRunResult? Evidence { get; init; }
 
     /// <summary>Files already staged for this run. Derived on load; never persisted in the header.</summary>
     [JsonIgnore]

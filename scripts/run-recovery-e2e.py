@@ -10,6 +10,7 @@ import hashlib
 import http.client
 import json
 import os
+import signal
 from pathlib import Path
 import socket
 import subprocess
@@ -56,20 +57,41 @@ def until(predicate, description, timeout=90):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifacts", type=Path, help="Directory for isolated test data and logs")
+    parser.add_argument("--dashboard-smoke", action="store_true", help="Use isolated persistent real user units and the installed companion")
+    parser.add_argument("--single-file-client", action="store_true", help="Publish the documented Linux self-contained client bundle")
+    parser.add_argument("--prepare-only", action="store_true", help="Publish and generate the dashboard preflight without launching resources")
+    parser.add_argument("--resume-prepared", action="store_true", help="Execute an already reviewed dashboard preflight")
     args = parser.parse_args()
+    if (args.prepare_only or args.resume_prepared) and not args.dashboard_smoke:
+        parser.error("Preparation/resume requires --dashboard-smoke")
+    os.umask(0o077)
+    def interrupted(_number, _frame):
+        raise KeyboardInterrupt("Recovery smoke interrupted; cleaning owned resources")
+    signal.signal(signal.SIGTERM, interrupted)
     root = (args.artifacts or Path(tempfile.mkdtemp(prefix="stowhaven-recovery-"))).resolve()
-    if root.exists() and (not root.is_dir() or any(root.iterdir())):
+    if not args.resume_prepared and root.exists() and (not root.is_dir() or any(root.iterdir())):
         parser.error("--artifacts must name a new or empty directory")
-    root.mkdir(parents=True, exist_ok=True)
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    root.chmod(0o700)
     for name in ("config", "data", "logs", "components", "source"):
         (root / name).mkdir(exist_ok=True)
     tag = "stowhaven-e2e-" + uuid.uuid4().hex[:10]
     children, containers, handles = [], [], []
     blob_port, queue_port, api_port, worker_port = (port() for _ in range(4))
     api_http, api_grpc, worker_http, worker_grpc = (port() for _ in range(4))
+    proxy_port = port()
+    plan_path = root / "recovery-plan.json"
+    if args.resume_prepared:
+        plan = json.loads(plan_path.read_text())
+        tag = plan["tag"]
+        blob_port, queue_port, api_port, worker_port, api_http, api_grpc, worker_http, worker_grpc, proxy_port = plan["ports"]
+    else:
+        plan_path.write_text(json.dumps({"tag": tag, "ports": [blob_port, queue_port, api_port, worker_port, api_http, api_grpc, worker_http, worker_grpc, proxy_port]}, indent=2))
     api_url = f"http://127.0.0.1:{api_port}"
-    excluded = ("BACKUP", "DATABASE", "AZURE", "DAPR", "DATA_", "USE_AZURITE", "OTEL", "SERILOG", "APPLICATIONINSIGHTS")
-    environment = {key: value for key, value in os.environ.items() if not key.upper().startswith(excluded)}
+    # Explicit allowlist: no production configuration, proxy aliases, runtime
+    # startup hooks, credentials or unrelated manager settings reach children.
+    allowed = ("PATH", "HOME", "USER", "LOGNAME", "DOTNET_ROOT", "DOTNET_ROOT_X64", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "NUGET_PACKAGES")
+    environment = {key: os.environ[key] for key in allowed if key in os.environ}
     environment.update({
         "DOTNET_ENVIRONMENT": "Development", "ASPNETCORE_ENVIRONMENT": "Development",
         "ALLOW_DEVELOPMENT_ANONYMOUS_AUTHENTICATION": "true",
@@ -81,6 +103,7 @@ def main():
         "CommitProcessing__LeaseDurationSeconds": "5", "CommitProcessing__HeartbeatIntervalSeconds": "1",
         "CommitProcessing__MaxParallelFiles": "1", "LOG_PATH": str(root / "logs"),
         "OTEL_EXPORTER_OTLP_ENDPOINT": "", "OTEL_EXPORTER_AZURE_MONITOR_CONNECTION": "",
+        "DOTNET_BUNDLE_EXTRACT_BASE_DIR": str(root / "bundle"),
     })
 
     def run(command, name, env=None):
@@ -107,29 +130,59 @@ def main():
             "DAPR_HTTP_ENDPOINT": f"http://127.0.0.1:{http_port}",
             "DAPR_GRPC_ENDPOINT": f"http://127.0.0.1:{grpc_port}"}
 
-    def sidecar(app_id, app_port, http_port, grpc_port):
-        docker(["--network", "host", "--entrypoint", "/daprd", "-v", f"{root / 'components'}:/components:ro",
+    def sidecar(name, app_port, http_port, grpc_port):
+        app_id = f"{tag}-{name}"
+        docker(["--network", "host", "--user", f"{os.getuid()}:{os.getgid()}", "--entrypoint", "/daprd", "-v", f"{root / 'components'}:/components:ro",
             "daprio/daprd:1.13.6", "--app-id", app_id, "--app-port", str(app_port),
             "--app-channel-address", "127.0.0.1", "--dapr-listen-addresses", "127.0.0.1",
             "--dapr-http-port", str(http_port), "--dapr-grpc-port", str(grpc_port),
             "--dapr-internal-grpc-port", str(port()), "--metrics-port", str(port()),
-            "--resources-path", "/components", "--log-level", "warn"], app_id + "-dapr")
+            "--resources-path", "/components", "--log-level", "warn"], name + "-dapr")
         until(lambda: request(f"http://127.0.0.1:{http_port}/v1.0/healthz/outbound") is None, app_id + " sidecar")
 
+    settings = {
+            "BackupClient": {"BackupTargets": {"fixture": str(root / "source")}, "IgnoreFilePath": "",
+                "CommitStatusTimeoutSeconds": 0, "CommitStatusPollIntervalSeconds": 1, "MaxParallelUploads": 4,
+                "Encryption": {"Mode": "ClientAndServer", "KdfIterations": 1000, "RecoveryPhraseFilePath": str(root / "phrase.json")},
+                "Schedule": {"Enabled": False}},
+            "BackupApiClient": {"ApiUrl": f"http://127.0.0.1:{proxy_port}", "AuthenticationScope": "local-test",
+                "AuthenticationTenant": "local-test", "WakeUp": {"Enabled": False},
+                "RetryOptions": {"Retry": {"MaxRetryAttempts": 3, "Delay": "00:00:00.100", "BackoffType": "Constant"}}},
+            "AzureAd": {"TenantId": "local-test", "ClientId": "local-test"},
+            "Database": {"FilePath": str(root / "client.db")}, "OTEL_EXPORTER_OTLP_ENDPOINT": ""
+        }
+    local_config = root / "client" / "appsettings.local.json"
+
+    smoke = None
+    if args.dashboard_smoke:
+        from dashboard_smoke import DashboardSmoke
+        smoke = DashboardSmoke(root, tag, environment)
     proxy = None
     try:
-        print("Publishing the real API, worker, and client...", flush=True)
-        projects = {"api": "FlorisDeV.BackupApi", "worker": "FlorisDeV.BackupWorker", "client": "FlorisDeV.BackupClient"}
-        for service, assembly in projects.items():
-            # A unique test-only metadata identifier prevents Development mode from loading
-            # a developer's real user-secret settings (including additional backup targets).
-            run(["dotnet", "publish", f"src/services/{service}/{assembly}.csproj", "-c", "Release",
-                "-p:NuGetAudit=false", f"-p:UserSecretsId={tag}", "--ignore-failed-sources", "-o", str(root / service)], "publish-" + service)
+        if not args.resume_prepared:
+            print("Publishing the real API, worker, and client...", flush=True)
+            projects = {"api": "FlorisDeV.BackupApi", "worker": "FlorisDeV.BackupWorker", "client": "FlorisDeV.BackupClient"}
+            for service, assembly in projects.items():
+                # A unique test-only metadata identifier prevents Development mode from loading
+                # a developer's real user-secret settings (including additional backup targets).
+                options = ["-r", "linux-x64", "--self-contained", "true", "-p:PublishSingleFile=true"] if service == "client" and args.single_file_client else []
+                run(["dotnet", "publish", f"src/services/{service}/{assembly}.csproj", "-c", "Release", "-m:1", "-nr:false",
+                    "-p:NuGetAudit=false", f"-p:UserSecretsId={tag}", "--ignore-failed-sources", "-o", str(root / service), *options], "publish-" + service)
+        if smoke:
+            if args.resume_prepared:
+                settings = json.loads(local_config.read_text())
+                smoke.managed_links = json.loads((root / 'preflight.json').read_text())['persistentLinks']
+                smoke.validate(settings)
+            else:
+                smoke.prepare(settings)
+            if args.prepare_only:
+                print(f"Prepared private dashboard preflight: {root / 'preflight.json'}", flush=True)
+                return
 
         docker(["-e", f"AZURITE_ACCOUNTS={ACCOUNT}:{KEY}", "-p", f"127.0.0.1:{blob_port}:10000",
             "-p", f"127.0.0.1:{queue_port}:10001", "mcr.microsoft.com/azure-storage/azurite:latest",
             "azurite", "--blobHost", "0.0.0.0", "--queueHost", "0.0.0.0", "--skipApiVersionCheck", "--silent"], "azurite")
-        for direction, scope in (("output", "backup-api"), ("input", "backup-worker")):
+        for direction, scope in (("output", f"{tag}-backup-api"), ("input", f"{tag}-backup-worker")):
             component = {"apiVersion": "dapr.io/v1alpha1", "kind": "Component",
                 "metadata": {"name": "backup-events-" + direction}, "spec": {
                     "type": "bindings.azure.storagequeues", "version": "v1", "metadata": [
@@ -147,11 +200,23 @@ def main():
         class Proxy(BaseHTTPRequestHandler):
             drop_next_commit = False
             dropped_commit = None
+            hold_next_start = False
+            held = threading.Event()
+            release = threading.Event()
+            abort_held = False
 
             def log_message(self, *_):
                 pass
 
             def forward(self):
+                if self.path.endswith("/backup/start-run") and Proxy.hold_next_start:
+                    Proxy.hold_next_start = False
+                    Proxy.held.set()
+                    released = Proxy.release.wait(timeout=120)
+                    if not released or Proxy.abort_held:
+                        self.send_response(503)
+                        self.end_headers()
+                        return
                 connection = http.client.HTTPConnection("127.0.0.1", api_port, timeout=60)
                 if "chunked" in self.headers.get("Transfer-Encoding", "").lower():
                     chunks = []
@@ -195,26 +260,19 @@ def main():
             do_GET = forward
             do_POST = forward
 
-        proxy = ThreadingHTTPServer(("127.0.0.1", 0), Proxy)
+        proxy = ThreadingHTTPServer(("127.0.0.1", proxy_port), Proxy)
         threading.Thread(target=proxy.serve_forever, daemon=True).start()
-        settings = {
-            "BackupClient": {"BackupTargets": {"fixture": str(root / "source")}, "IgnoreFilePath": "",
-                "CommitStatusTimeoutSeconds": 0, "CommitStatusPollIntervalSeconds": 1, "MaxParallelUploads": 4,
-                "Encryption": {"Mode": "ClientAndServer", "KdfIterations": 1000, "RecoveryPhraseFilePath": str(root / "phrase.json")},
-                "Schedule": {"Enabled": False}},
-            "BackupApiClient": {"ApiUrl": f"http://127.0.0.1:{proxy.server_port}", "AuthenticationScope": "local-test",
-                "AuthenticationTenant": "local-test", "WakeUp": {"Enabled": False},
-                "RetryOptions": {"Retry": {"MaxRetryAttempts": 3, "Delay": "00:00:00.100", "BackoffType": "Constant"}}},
-            "AzureAd": {"TenantId": "local-test", "ClientId": "local-test"},
-            "Database": {"FilePath": str(root / "client.db")}, "OTEL_EXPORTER_OTLP_ENDPOINT": ""
-        }
-        local_config = root / "client" / "appsettings.local.json"
 
         def client(name, command="backup", accepted=(0,)):
-            local_config.write_text(json.dumps(settings))
+            if smoke:
+                smoke.write_config(settings)
+                if command == 'backup':
+                    return smoke.client(name, accepted)
+            else:
+                local_config.write_text(json.dumps(settings))
             result_path = root / f"{name}-result.json"
             with (root / "logs" / f"{name}.log").open("w") as output:
-                process = subprocess.run(["dotnet", str(root / "client" / "FlorisDeV.BackupClient.dll"), command,
+                process = subprocess.run([str(root / "client" / "FlorisDeV.BackupClient"), command,
                     "--result-file", str(result_path)], cwd=root, env=environment, stdout=output, stderr=subprocess.STDOUT, timeout=120)
             if process.returncode not in accepted:
                 raise RuntimeError(f"{name} exited {process.returncode}; see {root / 'logs' / (name + '.log')}")
@@ -222,11 +280,15 @@ def main():
 
         for index in range(200):
             (root / "source" / f"file-{index:03}.txt").write_text(f"Recovery fixture content {index}\n" * 20)
+        if smoke:
+            smoke.install(Proxy)
         print("Submitting an encrypted backup while the worker is stopped...", flush=True)
         submitted = client("submitted", accepted=(2,))
         assert submitted["outcome"] == "pending", submitted
         assert submitted["filesScanned"] == 200, "The test must scan only its isolated source tree."
         status_url = api_url + f"/api/devices/{submitted['deviceId']}/backup/commit-status/{submitted['commitId']}"
+        if smoke:
+            smoke.lifecycle_pending()
         worker_command = ["dotnet", str(root / "worker" / "FlorisDeV.BackupWorker.dll")]
         worker_environment = server_env(worker_http, worker_grpc, worker_port)
         worker = start(worker_command, "worker-first", worker_environment, root / "worker")
@@ -252,18 +314,28 @@ def main():
         assert Proxy.dropped_commit and retried["commitId"] == Proxy.dropped_commit, retried
         assert retried["outcome"] == "succeeded", retried
 
+        if smoke:
+            smoke.interrupted_recovery(Proxy, settings)
         settings["BackupClient"]["Restore"] = {"DeviceId": submitted["deviceId"], "DestinationPath": str(root / "restored"), "LogicalPaths": []}
         print("Restoring and verifying every plaintext SHA-256...", flush=True)
         client("restore", "restore")
         expected = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in (root / "source").iterdir()}
         actual = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in (root / "restored" / "fixture").iterdir()}
         assert expected == actual, "Restored contents or deletion results differ from the current source tree."
+        if smoke:
+            smoke.complete(settings)
         summary = {"passed": True, "restoredFiles": len(actual), "recoveredAttempts": completed["attemptCount"],
             "checks": ["pending outcome", "worker termination and restart", "expired lease recovery", "lost commit response",
                 "incremental update", "deletion", "encrypted restore", "plaintext SHA-256 verification"]}
         (root / "summary.json").write_text(json.dumps(summary, indent=2))
         print(json.dumps(summary), flush=True)
     finally:
+        cleanup_error = None
+        if smoke:
+            try:
+                smoke.cleanup()
+            except Exception as error:
+                cleanup_error = error
         if proxy:
             proxy.shutdown()
             proxy.server_close()
@@ -273,11 +345,13 @@ def main():
                 process.wait(timeout=10)
         for container in reversed(containers):
             with (root / "logs" / f"{container}.log").open("w") as output:
-                subprocess.run(["docker", "logs", container], stdout=output, stderr=subprocess.STDOUT)
-            subprocess.run(["docker", "rm", "-f", container], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.run(["docker", "logs", container], env=environment, stdout=output, stderr=subprocess.STDOUT)
+            subprocess.run(["docker", "rm", "-f", container], env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for handle in handles:
             handle.close()
         print(f"Recovery test artifacts: {root}", flush=True)
+        if cleanup_error:
+            raise cleanup_error
 
 
 if __name__ == "__main__":

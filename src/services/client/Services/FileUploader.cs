@@ -78,6 +78,7 @@ public partial class FileUploader(
         // Use thread-safe collections for tracking without locks
         var uploadedFiles = new ConcurrentBag<TaggedFile>();
         var sasExpiredFiles = new ConcurrentBag<TaggedFile>();
+        var failedFiles = new ConcurrentBag<TaggedFile>();
         var otherFailureCount = 0;
         var uploadedCount = 0;
         using var throttler = new SemaphoreSlim(_options.MaxParallelUploads, _options.MaxParallelUploads);
@@ -111,6 +112,7 @@ public partial class FileUploader(
                 else
                 {
                     Interlocked.Increment(ref otherFailureCount);
+                    failedFiles.Add(taggedFile);
                 }
             }
             finally
@@ -131,7 +133,7 @@ public partial class FileUploader(
             LogUploadComplete(files.Count);
         }
 
-        return new UploadBatchResult(uploadedFiles.ToList(), sasExpiredFiles.ToList(), otherFailureCount);
+        return new UploadBatchResult(uploadedFiles.ToList(), sasExpiredFiles.ToList(), otherFailureCount) { FailedFiles = failedFiles.ToList() };
     }
 
     /// <summary>

@@ -101,3 +101,72 @@ Then open the combined Swagger UI at `http://localhost:8200/swagger`. Local API 
 ## CI
 
 `.github/workflows/deploy.yml` calls `bash scripts/verify.sh` for CI, with full logs retained in collapsed job-log groups. The main-branch deployment jobs retain their separate infrastructure validation and deployment steps. `.github/workflows/recovery-tests.yml` runs the container-based recovery check independently.
+
+## Installed companion with real systemd
+
+The complete Linux demonstration uses the same genuine recovery harness with
+fresh client/API/worker publications, synthetic targets, Azurite, Dapr, and the
+actual systemd user manager. It requires Docker access and a running user
+session; it never starts or changes the installed `backup-client` units.
+
+```bash
+python3 scripts/run-recovery-e2e.py --dashboard-smoke --single-file-client \
+  --prepare-only --artifacts /tmp/stowhaven-dashboard-check
+```
+
+Use a new artifact directory. Preparation writes private binaries/configuration,
+a hash-bound single-file capability manifest, `preflight.json`, explicit unit
+files and an environment-scrubbing launcher. Inspect the exact paths, loopback
+endpoints, synthetic targets, unique compile-time user-secrets identity, unique
+unit/container/app IDs and persistent link ownership before running:
+
+```bash
+python3 scripts/run-recovery-e2e.py --dashboard-smoke --single-file-client \
+  --resume-prepared --artifacts /tmp/stowhaven-dashboard-check
+```
+
+Wait for `ready-for-browser` in the artifact directory. In another terminal,
+load `environment.json` into the installed open command's environment (rather
+than inheriting backup/authentication configuration), and open its local secret
+grant without logging or capturing it. The exact `<prefix>-open-dashboard`
+command is under the artifact directory's `bin`; the prefix is in `preflight.json`.
+Use its `--print-url` option when opening manually on the same machine.
+
+Authorize the browser, inspect idle scheduling/history/log controls, click
+**Start backup**, observe the active attempt, and reload the tab. The harness
+holds only its own local proxy's first start-run request, before forwarding it,
+so the real client remains active. After that browser check, create
+`browser-check-complete` in the artifact directory. The browser gate lasts at
+most four minutes and the held request at most two minutes after Start.
+
+The harness verifies actual persistent timer enablement and activation,
+HTTP/manual CLI/timer contention, execution receipts matching the manager's
+real invocation, and disabling/removing/reinstalling the companion during active
+and pending work. It then runs the genuine server/worker recovery, lost-response,
+local-completion and encrypted-restore checks; kills/restarts the real client;
+preserves unsupported newer reporting through reader/producer restarts; rejects
+resident scheduling; and diagnoses an actually unavailable test bus without
+stopping the user's manager. A separately launched observer for the unavailable
+bus is an owned child using the same private publication.
+
+Finally it stops only manifest-owned units, removes only exact matching test
+links, reloads the manager, removes only its own containers and kills only its
+own children. SIGINT, SIGTERM and exceptions enter cleanup. Artifacts remain
+private; `summary.json`, `dashboard-summary.json`, `dashboard-cleanup.json` and
+the browser check provide evidence. Do not publish private configuration, raw
+logs, recovery material or authorization grants. If execution fails after a
+backup starts, preserve the artifacts and prepare a fresh directory for the next
+complete run; its pending state refers to the discarded synthetic emulator.
+
+Focused installer checks use synthetic command fixtures and a real read-only
+systemd unit parser; they do not establish genuine manager lifecycle behavior:
+
+```bash
+python3 -m unittest discover -s tests/deployment -p test_client_installation.py
+```
+
+Existing dashboard tests separately verify retained history, diagnostic bounds,
+redaction, authorization expiry, stale/interrupted observations and freshness
+with controlled time. Run them and the shared `scripts/verify.sh` alongside this
+real-system demonstration. The standalone recovery command remains available
+without systemd or browser interaction.

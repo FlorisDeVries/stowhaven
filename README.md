@@ -220,6 +220,14 @@ Copy the resulting folder to the target machine. Before publishing a client for 
 ./install.sh
 ```
 
+The optional local dashboard is installed only when requested with
+`./install.sh --with-dashboard`. For an existing configured client, enable its
+private reporting configuration and use `./install.sh --dashboard-only` to
+install or upgrade only the independent companion. Open it with
+`backup-client-open-dashboard`. [Dashboard installation and operations](doc/LOCAL_DASHBOARD.md)
+cover authorization, idle access, upgrades/rollback, disabling/removing only the
+companion, custom installation directories and troubleshooting.
+
 Re-running `install.sh` later (e.g. after publishing an updated build) updates the installed files and timer units in place without touching your saved backup targets (`appsettings.local.json` isn't part of the publish output, so it's never overwritten). Override the daily run time with `BACKUP_CLIENT_SCHEDULE_TIME=03:30:00 ./install.sh`. If systemd isn't reachable (no user session — common under WSL/containers), the installer writes the unit files anyway and prints the manual `systemctl --user enable --now` command to run once one is available.
 
 **Windows**: copy the published folder wherever you like (e.g. `C:\Tools\BackupClient`) and run setup once, interactively:
