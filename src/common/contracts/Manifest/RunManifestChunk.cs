@@ -27,6 +27,13 @@ public sealed record RunManifestHeader
     /// <summary>Maximum number of entries stored in each chunk document (v2+ only).</summary>
     public int ChunkSize { get; init; }
 
+    /// <summary>
+    /// ETag of the run-manifest blob the chunks were written from. A commit retry whose manifest blob
+    /// still has this ETag can reuse the persisted chunks instead of rewriting them. Null for headers
+    /// written before this was recorded, which are always rewritten.
+    /// </summary>
+    public string? SourceETag { get; init; }
+
     /// <summary>Legacy inline file entries; present only for v1 manifests.</summary>
     public List<ManifestFileEntry>? Files { get; init; }
 

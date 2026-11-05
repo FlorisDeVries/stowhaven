@@ -689,6 +689,10 @@ public partial class BackupProcessingService(
     /// Streams the manifest into chunked storage, reporting whether it was persisted along with the
     /// entry counts the caller needs for progress reporting. When persistence fails the counts are
     /// still established with a read-only pass, so an otherwise-valid run can continue.
+    ///
+    /// A retry reuses chunks an earlier attempt already persisted from the same manifest blob: the
+    /// header is written last, so its presence means every chunk exists, and its recorded blob ETag
+    /// proves the entries are the ones a resumed run would otherwise rewrite unchanged.
     /// </summary>
     private async Task<(bool Persisted, int FileCount, int DeletedCount)> TryPersistRunManifestAsync(
         Guid deviceId,
@@ -696,10 +700,32 @@ public partial class BackupProcessingService(
         string manifestPath,
         CancellationToken cancellationToken)
     {
+        string? sourceETag = null;
+        try
+        {
+            var containerClient = await blobStorageService.GetContainerClientAsync(cancellationToken);
+            var properties = await containerClient.GetBlobClient(manifestPath)
+                .GetPropertiesAsync(cancellationToken: cancellationToken);
+            sourceETag = properties.Value.ETag.ToString();
+
+            var header = await manifestManager.GetRunManifestHeaderAsync(deviceId, runId, cancellationToken);
+            if (header is { SchemaVersion: >= RunManifestHeader.ChunkedSchemaVersion } &&
+                string.Equals(header.SourceETag, sourceETag, StringComparison.Ordinal))
+            {
+                LogRunManifestReused(logger, deviceId, runId, header.FileCount, header.DeletedCount);
+                return (true, header.FileCount, header.DeletedCount);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Reuse is an optimisation; any doubt falls back to rewriting the chunks.
+            LogRunManifestReuseCheckFailed(logger, deviceId, runId, ex);
+        }
+
         try
         {
             var (fileCount, deletedCount) = await manifestManager.SaveRunManifestAsync(
-                deviceId, runId, StreamManifestAsync(manifestPath, cancellationToken), cancellationToken);
+                deviceId, runId, StreamManifestAsync(manifestPath, cancellationToken), sourceETag, cancellationToken);
 
             return (true, fileCount, deletedCount);
         }
@@ -857,6 +883,12 @@ public partial class BackupProcessingService(
 
     [LoggerMessage(LogLevel.Warning, "Failed to persist manifest cache for run {runId} device {deviceId}; continuing with blob copy as source of truth.")]
     static partial void LogRunManifestPersistFailed(ILogger logger, Guid deviceId, Guid runId, Exception exception);
+
+    [LoggerMessage(LogLevel.Information, "Reusing run manifest already persisted from the same blob for run {runId} device {deviceId} ({fileCount} files, {deletedCount} deletions).")]
+    static partial void LogRunManifestReused(ILogger logger, Guid deviceId, Guid runId, int fileCount, int deletedCount);
+
+    [LoggerMessage(LogLevel.Warning, "Could not check for a reusable run manifest for run {runId} device {deviceId}; rewriting it.")]
+    static partial void LogRunManifestReuseCheckFailed(ILogger logger, Guid deviceId, Guid runId, Exception exception);
 
     [LoggerMessage(LogLevel.Warning, "Skipped file '{logicalPath}' in run {runId} device {deviceId}: {reason}. It will be re-detected and retried on the next backup.")]
     static partial void LogStagedBlobSkipped(ILogger logger, Guid deviceId, Guid runId, string logicalPath, string reason);

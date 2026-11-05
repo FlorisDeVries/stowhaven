@@ -118,8 +118,8 @@ public partial class BackupProcessingServiceTests
         var releaseManifest = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var renewed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         _manifestManagerMock.Setup(x => x.SaveRunManifestAsync(device, run,
-                It.IsAny<IAsyncEnumerable<FlorisDeV.BackupApi.Services.RunManifestStreamItem>>(), It.IsAny<CancellationToken>()))
-            .Returns(async (Guid _, Guid _, IAsyncEnumerable<FlorisDeV.BackupApi.Services.RunManifestStreamItem> _, CancellationToken token) =>
+                It.IsAny<IAsyncEnumerable<FlorisDeV.BackupApi.Services.RunManifestStreamItem>>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .Returns(async (Guid _, Guid _, IAsyncEnumerable<FlorisDeV.BackupApi.Services.RunManifestStreamItem> _, string? _, CancellationToken token) =>
             {
                 await releaseManifest.Task.WaitAsync(token);
                 return (0, 0);
@@ -159,8 +159,8 @@ public partial class BackupProcessingServiceTests
         SetupBackupRun(device, run);
         SetupManifestDownload(CreateManifest(device, run, [], []));
         _manifestManagerMock.Setup(x => x.SaveRunManifestAsync(device, run,
-                It.IsAny<IAsyncEnumerable<FlorisDeV.BackupApi.Services.RunManifestStreamItem>>(), It.IsAny<CancellationToken>()))
-            .Returns(async (Guid _, Guid _, IAsyncEnumerable<FlorisDeV.BackupApi.Services.RunManifestStreamItem> _, CancellationToken token) =>
+                It.IsAny<IAsyncEnumerable<FlorisDeV.BackupApi.Services.RunManifestStreamItem>>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .Returns(async (Guid _, Guid _, IAsyncEnumerable<FlorisDeV.BackupApi.Services.RunManifestStreamItem> _, string? _, CancellationToken token) =>
             {
                 await Task.Delay(Timeout.InfiniteTimeSpan, token);
                 return (0, 0);
