@@ -139,11 +139,19 @@
 # var/cache/**
 # var/log/**
 
-# Unix user-level installs (reinstallable; app data lives elsewhere, e.g. ~/.var/app)
+# Unix user-level installs (reinstallable; app data and settings live elsewhere, e.g.
+# ~/.var/app, ~/.config/JetBrains, ~/.dotnet/corefx certificate stores)
 **/.local/share/flatpak/**
 **/.local/share/gem/**
 **/.local/share/uv/**
 **/.local/share/NuGet/**
+**/.local/share/JetBrains/**
+**/.dotnet/sdk/**
+**/.dotnet/sdk-manifests/**
+**/.dotnet/shared/**
+**/.dotnet/packs/**
+**/.dotnet/host/**
+**/.dotnet/templates/**
 
 # Unix user caches
 **/.local/share/Trash/**

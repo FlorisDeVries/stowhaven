@@ -97,6 +97,12 @@ public sealed class DefaultBackupIgnoreTests : IDisposable
             ".local/share/Steam/appcache/httpcache/00/entry",
             ".config/Code/WebStorage/1/CacheStorage/abc/0",
             ".Trash-1000/files/old-project/readme.md",
+            ".local/share/JetBrains/Toolbox/apps/rider/lib/app.jar",
+            ".local/share/JetBrains/Rider2025.3/GdScript/api.json",
+            ".dotnet/sdk/10.0.201/dotnet.dll",
+            ".dotnet/shared/Microsoft.NETCore.App/10.0.5/System.Runtime.dll",
+            ".dotnet/corefx/cryptography/x509stores/my/cert.pfx",
+            ".config/JetBrains/Rider2025.3/options/editor.xml",
             ".var/app/org.prismlauncher.PrismLauncher/data/instances/world/level.dat",
             ".local/share/Steam/userdata/123/config/localconfig.vdf",
             ".config/Code/User/settings.json");
@@ -104,7 +110,9 @@ public sealed class DefaultBackupIgnoreTests : IDisposable
         included.Should().BeEquivalentTo(
             ".var/app/org.prismlauncher.PrismLauncher/data/instances/world/level.dat",
             ".local/share/Steam/userdata/123/config/localconfig.vdf",
-            ".config/Code/User/settings.json");
+            ".config/Code/User/settings.json",
+            ".dotnet/corefx/cryptography/x509stores/my/cert.pfx",
+            ".config/JetBrains/Rider2025.3/options/editor.xml");
     }
 
     private async Task<List<string>> ScanAsync(params string[] relativePaths)
