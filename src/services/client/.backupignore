@@ -5,7 +5,7 @@
 #
 # NOTE: This is a sensible default for developer workstations.
 # For servers/production systems:
-#   - Consider keeping log files (comment out **/*.log and var/log/**)
+#   - Consider keeping log files (comment out **/*.log)
 #   - Remove Windows/Program Files exclusions if needed
 #   - Customize based on your specific backup requirements
 
@@ -39,7 +39,8 @@
 **/node_modules/**
 **/bower_components/**
 **/.nuget/**
-**/packages/**
+# Not "**/packages/**": matching is case-insensitive, so it also dropped Unity's
+# Packages/ (manifest, embedded packages) and any Assets/Packages source folder.
 **/__pycache__/**
 **/venv/**
 **/virtualenv/**
@@ -97,7 +98,8 @@
 # ===== Crash Dumps & Diagnostics =====
 **/*.dmp
 **/*.stackdump
-**/core
+# Not "**/core": an excluded directory is skipped whole, so it hid every source
+# folder named core/Core. Linux crash dumps go to systemd-coredump nowadays.
 **/hs_err_pid*.log
 
 # ===== Windows Specific =====
@@ -124,21 +126,31 @@
 **/AppData/Local/Microsoft/Edge/User Data/*/Cache/**
 
 # ===== Unix/Linux/macOS Specific =====
-# System directories (if backing up from root)
-proc/**
-sys/**
-dev/**
-run/**
-tmp/**
-var/tmp/**
-var/cache/**
-var/log/**
+# System directories: ONLY for a target whose root is "/". Patterns with a path are
+# anchored to the target root, so active here they would exclude a target's own
+# "dev", "run" or "tmp" folder (for example ~/projects/dev). For a "/" target, copy
+# these into that target's .backupignore without the leading "# ".
+# proc/**
+# sys/**
+# dev/**
+# run/**
+# tmp/**
+# var/tmp/**
+# var/cache/**
+# var/log/**
+
+# Unix user-level installs (reinstallable; app data lives elsewhere, e.g. ~/.var/app)
+**/.local/share/flatpak/**
+**/.local/share/gem/**
+**/.local/share/uv/**
+**/.local/share/NuGet/**
 
 # Unix user caches
 **/.local/share/Trash/**
 **/Library/Caches/**
 **/Library/Logs/**
 **/.Trash/**
+**/.Trash-*/**
 
 # Browser caches (Unix)
 **/.mozilla/firefox/*/cache2/**
@@ -158,6 +170,7 @@ var/log/**
 **/component_crx_cache/**
 **/Service Worker/CacheStorage/**
 **/Service Worker/ScriptCache/**
+**/CacheStorage/**
 
 # ===== Cloud Sync Temporary Files =====
 **/*.icloud
@@ -190,6 +203,7 @@ var/log/**
 **/Steam/dumps/**
 # Shader & pipeline caches
 **/.local/share/Steam/steamapps/shadercache/**
+**/.local/share/Steam/appcache/**
 **/AppData/Local/D3DSCache/**
 **/AppData/Local/NvidiaCoreDumps/**
 **/AppData/LocalLow/NVIDIA/PerDriverVersion/**
@@ -216,6 +230,27 @@ var/log/**
 # Heroic Games Launcher (Linux)
 **/.config/heroic/GamesConfig/**
 **/.var/app/com.heroicgameslauncher.hgl/**
+
+# ===== Game Engines =====
+# Unity regenerates Library/ from Assets/ and Packages/; it is usually 70-90% of a
+# project's files. Only Unity-specific subfolders are listed so a macOS ~/Library
+# (Application Support, Mobile Documents, ...) is still backed up.
+**/Library/PackageCache/**
+**/Library/Artifacts/**
+**/Library/ShaderCache/**
+**/Library/Bee/**
+**/Library/BurstCache/**
+**/Library/ScriptAssemblies/**
+**/Library/APIUpdater/**
+**/Library/StateCache/**
+**/Library/PlayerDataCache/**
+**/Library/il2cpp_cache/**
+**/Library/RiderFlow/**
+**/Library/ArtifactDB
+**/Library/ArtifactDB-lock
+**/Library/SourceAssetDB
+**/Library/SourceAssetDB-lock
+**/Library/ShaderCache.db
 
 # ===== AI / CLI Developer Tools =====
 # Transient temp/cache dirs from AI coding assistants and CLI tools.
