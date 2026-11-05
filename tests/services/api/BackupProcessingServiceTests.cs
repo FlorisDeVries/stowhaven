@@ -804,6 +804,32 @@ public partial class BackupProcessingServiceTests
             Times.AtLeastOnce);
     }
 
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task ProcessBackupRunAsync_CosmosThrottling_IsRecordedAsTransientStorage()
+    {
+        var deviceId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var commitId = Guid.NewGuid();
+        SetupQueuedCommitJob(commitId, deviceId, runId);
+        _manifestManagerMock
+            .Setup(x => x.GetBackupRunAsync(deviceId, runId, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new Microsoft.Azure.Cosmos.CosmosException(
+                "Request rate is large.", System.Net.HttpStatusCode.TooManyRequests, 3200, "activity", 0.38));
+
+        var act = async () => await _sut.ProcessBackupRunAsync(CreateBackupEvent(deviceId, runId, commitId));
+
+        await act.Should().ThrowAsync<Microsoft.Azure.Cosmos.CosmosException>();
+        _manifestManagerMock.Verify(
+            x => x.UpdateCommitJobAsync(
+                It.Is<CommitJob>(job =>
+                    job.Status == CommitJobStatus.Failed &&
+                    job.FailureCategory == "TransientStorage" &&
+                    job.NextRetryAt != null),
+                It.IsAny<CancellationToken>()),
+            Times.AtLeastOnce);
+    }
+
     #endregion
 
     #region Helper Methods

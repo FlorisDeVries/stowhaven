@@ -411,6 +411,7 @@ public partial class BackupProcessingService(
             JsonException => "ManifestInvalid",
             StagedBlobValidationException => "StagedBlobInvalid",
             RequestFailedException requestFailedException when requestFailedException.Status is 408 or 429 or >= 500 => "TransientStorage",
+            Microsoft.Azure.Cosmos.CosmosException cosmosException when (int)cosmosException.StatusCode is 408 or 429 or >= 500 => "TransientStorage",
             RequestFailedException requestFailedException when requestFailedException.Status is 404 => "MissingBlob",
             InvalidOperationException invalidOperationException when invalidOperationException.Message.Contains("manifest", StringComparison.OrdinalIgnoreCase) => "ManifestInvalid",
             InvalidOperationException invalidOperationException when invalidOperationException.Message.Contains("Staged blob", StringComparison.OrdinalIgnoreCase) => "StagedBlobInvalid",

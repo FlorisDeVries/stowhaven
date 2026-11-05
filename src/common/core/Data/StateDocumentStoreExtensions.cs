@@ -23,6 +23,12 @@ public sealed class StateDocumentStoreOptions
         public string DatabaseName { get; set; } = "backup-state";
         public string ManifestContainerName { get; set; } = "manifest-state";
         public string DeviceRegistryContainerName { get; set; } = "device-registry";
+
+        /// <summary>
+        /// Cumulative time a throttled (429) request keeps backing off before the error propagates.
+        /// Keep it below the commit lease duration so a throttled heartbeat cannot outlive its lease.
+        /// </summary>
+        public int ThrottleRetryBudgetSeconds { get; set; } = 60;
     }
 
     public sealed class SqliteStoreOptions
@@ -80,17 +86,24 @@ public static class StateDocumentStoreExtensions
                     UseSystemTextJsonSerializerWithOptions = SerializerOptions
                 }));
 
+            var throttleRetryPolicy = new CosmosThrottleRetryPolicy
+            {
+                Budget = TimeSpan.FromSeconds(Math.Max(0, options.Cosmos.ThrottleRetryBudgetSeconds))
+            };
+
             builder.Services.AddKeyedSingleton<IStateDocumentStore>(StateStores.Manifest, (sp, _) =>
                 new CosmosStateDocumentStore(
                     sp.GetRequiredService<CosmosClient>()
                         .GetContainer(options.Cosmos.DatabaseName, options.Cosmos.ManifestContainerName),
-                    SerializerOptions));
+                    SerializerOptions,
+                    throttleRetryPolicy));
 
             builder.Services.AddKeyedSingleton<IStateDocumentStore>(StateStores.DeviceRegistry, (sp, _) =>
                 new CosmosStateDocumentStore(
                     sp.GetRequiredService<CosmosClient>()
                         .GetContainer(options.Cosmos.DatabaseName, options.Cosmos.DeviceRegistryContainerName),
-                    SerializerOptions));
+                    SerializerOptions,
+                    throttleRetryPolicy));
         }
     }
 }
