@@ -86,6 +86,10 @@ public partial class BlobStorageService(
     private DataLakeUserDelegationKey? _cachedDataLakeDelegationKey;
     private DateTimeOffset _dataLakeDelegationKeyExpiresAt;
 
+    // Set once the account rejects index tags as unsupported (HNS without blob-index support),
+    // so later moves stop paying for a request that cannot succeed.
+    private volatile bool _indexTagsUnsupported;
+
     public async Task<BlobServiceClient> GetBlobServiceClientAsync(CancellationToken cancellationToken = default)
     {
         if (_blobServiceClient != null)
@@ -322,13 +326,7 @@ public partial class BlobStorageService(
                 await RenameCreatingParentIfMissingAsync(
                     fileSystemClient, sourceFileClient, destinationBlobName, cancellationToken);
 
-                // Set blob index tags if provided (after rename)
-                if (tags != null && tags.Count > 0)
-                {
-                    var destBlobClient = containerClient.GetBlobClient(destinationBlobName);
-                    await destBlobClient.SetTagsAsync(tags, cancellationToken: cancellationToken);
-                }
-
+                await ApplyIndexTagsAsync(destinationBlobClient, tags, cancellationToken);
                 return;
             }
             catch (RequestFailedException ex) when (IsSourceMissing(ex))
@@ -373,10 +371,45 @@ public partial class BlobStorageService(
 
         await sourceBlobClient.DeleteIfExistsAsync(cancellationToken: cancellationToken);
 
-        // Set blob index tags if provided
-        if (tags != null && tags.Count > 0)
+        await ApplyIndexTagsAsync(destinationBlobClient, tags, cancellationToken);
+    }
+
+    private async Task ApplyIndexTagsAsync(BlobClient destination, Dictionary<string, string>? tags,
+        CancellationToken cancellationToken)
+    {
+        if (tags is not { Count: > 0 } || _indexTagsUnsupported)
         {
-            await destinationBlobClient.SetTagsAsync(tags, cancellationToken: cancellationToken);
+            return;
+        }
+
+        if (!await TrySetIndexTagsAsync(destination, tags, logger, cancellationToken))
+        {
+            _indexTagsUnsupported = true;
+        }
+    }
+
+    /// <summary>
+    /// Applies blob index tags to a blob that has already been moved. Tags only steer lifecycle
+    /// rules, so a failure is logged rather than reported as a failed move: the data is in place.
+    /// Returns false when the account cannot store index tags at all, so the caller can stop trying.
+    /// </summary>
+    internal static async Task<bool> TrySetIndexTagsAsync(BlobClient destination, IDictionary<string, string> tags,
+        ILogger logger, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await destination.SetTagsAsync(tags, cancellationToken: cancellationToken);
+            return true;
+        }
+        catch (RequestFailedException ex) when (ex.ErrorCode == "FeatureNotEnabled")
+        {
+            LogIndexTagsUnsupported(logger, ex.Message);
+            return false;
+        }
+        catch (RequestFailedException ex)
+        {
+            LogIndexTagWriteFailed(logger, destination.Name, ex.Status, ex.ErrorCode);
+            return true;
         }
     }
 
@@ -448,6 +481,12 @@ public partial class BlobStorageService(
     }
 
     #region Logging
+
+    [LoggerMessage(LogLevel.Warning, "Blob index tags are not supported on this storage account ({reason}); moved blobs are left untagged and tag-filtered lifecycle rules will not match them.")]
+    static partial void LogIndexTagsUnsupported(ILogger logger, string reason);
+
+    [LoggerMessage(LogLevel.Warning, "Could not tag moved blob {blobName} ({status} {errorCode}); it stays in place untagged.")]
+    static partial void LogIndexTagWriteFailed(ILogger logger, string blobName, int status, string? errorCode);
 
     [LoggerMessage(LogLevel.Information, "Initializing blob service client for Azurite (local dev) - Account: {storageAccount}")]
     static partial void LogInitializingAzurite(ILogger logger, string storageAccount);
