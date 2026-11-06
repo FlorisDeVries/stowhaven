@@ -24,10 +24,10 @@ param gatewayAuthClientSecret = ''
 param gatewayAuthAllowedAudiences = []
 param cosmosAccountName = 'cosmos-stowhaven-weu-dev'
 param cosmosDatabaseName = 'backup-state'
-// 3000 keeps large commits from saturating the database while staying below the account's
-// 4000 RU/s guardrail. Each region bills separately: with 2 regions the 300 RU/s idle floor
-// (600 total) stays inside the free tier's 1000 RU/s; only hours a commit scales up are billed.
-param cosmosDatabaseAutoscaleMaxThroughput = 3000
+// The account's 4000 RU/s totalThroughputLimit counts this ceiling once per region, so with
+// 2 regions 2000 is the most it allows (3000 was rejected as 6000 RU/s). The 200 RU/s idle floor
+// (400 total) stays inside the free tier's 1000 RU/s; only hours a commit scales up are billed.
+param cosmosDatabaseAutoscaleMaxThroughput = 2000
 param cosmosManifestContainerName = 'manifest-state'
 param cosmosDeviceRegistryContainerName = 'device-registry'
 param daprAzureClientId = ''
