@@ -46,6 +46,29 @@ public sealed partial class ManifestManagerConcurrencyTests : IDisposable
 
     [Fact]
     [Trait("Category", "Unit")]
+    public async Task SaveRunManifestAsync_RecordsTheSourceBlobETagOnTheHeader()
+    {
+        var deviceId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+
+        await _service.SaveRunManifestAsync(deviceId, runId, Entries(), "\"0x8DE1C0FFEE\"");
+
+        var header = await _service.GetRunManifestHeaderAsync(deviceId, runId);
+        Assert.NotNull(header);
+        Assert.Equal("\"0x8DE1C0FFEE\"", header.SourceETag);
+        Assert.Equal(1, header.FileCount);
+        Assert.Equal(1, header.DeletedCount);
+
+        static async IAsyncEnumerable<FlorisDeV.BackupApi.Services.RunManifestStreamItem> Entries()
+        {
+            await Task.Yield();
+            yield return new(new ManifestFileEntry { RelativePath = "a.txt", UniqueFileId = "uid-a", Sha256 = "sha", Size = 1, Mtime = DateTimeOffset.UnixEpoch }, null);
+            yield return new(null, "gone.txt");
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "Unit")]
     public async Task CommitBackupRunAsync_QueuedRun_SuccessfullyCommits()
     {
         var deviceId = Guid.NewGuid();

@@ -229,6 +229,21 @@ resource cosmosDatabase 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases@2024
   }
 }
 
+// The database's options only take effect when it is created. Declaring the throughput
+// resource as well makes a changed cosmosDatabaseAutoscaleMaxThroughput reach an existing
+// database on the next deployment, the same call `az cosmosdb sql database throughput update` makes.
+resource cosmosDatabaseThroughput 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/throughputSettings@2024-05-15' = {
+  parent: cosmosDatabase
+  name: 'default'
+  properties: {
+    resource: {
+      autoscaleSettings: {
+        maxThroughput: cosmosDatabaseAutoscaleMaxThroughput
+      }
+    }
+  }
+}
+
 resource cosmosManifestContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2024-05-15' = {
   parent: cosmosDatabase
   name: cosmosManifestContainerName

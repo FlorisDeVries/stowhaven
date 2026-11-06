@@ -10,18 +10,29 @@ namespace FlorisDeV.BackupApi.Data;
 /// Documents are stored in an envelope { id, partitionKey, type, sortKey, sortValue, data }
 /// in a container partitioned on /partitionKey. Enumeration uses native Cosmos queries
 /// with server-side continuation tokens.
+///
+/// Every request is retried with backoff while Cosmos throttles it (429), within the
+/// <see cref="CosmosThrottleRetryPolicy"/> budget. The SDK's own rate-limit retries honour the
+/// server's retry-after hint, which under RU-budget exhaustion can be a few milliseconds, so a
+/// saturated database used to exhaust them in well under a second and fail long commits outright.
+/// A throttled request made no changes, so retrying is safe even for ETag-conditioned writes.
 /// </summary>
-public sealed class CosmosStateDocumentStore(Container container, JsonSerializerOptions serializerOptions) : IStateDocumentStore
+public sealed class CosmosStateDocumentStore(
+    Container container,
+    JsonSerializerOptions serializerOptions,
+    CosmosThrottleRetryPolicy? throttleRetryPolicy = null) : IStateDocumentStore
 {
+    private readonly CosmosThrottleRetryPolicy _throttleRetry = throttleRetryPolicy ?? new CosmosThrottleRetryPolicy();
+
     public async Task<StateDocument<T>?> GetAsync<T>(string type, string partitionKey, string id,
         CancellationToken cancellationToken = default)
     {
         try
         {
-            var response = await container.ReadItemAsync<CosmosStateDocument>(
+            var response = await WithThrottleRetryAsync(() => container.ReadItemAsync<CosmosStateDocument>(
                 BuildDocumentId(type, id),
                 new PartitionKey(partitionKey),
-                cancellationToken: cancellationToken);
+                cancellationToken: cancellationToken), cancellationToken);
 
             var data = response.Resource.Data.Deserialize<T>(serializerOptions)
                        ?? throw new InvalidOperationException($"Stored document {type} '{id}' could not be deserialized.");
@@ -38,20 +49,22 @@ public sealed class CosmosStateDocumentStore(Container container, JsonSerializer
         string? sortKey = null, long? sortValue = null, CancellationToken cancellationToken = default)
     {
         var document = CreateDocument(type, partitionKey, id, data, sortKey, sortValue);
-        await using var payload = new MemoryStream();
-        await JsonSerializer.SerializeAsync(payload, document, serializerOptions, cancellationToken);
-        payload.Position = 0;
-        using var response = await container.CreateItemStreamAsync(
-            payload, new PartitionKey(partitionKey), cancellationToken: cancellationToken);
+        var payload = JsonSerializer.SerializeToUtf8Bytes(document, serializerOptions);
 
-        if (response.StatusCode == HttpStatusCode.Conflict)
+        return await WithThrottleRetryAsync(async () =>
         {
-            return null;
-        }
+            using var response = await container.CreateItemStreamAsync(
+                new MemoryStream(payload, writable: false), new PartitionKey(partitionKey), cancellationToken: cancellationToken);
 
-        response.EnsureSuccessStatusCode();
-        return response.Headers.ETag
-               ?? throw new InvalidOperationException("Cosmos create response did not include an ETag.");
+            if (response.StatusCode == HttpStatusCode.Conflict)
+            {
+                return null;
+            }
+
+            response.EnsureSuccessStatusCode();
+            return response.Headers.ETag
+                   ?? throw new InvalidOperationException("Cosmos create response did not include an ETag.");
+        }, cancellationToken);
     }
 
     public async Task<string> UpsertAsync<T>(string type, string partitionKey, string id, T data,
@@ -62,11 +75,11 @@ public sealed class CosmosStateDocumentStore(Container container, JsonSerializer
 
         try
         {
-            var response = await container.UpsertItemAsync(
+            var response = await WithThrottleRetryAsync(() => container.UpsertItemAsync(
                 document,
                 new PartitionKey(partitionKey),
                 string.IsNullOrEmpty(etag) ? null : new ItemRequestOptions { IfMatchEtag = etag },
-                cancellationToken);
+                cancellationToken), cancellationToken);
 
             return response.ETag;
         }
@@ -81,10 +94,10 @@ public sealed class CosmosStateDocumentStore(Container container, JsonSerializer
     {
         try
         {
-            await container.DeleteItemAsync<CosmosStateDocument>(
+            await WithThrottleRetryAsync(() => container.DeleteItemAsync<CosmosStateDocument>(
                 BuildDocumentId(type, id),
                 new PartitionKey(partitionKey),
-                cancellationToken: cancellationToken);
+                cancellationToken: cancellationToken), cancellationToken);
         }
         catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
@@ -95,38 +108,15 @@ public sealed class CosmosStateDocumentStore(Container container, JsonSerializer
     public async Task<StateDocumentPage<T>> QueryAsync<T>(DocumentQuery query,
         CancellationToken cancellationToken = default)
     {
-        var queryDefinition = BuildQueryDefinition(query);
-        var requestOptions = new QueryRequestOptions
+        var (documents, nextContinuation) = await ReadFirstNonEmptyPageAsync<CosmosStateDocument>(
+            BuildQueryDefinition(query), query, cancellationToken);
+
+        var items = new List<StateDocument<T>>(documents.Count);
+        foreach (var document in documents)
         {
-            MaxItemCount = query.PageSize
-        };
-
-        if (!string.IsNullOrEmpty(query.PartitionKey))
-        {
-            requestOptions.PartitionKey = new PartitionKey(query.PartitionKey);
-        }
-
-        using var iterator = container.GetItemQueryIterator<CosmosStateDocument>(
-            queryDefinition,
-            string.IsNullOrWhiteSpace(query.ContinuationToken) ? null : query.ContinuationToken,
-            requestOptions);
-
-        var items = new List<StateDocument<T>>(query.PageSize);
-        string? nextContinuation = null;
-
-        // Cosmos may return empty result pages that still carry a continuation token;
-        // keep reading until the page holds data or the query is drained.
-        while (iterator.HasMoreResults && items.Count == 0)
-        {
-            var response = await iterator.ReadNextAsync(cancellationToken);
-            foreach (var document in response)
-            {
-                var data = document.Data.Deserialize<T>(serializerOptions)
-                           ?? throw new InvalidOperationException($"Stored document {document.Type} '{document.Id}' could not be deserialized.");
-                items.Add(new StateDocument<T>(data, document.ETag ?? string.Empty));
-            }
-
-            nextContinuation = response.ContinuationToken;
+            var data = document.Data.Deserialize<T>(serializerOptions)
+                       ?? throw new InvalidOperationException($"Stored document {document.Type} '{document.Id}' could not be deserialized.");
+            items.Add(new StateDocument<T>(data, document.ETag ?? string.Empty));
         }
 
         return new StateDocumentPage<T>(items, nextContinuation);
@@ -136,22 +126,77 @@ public sealed class CosmosStateDocumentStore(Container container, JsonSerializer
         CancellationToken cancellationToken = default)
     {
         ValidateFieldName(fieldName);
+        var (values, next) = await ReadFirstNonEmptyPageAsync<string>(
+            BuildQueryDefinition(query, fieldName), query, cancellationToken);
+        return new StateValuePage(values, next);
+    }
+
+    /// <summary>
+    /// Reads the query's next non-empty page. Cosmos may return empty result pages that still carry a
+    /// continuation token, so reading continues until a page holds data or the query is drained.
+    /// A throttled page read resumes from the last page boundary on a fresh iterator.
+    /// </summary>
+    private async Task<(List<TItem> Items, string? ContinuationToken)> ReadFirstNonEmptyPageAsync<TItem>(
+        QueryDefinition definition, DocumentQuery query, CancellationToken cancellationToken)
+    {
         var requestOptions = new QueryRequestOptions { MaxItemCount = query.PageSize };
         if (!string.IsNullOrEmpty(query.PartitionKey))
-            requestOptions.PartitionKey = new PartitionKey(query.PartitionKey);
-        using var iterator = container.GetItemQueryIterator<string>(
-            BuildQueryDefinition(query, fieldName),
-            string.IsNullOrWhiteSpace(query.ContinuationToken) ? null : query.ContinuationToken,
-            requestOptions);
-        var values = new List<string>(query.PageSize);
-        string? next = null;
-        while (iterator.HasMoreResults && values.Count == 0)
         {
-            var response = await iterator.ReadNextAsync(cancellationToken);
-            values.AddRange(response);
-            next = response.ContinuationToken;
+            requestOptions.PartitionKey = new PartitionKey(query.PartitionKey);
         }
-        return new StateValuePage(values, next);
+
+        var continuation = string.IsNullOrWhiteSpace(query.ContinuationToken) ? null : query.ContinuationToken;
+        var iterator = container.GetItemQueryIterator<TItem>(definition, continuation, requestOptions);
+        var items = new List<TItem>(query.PageSize);
+        string? nextContinuation = null;
+
+        try
+        {
+            while (iterator.HasMoreResults && items.Count == 0)
+            {
+                var response = await WithThrottleRetryAsync(async () =>
+                {
+                    try
+                    {
+                        return await iterator.ReadNextAsync(cancellationToken);
+                    }
+                    catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.TooManyRequests)
+                    {
+                        iterator.Dispose();
+                        iterator = container.GetItemQueryIterator<TItem>(definition, continuation, requestOptions);
+                        throw;
+                    }
+                }, cancellationToken);
+
+                items.AddRange(response);
+                continuation = nextContinuation = response.ContinuationToken;
+            }
+        }
+        finally
+        {
+            iterator.Dispose();
+        }
+
+        return (items, nextContinuation);
+    }
+
+    private async Task<TResult> WithThrottleRetryAsync<TResult>(Func<Task<TResult>> operation,
+        CancellationToken cancellationToken)
+    {
+        var waited = TimeSpan.Zero;
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                return await operation();
+            }
+            catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.TooManyRequests &&
+                                             _throttleRetry.TryGetDelay(attempt, ex.RetryAfter, waited, out var delay))
+            {
+                waited += delay;
+                await Task.Delay(delay, cancellationToken);
+            }
+        }
     }
 
     private static QueryDefinition BuildQueryDefinition(DocumentQuery query, string? distinctField = null)
@@ -222,7 +267,7 @@ public sealed class CosmosStateDocumentStore(Container container, JsonSerializer
         Data = JsonSerializer.SerializeToElement(data, serializerOptions)
     };
 
-    private sealed class CosmosStateDocument
+    internal sealed class CosmosStateDocument
     {
         public required string Id { get; set; }
         public required string PartitionKey { get; set; }
@@ -232,5 +277,27 @@ public sealed class CosmosStateDocumentStore(Container container, JsonSerializer
         public required JsonElement Data { get; set; }
         [System.Text.Json.Serialization.JsonPropertyName("_etag")]
         public string? ETag { get; set; }
+    }
+}
+
+/// <summary>
+/// Backoff for requests Cosmos throttles after the SDK's own rate-limit retries are exhausted.
+/// Delays grow exponentially from <see cref="InitialDelay"/> to <see cref="MaxDelay"/>, never shorter
+/// than the server's retry-after hint, and are jittered so concurrent writers do not retry in lockstep.
+/// Once the cumulative wait would exceed <see cref="Budget"/> the 429 propagates to the caller.
+/// </summary>
+public sealed record CosmosThrottleRetryPolicy
+{
+    public TimeSpan InitialDelay { get; init; } = TimeSpan.FromMilliseconds(250);
+    public TimeSpan MaxDelay { get; init; } = TimeSpan.FromSeconds(5);
+    public TimeSpan Budget { get; init; } = TimeSpan.FromSeconds(60);
+
+    internal bool TryGetDelay(int attempt, TimeSpan? retryAfter, TimeSpan waited, out TimeSpan delay)
+    {
+        var backoff = TimeSpan.FromTicks((long)Math.Min(
+            MaxDelay.Ticks, InitialDelay.Ticks * Math.Pow(2, Math.Min(attempt, 30))));
+        var jittered = backoff * (0.5 + Random.Shared.NextDouble() / 2);
+        delay = retryAfter is { } hint && hint > jittered ? hint : jittered;
+        return delay > TimeSpan.Zero && waited + delay <= Budget;
     }
 }

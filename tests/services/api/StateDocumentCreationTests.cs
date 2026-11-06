@@ -100,7 +100,6 @@ public class CosmosStateDocumentCreationTests
     [Theory]
     [InlineData(HttpStatusCode.BadRequest)]
     [InlineData(HttpStatusCode.Forbidden)]
-    [InlineData(HttpStatusCode.TooManyRequests)]
     [InlineData(HttpStatusCode.ServiceUnavailable)]
     public async Task TryCreate_OtherFailuresPropagate(HttpStatusCode status)
     {

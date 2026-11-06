@@ -156,7 +156,7 @@ public partial class ManifestManager
     private const int RunManifestChunkSize = 500;
 
     public Task SaveRunManifestAsync(Guid deviceId, Guid runId, RunManifest manifest, CancellationToken cancellationToken = default)
-        => SaveRunManifestAsync(deviceId, runId, ToStream(manifest), cancellationToken);
+        => SaveRunManifestAsync(deviceId, runId, ToStream(manifest), cancellationToken: cancellationToken);
 
     private static async IAsyncEnumerable<RunManifestStreamItem> ToStream(RunManifest manifest)
     {
@@ -177,6 +177,7 @@ public partial class ManifestManager
         Guid deviceId,
         Guid runId,
         IAsyncEnumerable<RunManifestStreamItem> items,
+        string? sourceETag = null,
         CancellationToken cancellationToken = default)
     {
         // Split the manifest across small chunk documents so a run with many files never produces a
@@ -226,7 +227,8 @@ public partial class ManifestManager
             FileCount = fileCount,
             DeletedCount = deletedCount,
             ChunkCount = chunkIndex,
-            ChunkSize = RunManifestChunkSize
+            ChunkSize = RunManifestChunkSize,
+            SourceETag = sourceETag
         };
 
         await store.UpsertAsync(

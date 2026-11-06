@@ -22,12 +22,14 @@ public interface IManifestManager
     /// <summary>
     /// Persists a run manifest from a stream of entries, filling and writing chunk documents as they
     /// arrive so a manifest with hundreds of thousands of entries never has to be held in memory.
-    /// Returns the file and deletion counts observed.
+    /// Returns the file and deletion counts observed. <paramref name="sourceETag"/> identifies the
+    /// manifest blob the entries were read from and is recorded on the header.
     /// </summary>
     Task<(int FileCount, int DeletedCount)> SaveRunManifestAsync(
         Guid deviceId,
         Guid runId,
         IAsyncEnumerable<RunManifestStreamItem> items,
+        string? sourceETag = null,
         CancellationToken cancellationToken = default);
 
     /// <summary>

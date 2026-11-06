@@ -804,6 +804,84 @@ public partial class BackupProcessingServiceTests
             Times.AtLeastOnce);
     }
 
+    [Fact]
+    [Trait("Category", "Unit")]
+    public async Task ProcessBackupRunAsync_CosmosThrottling_IsRecordedAsTransientStorage()
+    {
+        var deviceId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var commitId = Guid.NewGuid();
+        SetupQueuedCommitJob(commitId, deviceId, runId);
+        _manifestManagerMock
+            .Setup(x => x.GetBackupRunAsync(deviceId, runId, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new Microsoft.Azure.Cosmos.CosmosException(
+                "Request rate is large.", System.Net.HttpStatusCode.TooManyRequests, 3200, "activity", 0.38));
+
+        var act = async () => await _sut.ProcessBackupRunAsync(CreateBackupEvent(deviceId, runId, commitId));
+
+        await act.Should().ThrowAsync<Microsoft.Azure.Cosmos.CosmosException>();
+        _manifestManagerMock.Verify(
+            x => x.UpdateCommitJobAsync(
+                It.Is<CommitJob>(job =>
+                    job.Status == CommitJobStatus.Failed &&
+                    job.FailureCategory == "TransientStorage" &&
+                    job.NextRetryAt != null),
+                It.IsAny<CancellationToken>()),
+            Times.AtLeastOnce);
+    }
+
+    private const string ManifestBlobETag = "\"0x8DE1C0FFEE\"";
+
+    [Theory]
+    [Trait("Category", "Unit")]
+    [InlineData(ManifestBlobETag, false)]
+    [InlineData("\"0x8DEOLDER\"", true)]
+    [InlineData(null, true)]
+    public async Task ProcessBackupRunAsync_ReusesPersistedManifestOnlyWhenItCameFromTheSameBlob(
+        string? persistedSourceETag, bool expectRewrite)
+    {
+        // A retried commit of a ~1.7M-entry run spent ~26 minutes (and the RU budget) rewriting
+        // identical chunks before it reached the first file.
+        var deviceId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+        var commitId = Guid.NewGuid();
+        SetupQueuedCommitJob(commitId, deviceId, runId);
+        SetupBackupRun(deviceId, runId);
+        SetupManifestDownload(CreateManifest(deviceId, runId,
+            [CreateFileEntry("documents/a.txt", "uid-a")], ["documents/gone.txt"]));
+        _manifestManagerMock
+            .Setup(x => x.GetRunManifestHeaderAsync(deviceId, runId, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new RunManifestHeader
+            {
+                SchemaVersion = RunManifestHeader.ChunkedSchemaVersion,
+                FileCount = 1, DeletedCount = 1, ChunkCount = 2, ChunkSize = 500,
+                SourceETag = persistedSourceETag
+            });
+        _manifestManagerMock
+            .Setup(x => x.SaveRunManifestAsync(deviceId, runId,
+                It.IsAny<IAsyncEnumerable<RunManifestStreamItem>>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((1, 1));
+        var totals = new ConcurrentBag<int>();
+        _manifestManagerMock
+            .Setup(x => x.UpdateCommitJobAsync(It.IsAny<CommitJob>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((CommitJob job, CancellationToken _) => { totals.Add(job.TotalFiles); return job; });
+
+        await _sut.ProcessBackupRunAsync(CreateBackupEvent(deviceId, runId, commitId));
+
+        if (expectRewrite)
+        {
+            // The rewrite records the blob it came from, so the next retry can reuse it.
+            _manifestManagerMock.Verify(x => x.SaveRunManifestAsync(deviceId, runId,
+                It.IsAny<IAsyncEnumerable<RunManifestStreamItem>>(), ManifestBlobETag, It.IsAny<CancellationToken>()), Times.Once);
+        }
+        else
+        {
+            _manifestManagerMock.Verify(x => x.SaveRunManifestAsync(deviceId, runId,
+                It.IsAny<IAsyncEnumerable<RunManifestStreamItem>>(), It.IsAny<string?>(), It.IsAny<CancellationToken>()), Times.Never);
+        }
+        totals.Should().Contain(2);
+    }
+
     #endregion
 
     #region Helper Methods
@@ -920,6 +998,11 @@ public partial class BackupProcessingServiceTests
                 It.IsAny<long>(), It.IsAny<int?>(), It.IsAny<BlobRequestConditions>(), It.IsAny<CancellationToken>()))
             .Callback(() => pathCallback?.Invoke(manifestPath))
             .ReturnsAsync(() => new MemoryStream(manifestBytes, writable: false));
+
+        manifestBlobClient
+            .Setup(x => x.GetPropertiesAsync(It.IsAny<BlobRequestConditions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Response.FromValue(
+                BlobsModelFactory.BlobProperties(eTag: new ETag(ManifestBlobETag)), Mock.Of<Response>()));
 
         foreach (var fileEntry in manifest.Files)
         {
