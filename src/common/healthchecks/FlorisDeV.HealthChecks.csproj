@@ -23,7 +23,7 @@
         </PackageReference>
         <PackageReference Include="Serilog" Version="4.4.0" />
         <PackageReference Include="Serilog.Sinks.Console" Version="6.1.1" />
-        <PackageReference Include="SharpCompress" Version="0.50.7">
+        <PackageReference Include="SharpCompress" Version="0.50.8">
             <PrivateAssets>all</PrivateAssets>
             <IncludeAssets>none</IncludeAssets>
         </PackageReference>

@@ -17,7 +17,7 @@
             <PrivateAssets>all</PrivateAssets>
             <IncludeAssets>analyzers; build; buildtransitive</IncludeAssets>
         </PackageReference>
-        <PackageReference Include="SharpCompress" Version="0.50.7">
+        <PackageReference Include="SharpCompress" Version="0.50.8">
             <PrivateAssets>all</PrivateAssets>
             <IncludeAssets>none</IncludeAssets>
         </PackageReference>
