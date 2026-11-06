@@ -104,7 +104,7 @@ param cosmosAccountName string = ''
 @description('Cosmos DB SQL database name for application state.')
 param cosmosDatabaseName string = 'backup-state'
 
-@description('Cosmos DB shared database autoscale max throughput in RU/s for the backup state containers. Commits burst toward this ceiling; the database idles at 10% of it. NOTE: the Cosmos account (an existing resource, not managed here) carries a totalThroughputLimit guardrail — currently 4000 RU/s — which must stay above this value.')
+@description('Cosmos DB shared database autoscale max throughput in RU/s for the backup state containers. Commits burst toward this ceiling; the database idles at 10% of it. NOTE: the Cosmos account (an existing resource, not managed here) carries a totalThroughputLimit guardrail — currently 4000 RU/s — that counts this value once per region, so this value times the region count must not exceed it.')
 @minValue(1000)
 param cosmosDatabaseAutoscaleMaxThroughput int = 1000
 
