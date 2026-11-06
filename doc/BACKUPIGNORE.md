@@ -40,6 +40,13 @@ A simple extension pattern beginning with `*.` and containing no slash, such as 
 *.old
 ```
 
+Two behaviors make broad patterns riskier than in Git:
+
+- **Matching ignores case.** `**/packages/**` also matches `Packages/`, and `**/cache/**` matches `Cache/`.
+- **A pattern that matches a directory skips it whole.** `**/core` (meant for crash-dump files) also hides every folder named `core` or `Core` and everything below it.
+
+Patterns with a path, such as `dev/**`, are anchored to the target root, not the filesystem root. Keep system-directory patterns like `proc/**` or `dev/**` only in the `.backupignore` of a target whose root is `/`.
+
 Use `/` in portable patterns. Avoid relying on brace expansion, character classes, leading-root slash semantics, or other Git-specific syntax; these are not part of the behavior tested by this repository.
 
 ## File selection and priority
